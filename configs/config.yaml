@@ -1,0 +1,29 @@
+# Root config; composes the rest (spec §1).
+#
+# §11: configs are the only place experiment parameters live. No magic numbers in
+# flowcl/, no hardcoded paths.
+defaults:
+  - embodiment: libero_franka
+  - _self_
+
+# Resolved seed is recorded per run (§2). Null means "derive from run_id", which the
+# runner resolves and writes to results/<run_id>/seed.json.
+seed: 0
+
+# Run identity.
+run_id: ???
+
+paths:
+  # Null means LIBERO's own default (<submodule>/libero/datasets).
+  dataset_dir: null
+  results_root: results
+
+data:
+  # Number of demos per task to load; §3.2 ships 50.
+  n_demos: 50
+  # Workers for the torch DataLoader.
+  num_workers: 4
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

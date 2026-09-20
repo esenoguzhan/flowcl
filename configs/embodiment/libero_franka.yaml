@@ -1,0 +1,41 @@
+# LIBERO single-arm Franka Panda (spec §3.2).
+#
+# Action dimensionality is fixed for THIS embodiment and is never padded to match
+# another one (§0): padding would make the policy switch which slice is active and
+# produce artifactual forgetting.
+name: libero_franka
+
+observation:
+  # Order is load-bearing: it fixes token order into the trunk, and the layer
+  # registry (§4.5) plus every analysis iterate in this same order.
+  cameras:
+    - agentview
+    - robot0_eye_in_hand
+  # LIBERO demos are stored natively at 128x128, so this is a no-op resize.
+  image_size: [128, 128]
+  # End-effector pose + gripper qpos.
+  d_state: 8
+  state_keys:
+    - [ee_pos, 3]
+    - [ee_ori, 3]
+    - [gripper_states, 2]
+
+action:
+  # 6 OSC pose deltas + 1 gripper.
+  d_action: 7
+  control_mode: osc_pose_delta
+  control_rate_hz: 20.0
+  # H in §3.3.
+  chunk_horizon: 16
+  # k in §4.4: execute the first k actions open-loop, then replan.
+  execute_k: 8
+  # §3.2: LIBERO actions are already in [-1, 1]; record stats, do not renormalise.
+  already_normalized: true
+  component_keys:
+    - [osc_pose_delta, 6]
+    - [gripper, 1]
+
+notes: >
+  Franka Panda under robosuite OSC_POSE at 20 Hz, as shipped by LIBERO. Single-arm,
+  so the bimanual handover / coordinated-transport tasks are Stage B only (spec §0,
+  "Known gap"). Do not emulate bimanual behaviour by splitting this action vector.

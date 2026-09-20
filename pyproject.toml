@@ -13,7 +13,23 @@ dependencies = [
     "torchvision==0.19.1",
     "numpy<2",                  # robosuite 1.4 breaks on numpy 2
     "robosuite==1.4.1",
+    # robosuite 1.4.1 only declares mujoco>=2.3.0, so an unpinned resolve pulls
+    # mujoco 3.x, where robosuite's binding_utils.joint_name2addr hits
+    # `assert joint_type in (mjJNT_HINGE, mjJNT_SLIDE)` and LIBERO scenes fail to
+    # load. 2.3.7 is the last 2.3 release and the series robosuite 1.4 targets.
+    "mujoco==2.3.7",
     "bddl==1.0.1",
+    # LIBERO's setup.py declares install_requires=[], so none of its real runtime
+    # dependencies resolve transitively and we must name them here. These four are
+    # exactly what `from libero.libero.envs import OffScreenRenderEnv` needs:
+    #   future      - bddl 1.0.1 does `from future.utils import with_metaclass`
+    #   easydict    - libero/libero/envs/objects/articulated_objects.py
+    #   gym, cloudpickle - libero/libero/envs/venv.py, which envs/__init__.py imports
+    # All four appear in LIBERO's own requirements.txt.
+    "future>=0.18.2",
+    "easydict>=1.11",
+    "gym>=0.26,<1.0",
+    "cloudpickle>=2.1",
     "libero",                   # the submodule at benchmark/LIBERO, see [tool.uv.sources]
     "h5py>=3.11,<4",
     "hydra-core>=1.3,<1.4",
@@ -65,7 +81,8 @@ packages = ["flowcl"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "sim: requires MuJoCo/robosuite offscreen rendering and the LIBERO datasets (runs only on the training box)",
+    "sim: requires MuJoCo/robosuite offscreen *rendering* (needs a working EGL/GL context, i.e. the training box)",
+    "physics: requires MuJoCo physics and the LIBERO datasets, but no rendering (runs anywhere)",
     "gpu: requires a CUDA device",
     "slow: takes more than ~30s",
 ]
