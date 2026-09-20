@@ -1,0 +1,22 @@
+---
+description: flowcl thesis experiment codebase conventions
+alwaysApply: true
+---
+
+- This repo is a thesis experiment codebase. Correctness of measurement beats
+  feature count. A silently wrong SVD or a transposed projection invalidates months
+  of work; a missing convenience flag does not.
+- Never change normalization statistics, evaluation initial states, or random-seed
+  derivation to make a number look better. If a result looks wrong, say so.
+- Every new analysis quantity needs: a unit test on a synthetic case with a known
+  answer, and a shape/orientation assertion.
+- No silent fallbacks. No try/except that swallows an error and returns a default.
+  Fail loudly with the offending values in the message.
+- Configs are the only place where experiment parameters live. No magic numbers in
+  flowcl/. No hardcoded paths.
+- Do not add dependencies without asking. Do not vendor code from papers without a
+  docstring citing the source and listing which details were inferred.
+- Prefer small, reviewable changes over large rewrites. When touching methods/ or
+  analysis/, state in the PR description which experiments would need rerunning.
+- Ask before implementing anything from Section 7.5; it is the thesis novelty and
+  its details are decided by experimental results, not by convenience.

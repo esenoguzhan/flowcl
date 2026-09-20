@@ -1,0 +1,72 @@
+[project]
+name = "flowcl"
+version = "0.1.0"
+description = "Continual Learning for Flow-Matching Robot Policies"
+requires-python = "==3.10.*"
+
+# Spec §2: pin exact versions. Deliberately NO robomimic — §3.1 mandates our own
+# canonical-episode adapter, so LIBERO's robomimic==0.2.0 / transformers==4.21.1
+# pins are not our constraints, and dropping them removes the main conflict with
+# PyTorch 2.4.
+dependencies = [
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+    "numpy<2",                  # robosuite 1.4 breaks on numpy 2
+    "robosuite==1.4.1",
+    "bddl==1.0.1",
+    "libero",                   # the submodule at benchmark/LIBERO, see [tool.uv.sources]
+    "h5py>=3.11,<4",
+    "hydra-core>=1.3,<1.4",
+    "omegaconf>=2.3,<2.4",
+    "einops>=0.8,<0.9",
+    "transformers>=4.44,<4.46", # frozen DINOv2 / SigLIP / CLIP weights only
+    "huggingface-hub>=0.24",    # LIBERO dataset download (§ prepare_libero)
+    "wandb>=0.17,<0.19",
+    "matplotlib>=3.8,<4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-timeout>=2.3",
+]
+
+# torch cu121 wheels: target is Ubuntu 24.04 + RTX 4090, CUDA 12.x (spec §2).
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
+# LIBERO is a git submodule and is never edited in place (spec §2). Installing it
+# as a path dependency is what lets us obey "no sys.path hacks" (§1).
+libero = { path = "benchmark/LIBERO", editable = true }
+
+# LIBERO's setup.py uses find_packages(), which returns [] because its
+# benchmark/LIBERO/libero/ directory has no __init__.py — it is a PEP 420 namespace
+# package. A modern PEP 660 editable install therefore exposes nothing and
+# `import libero` fails. setuptools' "compat" editable mode writes a plain .pth
+# pointing at the project root, which is how upstream `pip install -e .` used to
+# behave and is what makes the namespace package resolvable. This is build
+# configuration, not a sys.path hack in our code, and it leaves the submodule
+# untouched.
+[tool.uv.config-settings-package]
+libero = { editable_mode = "compat" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["flowcl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "sim: requires MuJoCo/robosuite offscreen rendering and the LIBERO datasets (runs only on the training box)",
+    "gpu: requires a CUDA device",
+    "slow: takes more than ~30s",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,24 @@
+# Experiment outputs — never committed (spec §1)
+results/
+outputs/
+.hydra/
+wandb/
+multirun/
+
+# Datasets are large binary artifacts fetched by scripts/prepare_libero.py
+datasets/
+*.hdf5
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# MuJoCo
+MUJOCO_LOG.TXT
+
+# Local scratch space for one-off dev checks
+.scratch/
