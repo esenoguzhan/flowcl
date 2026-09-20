@@ -1,0 +1,29 @@
+# Small FlowPolicy (spec §4.2 lower end): d_model 384, 6 trunk layers.
+# Used for fast iteration and ablations; flowpolicy_base is the reference model.
+name: flowpolicy_small
+
+# §4.1: frozen vision backbone, trainable linear patch projection.
+vision_backbone: dinov2_s
+# Language enters as per-token embeddings via cross-attention, cached per task
+# string. See the deviation note in docs/ and §4.1.
+text_backbone: clip_b
+pretrained: true
+
+# §4.2: d_model 384-512, 6-8 layers, 8 heads, pre-norm.
+d_model: 384
+n_trunk_layers: 6
+n_heads: 8
+mlp_ratio: 4.0
+n_context_tokens: 32
+max_tokens: 1024
+
+# §4.3 flow decoder.
+n_decoder_layers: 4
+
+# p(s) during training. Swappable so §7.3/§9 can measure rho_l(s) and c_l(s) under a
+# known s distribution without a code change.
+s_sampler:
+  name: uniform
+
+# §4.4: Euler integration steps at inference.
+euler_steps: 10

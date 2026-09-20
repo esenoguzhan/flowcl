@@ -1,0 +1,25 @@
+# Reference FlowPolicy (spec §4.2 upper end): d_model 512, 8 trunk layers.
+# §8.2 requires the trainable parameter count to land in 20-60M; this config is the
+# one the headline results use.
+name: flowpolicy_base
+
+vision_backbone: dinov2_s
+text_backbone: clip_b
+pretrained: true
+
+d_model: 512
+n_trunk_layers: 8
+n_heads: 8
+mlp_ratio: 4.0
+n_context_tokens: 32
+max_tokens: 1024
+
+# 4, not 6: each decoder block at d_model=512 costs ~6.6M trainable parameters, of
+# which ~2.4M is the AdaLN modulation projection. Six blocks put the model at 66.9M,
+# above the 20-60M band §8.2 asks for; four lands at ~53.8M.
+n_decoder_layers: 4
+
+s_sampler:
+  name: uniform
+
+euler_steps: 10
