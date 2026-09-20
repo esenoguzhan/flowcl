@@ -86,3 +86,32 @@ property, so the most important data-layer check does not depend on a GL context
 
 Run locally with `-m 'not sim and not gpu'`; run everything on the training box with
 `MUJOCO_GL=egl`.
+
+### What "no GPU in this WSL instance" looks like
+
+Diagnosed once, recorded because the two symptoms look unrelated but share a cause.
+
+`torch.cuda.is_available()` is `False` and offscreen rendering dies with:
+
+```
+libEGL warning: failed to open /dev/dri/renderD128: Permission denied
+ImportError: Cannot initialize a EGL device display. This likely means that your
+EGL driver does not support the PLATFORM_DEVICE extension ...
+```
+
+Check, in this order:
+
+1. `ls /usr/lib/wsl/lib` — with a working NVIDIA WSL driver this contains
+   `libcuda.so.1`, `libnvidia-ml.so.1` and `nvidia-smi`. If it holds only
+   `libd3d12.so`, `libd3d12core.so` and `libdxcore.so`, the Windows-side NVIDIA
+   driver is missing or predates WSL CUDA support, and *no* amount of Linux-side
+   installation fixes it. CUDA is unavailable until it is updated on Windows.
+2. `id` — the user must be in `render` and `video`. `/dev/dri/card0` is
+   `root:video 0660` and `/dev/dri/renderD128` is `root:render 0660`, so without
+   those groups Mesa's EGL cannot open either device and `egl_get_devices()`
+   enumerates devices that all fail to initialise. Fix with
+   `sudo usermod -aG render,video $USER` followed by `wsl --shutdown`.
+
+Both are environment problems, not code problems: every non-`sim`, non-`gpu` test
+passes regardless. Gate 0 onwards cannot produce a verdict without them, since every
+gate needs training plus rollouts.

@@ -134,6 +134,61 @@ class EmbodimentSpec:
     def cameras(self) -> tuple[str, ...]:
         return self.observation.cameras
 
+    # ---- serialisation --------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Plain-data form, for embedding in checkpoints and run artifacts.
+
+        Checkpoints carry the spec rather than a config *name* so that evaluating an
+        old checkpoint cannot silently pick up an edited YAML.
+        """
+        return {
+            "name": self.name,
+            "notes": self.notes,
+            "observation": {
+                "cameras": list(self.observation.cameras),
+                "image_size": list(self.observation.image_size),
+                "d_state": self.observation.d_state,
+                "state_keys": [[k, w] for k, w in self.observation.state_keys],
+            },
+            "action": {
+                "d_action": self.action.d_action,
+                "control_mode": self.action.control_mode,
+                "control_rate_hz": self.action.control_rate_hz,
+                "chunk_horizon": self.action.chunk_horizon,
+                "execute_k": self.action.execute_k,
+                "already_normalized": self.action.already_normalized,
+                "component_keys": [[k, w] for k, w in self.action.component_keys],
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "EmbodimentSpec":
+        """Inverse of :meth:`to_dict`. Validation runs via the dataclasses."""
+        obs = payload["observation"]
+        act = payload["action"]
+        return cls(
+            name=payload["name"],
+            notes=payload.get("notes", ""),
+            observation=ObservationSpec(
+                cameras=tuple(obs["cameras"]),
+                image_size=tuple(obs["image_size"]),
+                d_state=int(obs["d_state"]),
+                state_keys=tuple((k, int(w)) for k, w in obs.get("state_keys", [])),
+            ),
+            action=ActionSpec(
+                d_action=int(act["d_action"]),
+                control_mode=act["control_mode"],
+                control_rate_hz=float(act["control_rate_hz"]),
+                chunk_horizon=int(act["chunk_horizon"]),
+                execute_k=int(act["execute_k"]),
+                already_normalized=bool(act.get("already_normalized", False)),
+                component_keys=tuple(
+                    (k, int(w)) for k, w in act.get("component_keys", [])
+                ),
+            ),
+        )
+
     def assert_compatible_episode(
         self, d_state: int, d_action: int, cameras: tuple[str, ...]
     ) -> None:

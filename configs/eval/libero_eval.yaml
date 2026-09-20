@@ -1,0 +1,43 @@
+# LIBERO evaluation protocol (spec §8.1).
+#
+# These numbers are the protocol, not tuning knobs. Changing n_episodes between
+# methods would make success rates incomparable, which is why the shared fixed
+# init-state set is the default and the rollout wrapper refuses to sample extra
+# states beyond what init_files provides.
+
+# §8.1: 50 rollouts per (method, seed, stage, task) cell, on the identical fixed
+# initial-state set for every method, seed and stage.
+n_episodes: 50
+
+# Hard cap on env steps per episode. LIBERO's OSC runs at 20 Hz, so 600 steps is
+# 30 s of simulated time -- comfortably above the longest demo in the four suites
+# used here, and short enough that a stuck policy does not dominate wall-clock.
+max_steps: 600
+
+# §4.4: execute the first k of each H-step chunk open-loop, then replan. null means
+# "use the embodiment spec's execute_k" (8 for libero_franka), so this is only for
+# ablations that vary k without editing the embodiment.
+execute_k: null
+
+# Euler steps for the flow ODE at inference (§4.3).
+euler_steps: 10
+
+# §4.4: implemented, but OFF by default and reported as an ablation only. Turning
+# this on for the main table would confound the CL comparison with an inference-time
+# smoothing trick.
+temporal_ensembling: false
+temporal_ensemble_coef: 0.01
+
+# Must match the training image size, or the frozen vision encoder sees a different
+# input scale at evaluation than it did at training.
+image_size: 128
+
+# Videos are large; enable per-run for qualitative figures only.
+record_video: false
+
+# Bootstrap settings for the §8.2 CIs. Fixed seed so a reported interval is
+# reproducible from the stored successes alone.
+bootstrap:
+  n_resamples: 10000
+  confidence: 0.95
+  seed: 0

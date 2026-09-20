@@ -1,0 +1,36 @@
+# Heterogeneous 4-task sequence: SPATIAL -> OBJECT -> GOAL -> LONG (spec §5).
+#
+# One task from each suite, so consecutive tasks share neither scene, nor objects, nor
+# motion. This is the regime §5 expects large forgetting and low gradient overlap in,
+# and it is the contrast partner for seq_correlated.
+#
+# Task choice within each suite is deliberate, not arbitrary:
+#   - libero_spatial: "from table center" is the least spatially-qualified task in the
+#     suite, so it does not need the fine spatial-reference discrimination that would
+#     make single-task success (Gate 0) the bottleneck instead of forgetting.
+#   - libero_object: milk is a large, visually distinctive object.
+#   - libero_goal: "open the middle drawer" is articulated-object manipulation, which
+#     shares no motion primitive with the pick-and-place tasks before it.
+#   - libero_10: a two-stage long-horizon task, as the suite's purpose requires.
+#
+# Also run reverse order (§5): Curriculum.reversed() derives it, so there is no second
+# YAML to drift out of sync.
+name: seq_hetero
+
+description: >
+  One task per suite, in LIBERO's own suite order. Consecutive tasks share no scene,
+  object set or motion primitive.
+
+expectation: >
+  Large forgetting under seq_ft, low pairwise gradient overlap (low c_l), and therefore
+  the regime where hard projection (GPM) should be viable.
+
+tasks:
+  - task_key: libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_goal/open_the_middle_drawer_of_the_cabinet
+    n_demos: 50
+  - task_key: libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+    n_demos: 50
