@@ -31,6 +31,9 @@ GATE0_SUCCESS_THRESHOLD = 0.80
 # one-time decision on a problem it does not solve.
 ESCAPE_HATCH_THRESHOLD = 0.70
 
+# §10.3 Gate 1: forgetting of at least 15 percentage points on at least one sequence.
+GATE1_FORGETTING_THRESHOLD = 0.15
+
 
 @dataclass
 class GateResult:
@@ -157,6 +160,71 @@ def gate0(
             "escape_hatch_candidates": hatch_candidates,
         },
         notes=notes,
+        run_id=run_id,
+    )
+
+
+def gate1(
+    per_sequence_forgetting: dict,
+    threshold: float = GATE1_FORGETTING_THRESHOLD,
+    run_id: str | None = None,
+) -> GateResult:
+    """Evaluate §10.3 Gate 1: does forgetting exist?
+
+    §10.3's threshold is ``F_1 >= 15 pp on at least one sequence, else change
+    curriculum``. Read literally that is ambiguous, since §8.2 defines ``F_1`` as *final
+    average success*, and a final average success of 15% would be a catastrophically bad
+    policy rather than evidence of forgetting. The quantity the gate is about is the
+    forgetting *gap* measured in percentage points, so this function takes per-sequence
+    forgetting and the docstring records the reading. The deviation is noted in
+    ``docs/`` as §11 requires.
+
+    Args:
+        per_sequence_forgetting: ``sequence_name -> forgetting in [0, 1]``, i.e. NBT from
+            :func:`flowcl.analysis.metrics.negative_backward_transfer`, or equivalently
+            the drop from the joint/single-task reference.
+        threshold: Fraction, not percentage points. 0.15 == 15 pp.
+
+    "At least one sequence" is the right quantifier here, unlike Gate 0's "each task":
+    the gate asks whether the *benchmark* can exhibit forgetting at all, and one
+    sequence that does is enough to proceed.
+    """
+    if not per_sequence_forgetting:
+        raise ValueError("gate1 received no sequences")
+
+    per_sequence = {
+        name: {
+            "forgetting": float(value),
+            "forgetting_pp": 100 * float(value),
+            "meets_threshold": float(value) >= threshold,
+        }
+        for name, value in per_sequence_forgetting.items()
+    }
+    passing = sorted(k for k, v in per_sequence.items() if v["meets_threshold"])
+
+    return GateResult(
+        gate=1,
+        question="Does forgetting exist?",
+        criterion=(
+            f"forgetting >= {100 * threshold:.0f} pp on at least one sequence, else "
+            "change curriculum"
+        ),
+        passed=bool(passing),
+        evidence={
+            "threshold": threshold,
+            "per_sequence": per_sequence,
+            "passing_sequences": passing,
+        },
+        notes=(
+            ""
+            if passing
+            else (
+                "No sequence forgets enough to measure a continual-learning effect. "
+                "§10.3 says change the curriculum rather than proceeding: with nothing "
+                "to forget, every method's F_1 would be equal and the comparison would "
+                "measure noise."
+            )
+        ),
         run_id=run_id,
     )
 

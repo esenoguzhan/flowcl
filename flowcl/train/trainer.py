@@ -1,16 +1,15 @@
-"""Single-task training loop.
+"""Single-task training loop — one curriculum stage.
 
-Phase 2's job is one task, trained to near-zero loss. The continual runner (§6, §10.4)
-wraps this without reimplementing it, which is why every continual-method hook point
-is already threaded through here:
+The continual runner (:mod:`flowcl.train.continual`) calls this once per stage rather
+than reimplementing optimisation, so the §6 method hooks are threaded through here:
 
 * ``build_batch`` — replay mixes in exemplars
 * ``modify_loss`` — EWC, ConSFT
-* ``modify_gradients`` — GPM, SGP (applied by
-  :class:`flowcl.train.optim.ProjectedOptimizer` after ``backward()``)
+* ``modify_gradients`` — GPM, SGP, §7.5's s-binned method
 
-The trainer takes the method as an optional collaborator and calls those hooks when
-present, so Phase 4 onwards adds methods without touching this file.
+Hook call order is fixed and identical for every method, including the no-op
+``seq_ft``. That is deliberate: a difference between two methods' results must be
+attributable to their mechanism and not to a different code path through the trainer.
 """
 
 from __future__ import annotations
@@ -145,6 +144,7 @@ def train_one_task(
     dataset: ChunkedActionDataset,
     cfg: TrainConfig,
     method=None,
+    task_idx: int = 0,
     generator: torch.Generator | None = None,
     on_step: Callable[[int, dict], None] | None = None,
 ) -> TrainLog:
@@ -152,17 +152,24 @@ def train_one_task(
 
     Args:
         policy: The policy to train, already on the target device.
-        dataset: Chunked dataset for this task.
+        dataset: Chunked dataset for this stage.
         cfg: Optimisation settings.
-        method: Optional continual-learning method exposing any of ``build_batch``,
-            ``modify_loss``, ``modify_gradients``.
+        method: A :class:`~flowcl.methods.base.ContinualMethod`. Defaults to a no-op
+            ``seq_ft``, so the hook sequence is identical whether or not a method was
+            passed.
+        task_idx: Curriculum stage index, forwarded to the §6 hooks.
         generator: RNG for ``s`` and ``A_0``, so a stage is reproducible.
         on_step: Callback invoked as ``on_step(step, outputs)`` after each optimiser
-            step. Used by the analysis hooks to capture activations at an interval.
+            step. Used by the §7.1 analysis hooks to capture activations at an interval.
 
     Returns:
         A :class:`TrainLog`.
     """
+    from flowcl.methods.seq_ft import SeqFT
+
+    if method is None:
+        method = SeqFT()
+
     device = torch.device(cfg.device)
     policy.to(device)
     policy.train()
@@ -178,6 +185,8 @@ def train_one_task(
     )
     batches = _cycle(loader)
 
+    method.on_task_start(task_idx, policy, dataset)
+
     scaler = torch.amp.GradScaler(device.type, enabled=cfg.amp and device.type == "cuda")
     log = TrainLog()
     started = time.perf_counter()
@@ -186,29 +195,42 @@ def train_one_task(
         optimizer.zero_grad(set_to_none=True)
         accumulated = 0.0
 
-        for _ in range(cfg.accumulation_steps):
-            batch = next(batches)
-            if method is not None and hasattr(method, "build_batch"):
-                batch = method.build_batch(batch)
+        for micro in range(cfg.accumulation_steps):
+            # §6: a method may own batch construction (replay mixing). Returning None
+            # means "use the runner's dataloader", which is what every other method
+            # does.
+            batch = method.build_batch(dataset, task_idx)
+            if batch is None:
+                batch = next(batches)
             batch = move_batch(batch, device)
 
             with torch.autocast(
                 device_type=device.type, enabled=cfg.amp and device.type == "cuda"
             ):
                 outputs = policy(batch, generator=generator)
-                loss = outputs["loss"]
-                if method is not None and hasattr(method, "modify_loss"):
-                    loss = method.modify_loss(loss, policy, batch, outputs)
+                loss = method.modify_loss(
+                    outputs["loss"], batch, policy, outputs=outputs
+                )
+                # Scale so that accumulation is equivalent to one larger mean-reduced
+                # batch, not to a sum over microbatches.
                 loss = loss / cfg.accumulation_steps
 
             scaler.scale(loss).backward()
             accumulated += float(loss.detach()) * cfg.accumulation_steps
 
-        if method is not None and hasattr(method, "modify_gradients"):
-            scaler.unscale_(optimizer)
-            method.modify_gradients(policy)
-        elif cfg.grad_clip is not None:
-            scaler.unscale_(optimizer)
+        # §7.3: gradient surgery happens after backward() and before step(), on
+        # unscaled gradients — projecting AMP-scaled gradients would work by luck
+        # (projection is linear) but clipping afterwards would not.
+        scaler.unscale_(optimizer)
+        method.modify_gradients(
+            policy,
+            {
+                "step": step,
+                "task_idx": task_idx,
+                "s": outputs["s"].detach(),
+                "batch": batch,
+            },
+        )
 
         if cfg.grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(
@@ -228,8 +250,10 @@ def train_one_task(
         if cfg.log_every and (step % cfg.log_every == 0 or step == cfg.steps - 1):
             print(
                 f"[flowcl] step {step + 1}/{cfg.steps} loss {mean_loss:.6f} "
-                f"lr {scheduler.get_last_lr()[0]:.2e}"
+                f"lr {scheduler.get_last_lr()[0]:.2e}",
+                flush=True,
             )
 
+    method.on_task_end(task_idx, policy, dataset)
     log.wall_clock_s = time.perf_counter() - started
     return log

@@ -70,3 +70,33 @@ def load_embodiment_spec(cfg: DictConfig | dict | str | Path) -> EmbodimentSpec:
         action=action,
         notes=str(raw.get("notes", "")),
     )
+
+
+def load_method_config(cfg: DictConfig | dict | str | Path) -> tuple[str, dict]:
+    """Resolve ``configs/method/<name>.yaml`` into ``(name, kwargs)``.
+
+    ``name`` is popped out because it selects the class, while everything else is passed
+    to the constructor. :class:`~flowcl.methods.base.BaseMethod` rejects unknown keys, so
+    a stale key left in a method YAML fails at construction instead of letting the run
+    proceed with a default the config does not mention.
+    """
+    if isinstance(cfg, (str, Path)):
+        path = Path(cfg)
+        if not path.suffix:
+            path = configs_root() / "method" / f"{path.name}.yaml"
+        if not path.is_file():
+            raise FileNotFoundError(f"Method config not found: {path}")
+        node = OmegaConf.load(path)
+    else:
+        node = cfg if isinstance(cfg, DictConfig) else OmegaConf.create(cfg)
+
+    raw = OmegaConf.to_container(node, resolve=True)
+    if not isinstance(raw, dict):
+        raise TypeError(f"method config must be a mapping, got {type(raw)}")
+    if "name" not in raw:
+        raise KeyError(
+            f"method config must declare `name`; present keys {sorted(raw)}"
+        )
+
+    kwargs = {k: v for k, v in raw.items() if k != "name"}
+    return str(raw["name"]), kwargs

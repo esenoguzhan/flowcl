@@ -1,0 +1,37 @@
+# Correlated 4-task sequence: four tasks from within libero_object (spec §5).
+#
+# Same scene, same motion primitive, same target container. Only the object to pick up
+# and the instruction differ. This is the regime §5 expects forward transfer and high
+# c_l in -- and therefore the regime where hard projection (GPM) should fail, because
+# the directions task 2 needs are the directions task 1 already occupies.
+#
+# CONDITIONAL ON THE §4.1 LANGUAGE CHECK. Every conclusion drawn from this curriculum
+# assumes the policy distinguishes the tasks by their instruction. If it does not, the
+# tasks are identical from the policy's point of view, "forgetting" here is one habit
+# overwriting another, and the results say nothing about continual learning. Run
+# scripts/language_check.py and confirm results/gate0/language_check.json passes before
+# reporting anything from this curriculum.
+#
+# Objects chosen to be visually distinct from each other (a carton, a bottle, a jar, a
+# box) so that a failure of the language check cannot be blamed on the vision encoder
+# being unable to tell the objects apart in the first place.
+name: seq_correlated
+
+description: >
+  Four libero_object pick-and-place tasks sharing one scene and one motion primitive,
+  differing only in the target object and the instruction.
+
+expectation: >
+  Forward transfer between stages and high gradient overlap (c_l close to 1), making
+  hard projection incompatible with plasticity. Conditional on the §4.1 language
+  discriminability check.
+
+tasks:
+  - task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_tomato_sauce_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_cream_cheese_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_bbq_sauce_and_place_it_in_the_basket
+    n_demos: 50

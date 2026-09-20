@@ -1,0 +1,6 @@
+# seq_ft: plain sequential fine-tuning. Baseline B1 (spec §6).
+#
+# Intentionally has no hyperparameters. Every forgetting number in the thesis is
+# measured relative to this run, so anything tunable here would be a knob on the
+# reference itself.
+name: seq_ft

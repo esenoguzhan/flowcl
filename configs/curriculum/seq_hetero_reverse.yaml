@@ -1,0 +1,30 @@
+# seq_hetero in reverse: LONG -> GOAL -> OBJECT -> SPATIAL (spec §5).
+#
+# §5 runs this because "LIBERO showed ordering matters". It is a genuinely different
+# experiment, not a relabelling: §3.3 fits the frozen normalization statistics on the
+# *first* task, which here is the libero_10 long-horizon task rather than the spatial
+# one, so the whole run normalises its inputs differently.
+#
+# This file exists so the reverse run has its own run_id, config.yaml and results
+# directory. Prefer `Curriculum.reversed()` when deriving it in code -- that cannot
+# drift out of sync with seq_hetero.yaml, whereas this file can, so the task list below
+# is asserted against the derived one in tests/test_curriculum.py.
+name: seq_hetero_reverse
+
+description: >
+  Reverse order of seq_hetero. Same four tasks, opposite sequence, and consequently
+  normalization statistics fitted on the libero_10 task instead of the spatial one.
+
+expectation: >
+  Different forgetting profile from seq_hetero despite identical tasks. A large
+  asymmetry is itself a reportable result about curriculum order.
+
+tasks:
+  - task_key: libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+    n_demos: 50
+  - task_key: libero_goal/open_the_middle_drawer_of_the_cabinet
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+    n_demos: 50
