@@ -1,0 +1,28 @@
+# Qualitative replay only. Never used by Gate / retention evaluation.
+#
+# Videos are large and the default eval protocol leaves record_video off
+# (configs/eval/libero_eval.yaml). This file is the settings for
+# scripts/record_video.py and the localhost watcher (scripts/watch.py).
+
+# Written under the repo root unless an absolute path is given.
+out_dir: results/videos
+
+# Bind loopback only. This is a local lab tool, not a service.
+host: 127.0.0.1
+port: 8765
+
+# JPEG quality for the frame sequence the browser player reads.
+jpeg_quality: 85
+
+# CSS nearest-neighbour scale so 128x128 is watchable. Frames stay native on disk.
+display_scale: 4
+
+# OpenCV fourcc for the downloadable .mp4 (VLC/mpv). Browsers often cannot play
+# this codec; the watcher uses the JPEG sequence instead.
+mp4_codec: mp4v
+
+# Watcher-only smoothness diagnostics. An executed action component whose
+# absolute value is at least clip_abs - clip_rail_tol counts as saturated
+# (LIBERO OSC commands live in [-1, 1]).
+clip_abs: 1.0
+clip_rail_tol: 1.0e-6

@@ -16,6 +16,7 @@ from flowcl.models.flow_head import (
     UniformSSampler,
     bin_index,
     build_s_sampler,
+    draw_with_generator,
 )
 from flowcl.models.losses import (
     flow_matching_loss,
@@ -186,6 +187,37 @@ def test_sampler_is_reproducible_under_a_generator():
     torch.testing.assert_close(a, b, rtol=0, atol=0)
 
 
+def test_draw_with_generator_matches_direct_cpu_draw():
+    """The helper must not change the CPU stream that existing tests pin."""
+    g1 = torch.Generator(device="cpu").manual_seed(11)
+    g2 = torch.Generator(device="cpu").manual_seed(11)
+    direct = torch.rand(16, generator=g1)
+    helper = draw_with_generator(16, device="cpu", generator=g2)
+    assert torch.equal(direct, helper)
+
+
+@pytest.mark.gpu
+def test_cpu_generator_samples_onto_cuda_with_the_same_stream():
+    """Training seeds a CPU generator (pipeline.py). That must work on CUDA.
+
+    Drawing on the generator's device and moving the tensor also keeps a given
+    seed's ``s`` identical whether the policy sits on CPU or CUDA.
+    """
+    g_cuda = torch.Generator(device="cpu").manual_seed(3)
+    g_cpu = torch.Generator(device="cpu").manual_seed(3)
+    on_cuda = UniformSSampler().sample(32, torch.device("cuda"), generator=g_cuda)
+    on_cpu = UniformSSampler().sample(32, torch.device("cpu"), generator=g_cpu)
+    assert on_cuda.device.type == "cuda"
+    torch.testing.assert_close(on_cuda.cpu(), on_cpu, rtol=0, atol=0)
+
+    g_noise = torch.Generator(device="cpu").manual_seed(4)
+    noise = draw_with_generator(
+        (2, 16, 7), device="cuda", generator=g_noise, normal=True
+    )
+    assert noise.device.type == "cuda"
+    assert noise.shape == (2, 16, 7)
+
+
 # ---- s bins (§9) --------------------------------------------------------------
 
 
@@ -292,6 +324,18 @@ def test_sample_is_bitwise_deterministic_given_a_seed(head):
     first = head.sample(context, n_steps=10, generator=g1)
     second = head.sample(context, n_steps=10, generator=g2)
     assert torch.equal(first, second)
+
+
+@pytest.mark.gpu
+def test_sample_accepts_a_cpu_generator_on_cuda(head):
+    """Evaluation seeds a CPU generator (libero_env.py) even when the policy is on GPU."""
+    head_cuda = head.to("cuda")
+    context = torch.randn(B, 8, DM, device="cuda")
+    chunk = head_cuda.sample(
+        context, n_steps=4, generator=torch.Generator(device="cpu").manual_seed(0)
+    )
+    assert chunk.device.type == "cuda"
+    assert chunk.shape == (B, H, D)
 
 
 def test_sample_differs_across_seeds(head):

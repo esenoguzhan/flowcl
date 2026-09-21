@@ -25,6 +25,7 @@ def test_shipped_eval_config_matches_the_protocol():
     assert cfg.temporal_ensembling is False
     assert cfg.execute_k is None, "null means 'use the embodiment spec's k'"
     assert cfg.euler_steps == 10
+    assert cfg.record_video is False
     assert payload["bootstrap"]["confidence"] == 0.95
 
 

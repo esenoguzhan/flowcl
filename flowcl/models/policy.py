@@ -26,7 +26,7 @@ import torch.nn as nn
 
 from flowcl.data.spec import EmbodimentSpec
 from flowcl.models.encoders import CachedTextEncoder, FrozenVisionEncoder
-from flowcl.models.flow_head import FlowHead, SSampler, UniformSSampler
+from flowcl.models.flow_head import FlowHead, SSampler, UniformSSampler, draw_with_generator
 from flowcl.models.losses import flow_matching_loss, interpolate_actions
 from flowcl.models.trunk import ObservationTrunk
 
@@ -381,11 +381,12 @@ class FlowPolicy(nn.Module):
         else:
             s = s.to(device=context.device, dtype=context.dtype)
         if noise is None:
-            noise = torch.randn(
-                target_actions.shape,
+            noise = draw_with_generator(
+                tuple(target_actions.shape),
                 device=context.device,
-                dtype=context.dtype,
                 generator=generator,
+                dtype=context.dtype,
+                normal=True,
             )
 
         noisy_actions = interpolate_actions(noise, target_actions, s)

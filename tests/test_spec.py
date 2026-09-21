@@ -10,6 +10,7 @@ from flowcl.data.spec import (
     EmbodimentSpec,
     ObservationSpec,
     assert_no_cross_embodiment_padding,
+    flatten_named_widths,
 )
 
 
@@ -50,6 +51,30 @@ def test_libero_franka_yaml_matches_spec_section_3_2():
     assert spec.action.execute_k == 8  # k in §4.4
     assert spec.action.already_normalized is True
     assert spec.action.control_rate_hz == 20.0
+    assert spec.observation.flat_names() == (
+        "ee_pos_0",
+        "ee_pos_1",
+        "ee_pos_2",
+        "ee_ori_0",
+        "ee_ori_1",
+        "ee_ori_2",
+        "gripper_states_0",
+        "gripper_states_1",
+    )
+    assert spec.action.flat_names() == (
+        "osc_pose_delta_0",
+        "osc_pose_delta_1",
+        "osc_pose_delta_2",
+        "osc_pose_delta_3",
+        "osc_pose_delta_4",
+        "osc_pose_delta_5",
+        "gripper",
+    )
+
+
+def test_flatten_named_widths_fallback_does_not_invent_ee_pos():
+    names = flatten_named_widths((), dim=3, fallback_prefix="state")
+    assert names == ("state_0", "state_1", "state_2")
 
 
 def test_state_keys_must_sum_to_d_state():

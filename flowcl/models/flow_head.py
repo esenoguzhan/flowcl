@@ -47,6 +47,37 @@ def bin_index(s: torch.Tensor) -> torch.Tensor:
     return idx.clamp_(0, len(S_BINS) - 1)
 
 
+def draw_with_generator(
+    shape: int | tuple[int, ...],
+    *,
+    device: torch.device | str,
+    generator: torch.Generator | None = None,
+    dtype: torch.dtype | None = None,
+    normal: bool = False,
+) -> torch.Tensor:
+    """Sample from a Generator, then place the result on ``device``.
+
+    ``torch.Generator`` is device-bound: a CPU generator cannot drive CUDA kernels.
+    Training, evaluation, and the run registry all seed a *CPU* generator so the
+    stream is independent of whether a GPU is present. Sampling on the generator's
+    device and moving the tensor keeps that contract, and keeps a given seed's
+    ``s`` / ``A_0`` identical on CPU and CUDA.
+    """
+    size = (shape,) if isinstance(shape, int) else tuple(shape)
+    draw_device = generator.device if generator is not None else torch.device(device)
+    values = (
+        torch.randn(size, device=draw_device, generator=generator)
+        if normal
+        else torch.rand(size, device=draw_device, generator=generator)
+    )
+    if dtype is not None and values.dtype != dtype:
+        values = values.to(dtype=dtype)
+    target = torch.device(device)
+    if values.device != target:
+        values = values.to(device=target)
+    return values
+
+
 # ---- p(s) samplers -------------------------------------------------------------
 
 
@@ -71,7 +102,7 @@ class UniformSSampler(SSampler):
     name = "uniform"
 
     def sample(self, n, device, generator=None):
-        return torch.rand(n, device=device, generator=generator)
+        return draw_with_generator(n, device=device, generator=generator)
 
 
 class LogitNormalSSampler(SSampler):
@@ -88,8 +119,8 @@ class LogitNormalSSampler(SSampler):
         self.std = std
 
     def sample(self, n, device, generator=None):
-        z = torch.randn(n, device=device, generator=generator) * self.std + self.mean
-        return torch.sigmoid(z)
+        z = draw_with_generator(n, device=device, generator=generator, normal=True)
+        return torch.sigmoid(z * self.std + self.mean)
 
 
 class BinnedSSampler(SSampler):
@@ -110,7 +141,7 @@ class BinnedSSampler(SSampler):
         self.low, self.high = S_BINS[bin_idx]
 
     def sample(self, n, device, generator=None):
-        u = torch.rand(n, device=device, generator=generator)
+        u = draw_with_generator(n, device=device, generator=generator)
         return self.low + u * (self.high - self.low)
 
 
@@ -344,13 +375,12 @@ class FlowHead(nn.Module):
         batch = context.shape[0]
         device = context.device
         if noise is None:
-            actions = torch.randn(
-                batch,
-                self.horizon,
-                self.d_action,
+            actions = draw_with_generator(
+                (batch, self.horizon, self.d_action),
                 device=device,
-                dtype=context.dtype,
                 generator=generator,
+                dtype=context.dtype,
+                normal=True,
             )
         else:
             if noise.shape != (batch, self.horizon, self.d_action):

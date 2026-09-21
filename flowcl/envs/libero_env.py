@@ -90,6 +90,62 @@ def observation_to_state(obs: dict) -> np.ndarray:
 
 
 @dataclass
+class RolloutTrace:
+    """Per-step state/action log. Filled only when ``record_video`` is on.
+
+    Alignment: ``states[i]`` is simultaneous with video frame ``i``. ``actions[t]``
+    is the clipped command that produced ``states[t + 1]``. ``replan[t]`` is true
+    on the first executed step of a newly sampled chunk.
+    """
+
+    states: np.ndarray
+    actions: np.ndarray
+    replan: np.ndarray
+    chunks: np.ndarray
+    state_names: tuple[str, ...]
+    action_names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        states = np.asarray(self.states, dtype=np.float32)
+        actions = np.asarray(self.actions, dtype=np.float32)
+        replan = np.asarray(self.replan, dtype=bool)
+        chunks = np.asarray(self.chunks, dtype=np.float32)
+        if states.ndim != 2:
+            raise ValueError(f"states must be (T+1, d_state), got {states.shape}")
+        if actions.ndim != 2:
+            raise ValueError(f"actions must be (T, d_action), got {actions.shape}")
+        if replan.shape != (actions.shape[0],):
+            raise ValueError(
+                f"replan has shape {replan.shape}, expected ({actions.shape[0]},) "
+                "to match actions"
+            )
+        if states.shape[0] != actions.shape[0] + 1:
+            raise ValueError(
+                f"states has {states.shape[0]} rows, actions has {actions.shape[0]}; "
+                "expected one extra state (the initial observation)"
+            )
+        if len(self.state_names) != states.shape[1]:
+            raise ValueError(
+                f"{len(self.state_names)} state_names for {states.shape[1]} columns: "
+                f"{self.state_names}"
+            )
+        if len(self.action_names) != actions.shape[1]:
+            raise ValueError(
+                f"{len(self.action_names)} action_names for {actions.shape[1]} columns: "
+                f"{self.action_names}"
+            )
+        if chunks.size:
+            if chunks.ndim != 3 or chunks.shape[2] != actions.shape[1]:
+                raise ValueError(
+                    f"chunks must be (n_replans, H, d_action), got {chunks.shape}"
+                )
+        object.__setattr__(self, "states", states)
+        object.__setattr__(self, "actions", actions)
+        object.__setattr__(self, "replan", replan)
+        object.__setattr__(self, "chunks", chunks)
+
+
+@dataclass
 class RolloutResult:
     """Outcome of one episode."""
 
@@ -100,6 +156,13 @@ class RolloutResult:
     seed: int
     n_replans: int
     frames: list[np.ndarray] = field(default_factory=list)
+    # camera name -> per-step RGB frames. Filled only when ``record_video`` is on;
+    # ``frames`` stays the first spec camera (agentview) so existing callers
+    # keep working.
+    camera_frames: dict[str, list[np.ndarray]] = field(default_factory=dict)
+    # Watcher-only. ``evaluate_tasks`` never sets ``record_video``, so Gate /
+    # retention rollouts leave this ``None`` and do not pay for the arrays.
+    trace: RolloutTrace | None = None
 
 
 @dataclass
@@ -239,6 +302,28 @@ class LiberoTaskEnv:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    def _append_video_frames(
+        self, obs: dict, camera_frames: dict[str, list[np.ndarray]]
+    ) -> None:
+        """Append one RGB frame per spec camera. Fail if a camera is missing."""
+        for camera in self.spec.cameras:
+            key = CAMERA_TO_OBS_KEY.get(camera)
+            if key is None:
+                raise KeyError(
+                    f"no env observation key known for camera {camera!r}; known "
+                    f"mapping is {CAMERA_TO_OBS_KEY}"
+                )
+            if key not in obs:
+                raise KeyError(
+                    f"env observation is missing {key!r}; got {sorted(obs)}"
+                )
+            frame = np.asarray(obs[key], dtype=np.uint8)
+            if frame.ndim != 3 or frame.shape[-1] != 3:
+                raise ValueError(
+                    f"{key} has shape {frame.shape}, expected (H, W, 3) uint8 RGB"
+                )
+            camera_frames[camera].append(frame)
+
     # ---- observation plumbing -------------------------------------------------
 
     def _build_policy_batch(
@@ -321,7 +406,16 @@ class LiberoTaskEnv:
         )
 
         policy.eval()
-        frames: list[np.ndarray] = []
+        camera_frames: dict[str, list[np.ndarray]] = (
+            {camera: [] for camera in self.spec.cameras} if cfg.record_video else {}
+        )
+        trace_states: list[np.ndarray] = []
+        trace_actions: list[np.ndarray] = []
+        trace_replan: list[bool] = []
+        trace_chunks: list[np.ndarray] = []
+        if cfg.record_video:
+            self._append_video_frames(obs, camera_frames)
+            trace_states.append(observation_to_state(obs))
         success = False
         n_replans = 0
         step = 0
@@ -335,6 +429,13 @@ class LiberoTaskEnv:
             chunk_np = chunk[0].detach().cpu().numpy().astype(np.float32)
             chunk_np = stats.denormalize_action(chunk_np)
             n_replans += 1
+            if cfg.record_video:
+                if chunk_np.ndim != 2 or chunk_np.shape[1] != self.spec.d_action:
+                    raise ValueError(
+                        f"predicted chunk has shape {chunk_np.shape}, expected "
+                        f"(H, {self.spec.d_action})"
+                    )
+                trace_chunks.append(np.asarray(chunk_np, dtype=np.float32))
 
             if ensembler is not None:
                 ensembler.add(step, chunk_np)
@@ -347,17 +448,40 @@ class LiberoTaskEnv:
                 )
                 # LIBERO actions are already in [-1, 1]; clip only to satisfy the
                 # controller's bounds, never to rescale (§3.2).
-                obs, _reward, _done, _info = self.env.step(
-                    np.clip(action, -1.0, 1.0).astype(np.float64)
-                )
+                executed = np.clip(action, -1.0, 1.0).astype(np.float64)
+                obs, _reward, _done, _info = self.env.step(executed)
                 step += 1
                 if cfg.record_video:
-                    frames.append(np.asarray(obs["agentview_image"], dtype=np.uint8))
+                    self._append_video_frames(obs, camera_frames)
+                    trace_actions.append(executed.astype(np.float32))
+                    trace_replan.append(offset == 0)
+                    trace_states.append(observation_to_state(obs))
                 if self.env.check_success():
                     success = True
                     break
             if success:
                 break
+
+        trace = None
+        if cfg.record_video:
+            d_action = self.spec.d_action
+            horizon = self.spec.action.chunk_horizon
+            if trace_chunks:
+                stacked = np.stack(trace_chunks, axis=0)
+            else:
+                stacked = np.zeros((0, horizon, d_action), dtype=np.float32)
+            trace = RolloutTrace(
+                states=np.stack(trace_states, axis=0),
+                actions=(
+                    np.stack(trace_actions, axis=0)
+                    if trace_actions
+                    else np.zeros((0, d_action), dtype=np.float32)
+                ),
+                replan=np.asarray(trace_replan, dtype=bool),
+                chunks=stacked,
+                state_names=self.spec.observation.flat_names(),
+                action_names=self.spec.action.flat_names(),
+            )
 
         return RolloutResult(
             success=success,
@@ -366,7 +490,9 @@ class LiberoTaskEnv:
             episode_idx=episode_idx,
             seed=seed,
             n_replans=n_replans,
-            frames=frames,
+            frames=list(camera_frames.get(self.spec.cameras[0], [])),
+            camera_frames=camera_frames,
+            trace=trace,
         )
 
     def evaluate(

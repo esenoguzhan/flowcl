@@ -58,6 +58,12 @@ class ObservationSpec:
                     f"keys={self.state_keys}"
                 )
 
+    def flat_names(self) -> tuple[str, ...]:
+        """One name per state dimension, from ``state_keys``."""
+        return flatten_named_widths(
+            self.state_keys, dim=self.d_state, fallback_prefix="state"
+        )
+
 
 @dataclass(frozen=True)
 class ActionSpec:
@@ -105,6 +111,12 @@ class ActionSpec:
                     f"component_keys widths sum to {total} but d_action is "
                     f"{self.d_action}; keys={self.component_keys}"
                 )
+
+    def flat_names(self) -> tuple[str, ...]:
+        """One name per action dimension, from ``component_keys``."""
+        return flatten_named_widths(
+            self.component_keys, dim=self.d_action, fallback_prefix="action"
+        )
 
 
 @dataclass(frozen=True)
@@ -210,6 +222,38 @@ class EmbodimentSpec:
                 f"Episode incompatible with embodiment {self.name!r}: "
                 + "; ".join(problems)
             )
+
+
+def flatten_named_widths(
+    keys: tuple[tuple[str, int], ...],
+    *,
+    dim: int,
+    fallback_prefix: str,
+) -> tuple[str, ...]:
+    """Expand ``(name, width)`` pairs to ``dim`` unique column names.
+
+    A width-1 key keeps its name; wider keys become ``name_0`` … ``name_{w-1}``.
+    Empty ``keys`` falls back to ``{fallback_prefix}_i`` so a spec that has not
+    declared names still produces a length-``dim`` listing rather than silently
+    inventing an ``ee_pos`` layout.
+    """
+    if dim <= 0:
+        raise ValueError(f"dim must be positive, got {dim}")
+    if not keys:
+        return tuple(f"{fallback_prefix}_{i}" for i in range(dim))
+    names: list[str] = []
+    for name, width in keys:
+        if width <= 0:
+            raise ValueError(f"component {name!r} has non-positive width {width}")
+        if width == 1:
+            names.append(name)
+        else:
+            names.extend(f"{name}_{i}" for i in range(width))
+    if len(names) != dim:
+        raise ValueError(
+            f"flattened names have length {len(names)} but dim is {dim}; keys={keys}"
+        )
+    return tuple(names)
 
 
 def assert_no_cross_embodiment_padding(specs: list[EmbodimentSpec]) -> None:
