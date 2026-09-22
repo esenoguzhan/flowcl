@@ -1,0 +1,41 @@
+# Subspace analysis (spec §7.1 activation capture, §7.2 bases and rho_l) and Gate 2.
+#
+# §11: experiment parameters live here, not in flowcl/. The Gate 2 verdict thresholds
+# (saturation rho, majority fraction) are gate definitions and live next to the other
+# gates in flowcl/analysis/gates.py.
+
+# §7.2: energy thresholds eps swept for every layer; bases for smaller eps are prefixes.
+energy_thresholds: [0.90, 0.95, 0.99]
+# §7.2 default eps; the Gate 2 verdict is read at this threshold.
+default_eps: 0.95
+
+# §7.1: random token positions kept per sample, per layer. Layers with fewer eligible
+# positions keep all of them (decoder: H = 16, so every action position is kept).
+tokens_per_sample: 16
+# §7.1: N >~ 10 * d_l. Checked on the primary (gradient-reachable) view; a layer below
+# this fails the run instead of producing a basis from too few samples.
+min_samples_per_dim: 10
+# Seed of the CPU generator that picks token positions.
+subsample_seed: 0
+
+# Flow-time bins; must equal flowcl.models.flow_head.S_BINS (asserted at load).
+s_bin_edges: [0.0, 0.25, 0.5, 0.75, 1.0]
+# Per-bin Grams for s-dependent layers. Off for Gate 2 (it needs pooled rho_l only);
+# Gate 4 switches it on.
+tag_s_bins: false
+
+# Gram eigendecomposition tolerances (see flowcl/analysis/subspace.py).
+# An eigenvalue below -neg_tol * lambda_max is an accumulation bug, not rounding.
+neg_tol: 1.0e-8
+# Relative Gram-eigenvalue tolerance for numerical rank; null means d * eps(float64).
+rank_tol: null
+
+# Activation collection over Task 1's training data, in a fixed order.
+batch_size: 64
+num_workers: 4
+# Demos per task; null means every shipped demo (the 50 the checkpoints trained on).
+n_demos: null
+
+# Reachability probe: samples in the one diagnostic forward/backward batch, half with
+# padded chunk positions and half without.
+probe_batch_size: 32

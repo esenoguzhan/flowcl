@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from flowcl.analysis.hooks import assert_no_active_capture
 from flowcl.analysis.metrics import Estimate, success_estimate
 from flowcl.data.spec import EmbodimentSpec
 from flowcl.data.stats import NormalizationStats
@@ -201,6 +202,8 @@ def evaluate_tasks(
     """Evaluate every task in ``refs``, in the given order."""
     if not refs:
         raise ValueError("evaluate_tasks received no tasks")
+    # §7.1: analysis hooks must not be active during evaluation rollouts.
+    assert_no_active_capture(policy)
 
     report = EvaluationReport(run_id=run_id, stage=stage)
     for ref in refs:

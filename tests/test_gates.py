@@ -117,3 +117,85 @@ def test_escape_hatch_lives_outside_any_single_run(tmp_path):
     path = record_escape_hatch("x", {}, results_root=tmp_path)
     assert path.parent == tmp_path
     assert path.name == "encoder_decision.json"
+
+
+# ---- Gate 2 ---------------------------------------------------------------------
+
+
+def gate2_inputs(rhos: list[float]):
+    from flowcl.analysis.gates import gate2
+
+    names = [f"layer{i}" for i in range(len(rhos))]
+    return gate2, dict(zip(names, rhos)), {n: "trunk_mlp" for n in names}, {
+        n: 512 for n in names
+    }
+
+
+def test_gate2_thresholds_are_the_recorded_decision():
+    from flowcl.analysis.gates import (
+        GATE2_DEFAULT_EPS,
+        GATE2_MAX_SATURATED_FRACTION,
+        GATE2_SATURATION_RHO,
+    )
+
+    assert GATE2_DEFAULT_EPS == 0.95
+    assert GATE2_SATURATION_RHO == 0.90
+    assert GATE2_MAX_SATURATED_FRACTION == 0.50
+
+
+def test_gate2_passes_when_few_layers_are_saturated():
+    gate2, rhos, groups, d_in = gate2_inputs([0.2, 0.3, 0.95, 0.4])
+    result = gate2(rhos, groups, d_in)
+    assert result.passed
+    assert result.evidence["saturated_layers"] == ["layer2"]
+    assert result.evidence["saturated_fraction"] == 0.25
+
+
+def test_gate2_fails_on_a_strict_majority_of_saturated_layers():
+    gate2, rhos, groups, d_in = gate2_inputs([0.91, 0.99, 0.95, 0.4])
+    result = gate2(rhos, groups, d_in)
+    assert not result.passed
+    assert "GPM" in result.notes
+
+
+def test_gate2_exactly_half_saturated_passes():
+    """'Most' is a strict majority."""
+    gate2, rhos, groups, d_in = gate2_inputs([0.90, 0.99, 0.2, 0.3])
+    result = gate2(rhos, groups, d_in)
+    assert result.evidence["saturated_fraction"] == 0.5
+    assert result.passed
+
+
+def test_gate2_reports_views_without_letting_them_decide():
+    gate2, rhos, groups, d_in = gate2_inputs([0.2, 0.3])
+    result = gate2(
+        rhos,
+        groups,
+        d_in,
+        alternative_rhos={
+            "valid": {"layer0": 0.2, "layer1": 0.95},
+            "all": {"layer0": 0.2, "layer1": 0.3},
+        },
+    )
+    assert result.passed
+    assert result.evidence["classification_changes"] == {"valid_vs_all": ["layer1"]}
+    assert result.evidence["per_layer"]["layer1"]["rho_valid"] == 0.95
+
+
+def test_gate2_flags_small_d_groups_and_summarises_per_group():
+    from flowcl.analysis.gates import gate2
+
+    result = gate2(
+        {"trunk.state_projection": 1.0, "a": 0.2, "b": 0.4},
+        {"trunk.state_projection": "trunk_input", "a": "trunk_mlp", "b": "trunk_mlp"},
+        {"trunk.state_projection": 8, "a": 512, "b": 512},
+    )
+    assert result.evidence["per_layer"]["trunk.state_projection"]["small_d"]
+    assert not result.evidence["per_layer"]["a"]["small_d"]
+    assert result.evidence["per_group"]["trunk_mlp"]["median_rho"] == pytest.approx(0.3)
+
+
+def test_gate2_rejects_out_of_range_rho():
+    gate2, rhos, groups, d_in = gate2_inputs([0.0])
+    with pytest.raises(ValueError, match="rho_l"):
+        gate2(rhos, groups, d_in)
