@@ -47,6 +47,15 @@ GATE2_MAX_SATURATED_FRACTION = 0.50
 # flagged so a reader does not mistake them for evidence about the trunk/decoder.
 GATE2_SMALL_D_GROUPS = ("trunk_input", "decoder_input")
 
+# §10.3 Gate 3: "c_l after T2; c_l ~ 1 => hard projection incompatible with plasticity".
+# Made concrete (decision recorded in docs/runs/): a layer is blocked when the mean
+# per-batch c_l >= 0.95 at eps = 0.95, i.e. hard projection would leave <= 31% of its
+# gradient norm. The gate fails when a strict majority of EITHER half (trunk, decoder)
+# is blocked: judged per half so a blocked decoder cannot be outvoted by the trunk.
+GATE3_DEFAULT_EPS = 0.95
+GATE3_BLOCKED_C = 0.95
+GATE3_MAX_BLOCKED_FRACTION = 0.50
+
 
 @dataclass
 class GateResult:
@@ -359,6 +368,141 @@ def gate2(
         notes=notes,
         run_id=run_id,
     )
+
+
+def gate3(
+    per_layer_c: dict[str, float],
+    groups: dict[str, str],
+    ci: dict[str, tuple[float, float]] | None = None,
+    extra_layer_evidence: dict[str, dict] | None = None,
+    aggregate_evidence: dict | None = None,
+    eps: float = GATE3_DEFAULT_EPS,
+    blocked_c: float = GATE3_BLOCKED_C,
+    max_blocked_fraction: float = GATE3_MAX_BLOCKED_FRACTION,
+    run_id: str | None = None,
+) -> GateResult:
+    """Evaluate §10.3 Gate 3: does the new task need protected directions?
+
+    Args:
+        per_layer_c: ``layer -> c_l`` at ``eps``: the mean per-batch interference of
+            Task-2 gradients at the start of T2 against the Task-1 basis. Decides the
+            gate. Registry order is preserved in the evidence.
+        groups: ``layer -> registry group``.
+        ci: ``layer -> (low, high)`` bootstrap interval over batches. A layer whose
+            interval straddles ``blocked_c`` is flagged ``borderline``; the point
+            estimate still decides, as in Gate 0.
+        extra_layer_evidence: Per-layer numbers reported alongside (energy-weighted and
+            full-dataset ``c_l``, the ``sqrt(rho_l)`` baseline, ...). Never decide.
+        aggregate_evidence: Whole-network numbers, e.g. ``c_global``.
+
+    Halves come from registry names: ``trunk.*`` and ``flow_head.*`` (the decoder).
+    """
+    if not per_layer_c:
+        raise ValueError("gate3 received no layers")
+    missing = sorted(set(per_layer_c) - set(groups))
+    if missing:
+        raise ValueError(f"gate3: layers without a group: {missing}")
+    bad = {k: v for k, v in per_layer_c.items() if not 0.0 <= v <= 1.0}
+    if bad:
+        raise ValueError(f"gate3: c_l must lie in [0, 1], got {bad}")
+
+    def half_of(name: str) -> str:
+        if name.startswith("trunk."):
+            return "trunk"
+        if name.startswith("flow_head."):
+            return "decoder"
+        raise ValueError(f"gate3: cannot assign {name!r} to the trunk or the decoder")
+
+    per_layer: dict[str, dict] = {}
+    for name, c in per_layer_c.items():
+        entry = {
+            "group": groups[name],
+            "half": half_of(name),
+            "c": c,
+            "blocked": c >= blocked_c,
+            "small_d": groups[name] in GATE2_SMALL_D_GROUPS,
+        }
+        if ci is not None:
+            low, high = ci[name]
+            entry["ci_low"], entry["ci_high"] = low, high
+            entry["borderline"] = low < blocked_c <= high
+        entry.update((extra_layer_evidence or {}).get(name, {}))
+        per_layer[name] = entry
+
+    per_half: dict[str, dict] = {}
+    for half in ("trunk", "decoder"):
+        members = [n for n, e in per_layer.items() if e["half"] == half]
+        if not members:
+            continue
+        blocked = [n for n in members if per_layer[n]["blocked"]]
+        fraction = len(blocked) / len(members)
+        per_half[half] = {
+            "n_layers": len(members),
+            "n_blocked": len(blocked),
+            "blocked_fraction": fraction,
+            "blocked_layers": blocked,
+            "median_c": _median([per_layer_c[n] for n in members]),
+            "failing": fraction > max_blocked_fraction,
+        }
+    failing_halves = [h for h, v in per_half.items() if v["failing"]]
+
+    per_group: dict[str, dict] = {}
+    for group in dict.fromkeys(groups[k] for k in per_layer_c):
+        values = [v for k, v in per_layer_c.items() if groups[k] == group]
+        per_group[group] = {
+            "n_layers": len(values),
+            "median_c": _median(values),
+            "min_c": min(values),
+            "max_c": max(values),
+            "n_blocked": sum(1 for v in values if v >= blocked_c),
+        }
+
+    notes = ""
+    if failing_halves:
+        notes = (
+            f"A strict majority of {' and '.join(failing_halves)} layers have "
+            f"c_l >= {blocked_c:.2f}: Task 2's gradients lie almost entirely in Task 1's "
+            "protected input subspace there, so hard projection (GPM) would block "
+            "learning Task 2 in that half. The method comparison must rely on soft "
+            "projection (SGP alpha_l) and report GPM as expected to fail on plasticity. "
+            "Do not change eps to pass."
+        )
+
+    return GateResult(
+        gate=3,
+        question="Does the new task need protected directions?",
+        criterion=(
+            f"Task-2 gradients at the start of T2 vs the Task-1 basis at eps={eps}: a "
+            f"layer is blocked when mean per-batch c_l >= {blocked_c:.2f}; fail when "
+            f"more than {max_blocked_fraction:.0%} of the trunk OR of the decoder "
+            "layers are blocked"
+        ),
+        passed=not failing_halves,
+        evidence={
+            "eps": eps,
+            "blocked_c": blocked_c,
+            "max_blocked_fraction": max_blocked_fraction,
+            "n_layers": len(per_layer_c),
+            "failing_halves": failing_halves,
+            "per_half": per_half,
+            "per_group": per_group,
+            "borderline_layers": [n for n, e in per_layer.items() if e.get("borderline")],
+            "small_d_groups": list(GATE2_SMALL_D_GROUPS),
+            "per_layer": per_layer,
+            **(aggregate_evidence or {}),
+        },
+        notes=notes,
+        run_id=run_id,
+    )
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    n = len(ordered)
+    if n == 0:
+        raise ValueError("median of an empty list")
+    mid = n // 2
+    return ordered[mid] if n % 2 else 0.5 * (ordered[mid - 1] + ordered[mid])
 
 
 def escape_hatch_path(results_root: Path | None = None) -> Path:

@@ -199,3 +199,84 @@ def test_gate2_rejects_out_of_range_rho():
     gate2, rhos, groups, d_in = gate2_inputs([0.0])
     with pytest.raises(ValueError, match="rho_l"):
         gate2(rhos, groups, d_in)
+
+
+# ---- Gate 3 ---------------------------------------------------------------------
+
+
+def gate3_inputs(trunk: list[float], decoder: list[float]):
+    names = [f"trunk.blocks.0.l{i}" for i in range(len(trunk))] + [
+        f"flow_head.blocks.0.l{i}" for i in range(len(decoder))
+    ]
+    values = dict(zip(names, trunk + decoder))
+    groups = {n: ("trunk_mlp" if n.startswith("trunk") else "decoder_mlp") for n in names}
+    return values, groups
+
+
+def test_gate3_thresholds_are_the_recorded_decision():
+    from flowcl.analysis.gates import (
+        GATE3_BLOCKED_C,
+        GATE3_DEFAULT_EPS,
+        GATE3_MAX_BLOCKED_FRACTION,
+    )
+
+    assert GATE3_DEFAULT_EPS == 0.95
+    assert GATE3_BLOCKED_C == 0.95
+    assert GATE3_MAX_BLOCKED_FRACTION == 0.50
+
+
+def test_gate3_passes_when_neither_half_is_mostly_blocked():
+    from flowcl.analysis.gates import gate3
+
+    c, groups = gate3_inputs([0.2, 0.3, 0.99], [0.1, 0.96, 0.4])
+    result = gate3(c, groups)
+    assert result.passed
+    assert result.evidence["failing_halves"] == []
+    assert result.evidence["per_half"]["trunk"]["n_blocked"] == 1
+
+
+def test_gate3_fails_on_a_blocked_decoder_the_trunk_cannot_outvote():
+    """Decoder mostly blocked, trunk clean, and the network-wide fraction is below 50%."""
+    from flowcl.analysis.gates import gate3
+
+    c, groups = gate3_inputs([0.1] * 6, [0.97, 0.99, 0.2])
+    result = gate3(c, groups)
+    blocked_overall = sum(v >= 0.95 for v in c.values()) / len(c)
+    assert blocked_overall < 0.5
+    assert not result.passed
+    assert result.evidence["failing_halves"] == ["decoder"]
+    assert "decoder" in result.notes and "Do not change eps" in result.notes
+
+
+def test_gate3_fails_on_a_blocked_trunk():
+    from flowcl.analysis.gates import gate3
+
+    result = gate3(*gate3_inputs([0.96, 0.99, 0.3], [0.1, 0.1]))
+    assert result.evidence["failing_halves"] == ["trunk"]
+
+
+def test_gate3_exactly_half_of_a_half_blocked_passes():
+    from flowcl.analysis.gates import gate3
+
+    result = gate3(*gate3_inputs([0.95, 0.2], [0.99, 0.1]))
+    assert result.evidence["per_half"]["trunk"]["blocked_fraction"] == 0.5
+    assert result.passed
+
+
+def test_gate3_flags_borderline_layers_but_the_point_estimate_decides():
+    from flowcl.analysis.gates import gate3
+
+    c, groups = gate3_inputs([0.94], [0.2])
+    names = list(c)
+    result = gate3(c, groups, ci={names[0]: (0.90, 0.97), names[1]: (0.1, 0.3)})
+    assert result.evidence["borderline_layers"] == [names[0]]
+    assert not result.evidence["per_layer"][names[0]]["blocked"]
+
+
+def test_gate3_rejects_out_of_range_c_and_unknown_halves():
+    from flowcl.analysis.gates import gate3
+
+    with pytest.raises(ValueError, match="c_l"):
+        gate3(*gate3_inputs([1.2], [0.1]))
+    with pytest.raises(ValueError, match="trunk or the decoder"):
+        gate3({"vision_encoder.x": 0.1}, {"vision_encoder.x": "other"})

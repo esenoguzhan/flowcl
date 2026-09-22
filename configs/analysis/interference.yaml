@@ -1,0 +1,32 @@
+# Gradient interference c_l (spec §7.3) and Gate 3.
+#
+# §11: experiment parameters live here. The Gate 3 verdict thresholds (blocked c_l,
+# per-half majority) are gate definitions and live in flowcl/analysis/gates.py.
+
+# Must be a subset of the thresholds the Task-1 bases were built with (Gate 2 swept
+# 0.90 / 0.95 / 0.99); bases for smaller eps are prefixes of the stored vectors.
+energy_thresholds: [0.90, 0.95, 0.99]
+# The Gate 3 verdict is read at this eps.
+default_eps: 0.95
+
+# Training batch size, so each measured gradient is one optimiser step's gradient.
+batch_size: 64
+# null = one full pass over the task's dataset.
+n_batches: null
+num_workers: 4
+# Demos per task; null = every shipped demo (the 50 the checkpoints trained on).
+n_demos: null
+
+# Three independent generator streams, each seeded from (tag, data task) only. Keying
+# on the data task and not the run_id makes every checkpoint measured on the same task
+# see identical batches, flow times and noise, so the replicate is a paired comparison.
+seed_tags:
+  shuffle: gate3::shuffle
+  flow_time: gate3::flow_time
+  noise: gate3::noise
+
+# Percentile bootstrap over batches for the per-layer mean c_l (§8.2 convention).
+bootstrap:
+  n: 10000
+  confidence: 0.95
+  seed: 0
