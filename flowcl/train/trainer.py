@@ -239,6 +239,10 @@ def train_one_task(
 
         scaler.step(optimizer)
         scaler.update()
+        # Documented §6 addition 3: the realised update is final only here, after Adam's
+        # per-coordinate scaling and weight decay. A skipped AMP step leaves weights as
+        # they were, so the method sees a zero update.
+        method.after_step(policy, {"step": step, "task_idx": task_idx})
         scheduler.step()
 
         mean_loss = accumulated / cfg.accumulation_steps

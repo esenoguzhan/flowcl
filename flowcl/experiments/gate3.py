@@ -512,7 +512,12 @@ def update_interference(
         total, parallel = projected_energies(delta, V, layer_ranks, name)
         per_layer[name] = {
             "delta_norm": math.sqrt(total),
-            "c": {str(eps): c_from_energies(p, total, name) for eps, p in zip(thresholds, parallel)},
+            # A layer that did not move (e.g. frozen by a full-rank projector) has no
+            # interference ratio: recorded as None, not as a number.
+            "c": {
+                str(eps): (c_from_energies(p, total, name) if total > 0 else None)
+                for eps, p in zip(thresholds, parallel)
+            },
         }
         tot_sum += total
         half_tot[half_of(name)] += total
@@ -520,12 +525,17 @@ def update_interference(
             par_sum[eps] += p
             half_par[half_of(name)][eps] += p
     present = sorted({half_of(name) for name in bases})
+
+    def pooled(par: float, tot: float, scope: str) -> float | None:
+        # Same rule as per layer: nothing moved means no ratio, not a number.
+        return c_from_energies(par, tot, scope) if tot > 0 else None
+
     return {
         "per_layer": per_layer,
         "c_global": {
             str(eps): {
-                "all": c_from_energies(par_sum[eps], tot_sum, "all"),
-                **{h: c_from_energies(half_par[h][eps], half_tot[h], h) for h in present},
+                "all": pooled(par_sum[eps], tot_sum, "all"),
+                **{h: pooled(half_par[h][eps], half_tot[h], h) for h in present},
             }
             for eps in thresholds
         },

@@ -10,7 +10,7 @@ Spec §6 gives the interface verbatim::
         def on_task_end(self, task_idx, policy, dataset) -> None: ...    # basis/Fisher update
         def state_dict(self) -> dict: ...
 
-Two deliberate additions, both documented here because §11 requires deviations to be
+Three deliberate additions, all documented here because §11 requires deviations to be
 written down rather than absorbed:
 
 1. ``modify_loss`` takes an extra keyword-only ``outputs``. ConSFT scales the loss by a
@@ -20,6 +20,14 @@ written down rather than absorbed:
 2. ``build_batch`` may return ``None`` to mean "use the runner's own dataloader". Only
    ``replay`` needs to own sampling, and forcing every other method to reimplement
    batching would duplicate the collate and worker setup five times.
+3. ``after_step(policy, step_meta)`` runs once per optimiser step, *after*
+   ``optimizer.step()``. §7.3 projects gradients before ``step()``, but with Adam that
+   does not make the *applied* update orthogonal: its per-coordinate scaling and AdamW's
+   decoupled weight decay move weights back into protected directions (Gate 3 §6.2).
+   Projecting the realised update needs a hook after the step. Per-step order in
+   :func:`flowcl.train.trainer.train_one_task`::
+
+       backward -> unscale_ -> modify_gradients -> clip -> step -> update -> after_step
 
 :class:`BaseMethod` implements every hook as a no-op, so a method subclasses it and
 overrides only what it changes. That is also why ``seq_ft`` is a real class with no
@@ -66,6 +74,9 @@ class ContinualMethod(Protocol):
     def modify_gradients(self, policy: FlowPolicy, batch_meta: dict) -> None:
         """Rewrite ``.grad`` in place, after ``backward()`` and before ``step()``."""
 
+    def after_step(self, policy: FlowPolicy, step_meta: dict) -> None:
+        """Called once after each ``optimizer.step()`` (documented addition 3)."""
+
     def on_task_end(
         self, task_idx: int, policy: FlowPolicy, dataset: ChunkedActionDataset
     ) -> None:
@@ -107,6 +118,9 @@ class BaseMethod:
         return loss
 
     def modify_gradients(self, policy, batch_meta) -> None:
+        return None
+
+    def after_step(self, policy, step_meta) -> None:
         return None
 
     def on_task_end(self, task_idx, policy, dataset) -> None:

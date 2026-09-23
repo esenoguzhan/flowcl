@@ -240,3 +240,17 @@ def test_verdict_and_report_serialise(result, setup, tmp_path):
     assert payload["comparisons"]["control_below_t2"]["layers"] == {}
     per_batch = payload["t2"]["layers"][0][f"c_per_batch@{cfg.default_eps}"]
     assert len(per_batch) == result.n_batches
+
+
+def test_update_interference_records_none_for_a_layer_that_did_not_move(setup):
+    loaded, bases, _, _, _, cfg = setup
+    state = {k: v.clone() for k, v in loaded.policy.state_dict().items()}
+    moved, still = "trunk.blocks.0.attn.q_proj", "flow_head.action_in"
+    after = {k: v.clone() for k, v in state.items()}
+    after[f"{moved}.weight"] += 0.01
+    out = update_interference(
+        state, after, {moved: bases[moved], still: bases[still]}, cfg.energy_thresholds
+    )
+    assert out["per_layer"][still]["delta_norm"] == 0.0
+    assert all(v is None for v in out["per_layer"][still]["c"].values())
+    assert out["per_layer"][moved]["c"]["0.95"] is not None

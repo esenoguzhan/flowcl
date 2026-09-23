@@ -1,0 +1,37 @@
+# GPM feasibility pilot: T1 (Spatial) -> T2 (Object) from the Gate 1 stage-0 checkpoint.
+#
+# A pilot, not the Stage A comparison. The training and evaluation recipe is NOT set
+# here: it is read from the Gate 1 run's own config.yaml so it matches by construction.
+# The method config is configs/method/gpm.yaml.
+
+# Arms trained on seq_ft stage 1's exact data/s/noise stream. Both train registry
+# weights only; freeze_only has no projection and separates freezing from projection.
+arms: [gpm_projected_adam, freeze_only]
+
+# --sanity: gpm_projected_adam for this many steps (its own warmup+cosine schedule), no
+# rollouts, every sanity check asserted; plus a short freeze_only run for timing.
+sanity_steps: 1000
+freeze_only_timing_steps: 200
+# Steps excluded from throughput timing (CUDA context, cuDNN autotune, allocation).
+timing_warmup_steps: 50
+
+# Pre-registered criteria: acceptable = at least (reference - margin) on the point
+# estimate, references read from the Gate 1 artifacts (Object R[1][1] = 78% ->
+# >= 63%; Spatial R[0][0] = 90% -> >= 75%). Same 15 pp standard as Gate 1.
+criteria:
+  margin_pp: 15
+  expected_object_min: 0.63
+  expected_spatial_min: 0.75
+
+# Fixed-batch loss probes (masked flow-matching loss), identical for every checkpoint:
+# independent generator streams keyed on (tag, task).
+probe:
+  batch_size: 64
+  n_batches: 16
+  seed_tags:
+    shuffle: gpm_pilot_probe::shuffle
+    flow_time: gpm_pilot_probe::flow_time
+    noise: gpm_pilot_probe::noise
+
+# Curriculum positions evaluated with rollouts: Spatial (T1) and Object (T2).
+eval_tasks: [0, 1]

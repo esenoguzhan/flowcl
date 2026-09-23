@@ -1,0 +1,23 @@
+# gpm: hard projection against a fixed input-subspace memory (spec §6 item 5, §7.3).
+#
+# With projection: gradient_and_update this is NOT canonical GPM (Saha et al. 2021 use
+# SGD). The gradient is projected before AdamW and AdamW's realised update is projected
+# again after the step; reports call it gpm_projected_adam. See flowcl/methods/gpm.py.
+name: gpm
+
+# §7.2 energy threshold of the memory bases. Fixed before the pilot (Gate 3 §7.2).
+eps: 0.95
+projection: gradient_and_update
+
+# Every step, every layer: ||D M|| <= residual_weight_atol * ||W|| + residual_rtol * ||D||,
+# D = applied displacement. atol scales with ||W|| because the remaining error source is
+# fp32 rounding of W_ref + dW P (~eps32 * |W| per element); 1e-6 is ~8 * eps32.
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+
+# Log c_l of the raw gradient and of Adam's step every this many steps.
+log_interval: 100
+
+# Incremental memory update (paper Eq. 8-9) is not implemented yet; the pilot uses a
+# fixed Task-1 memory.
+update_memory: false
