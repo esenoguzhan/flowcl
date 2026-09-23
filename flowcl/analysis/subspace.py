@@ -33,12 +33,16 @@ the direction every update touches. This is GPM's convention (Saha et al., ICLR 
 6. ``energy_rank`` is capped at ``r``, and ``ε = 1`` returns ``r`` explicitly so
    cumulative rounding cannot report fewer directions than the matrix has.
 
-GPM's incremental multi-task accumulation (the other half of §7.2) is deliberately not
-here yet; it arrives with the ``gpm`` method (build order §10 step 8).
+GPM's incremental multi-task accumulation (the other half of §7.2, paper Eq. 8-9) is
+:func:`extend_basis`, also on the Gram route. Two quantities are kept apart throughout:
+**capacity occupancy** ``rho_l = k_l / d_l`` (dimensions protected) and
+**``proj_energy_fraction``** ``= tr(M^T K M) / tr K`` (share of a new task's input energy
+already inside the memory).
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -270,12 +274,7 @@ def basis_from_gram(
     max_k = max(ranks.values())
     vectors = eigenvectors[:, :max_k].contiguous()
 
-    gram_check = vectors.T @ vectors
-    error = float((gram_check - torch.eye(max_k, dtype=vectors.dtype)).abs().max())
-    if error > _ORTHONORMALITY_ATOL:
-        raise RuntimeError(
-            f"{layer}: basis is not orthonormal (max |V^T V - I| = {error:.3e})"
-        )
+    assert_orthonormal_columns(vectors, layer)
 
     return SubspaceBasis(
         layer=layer,
@@ -291,10 +290,158 @@ def basis_from_gram(
     )
 
 
+def assert_orthonormal_columns(vectors: torch.Tensor, layer: str) -> None:
+    """Raise unless ``vectors^T vectors = I`` (an empty basis is trivially orthonormal)."""
+    k = vectors.shape[1]
+    if k == 0:
+        return
+    gram_check = vectors.T.to(torch.float64) @ vectors.to(torch.float64)
+    error = float((gram_check - torch.eye(k, dtype=torch.float64)).abs().max())
+    if error > _ORTHONORMALITY_ATOL:
+        raise RuntimeError(
+            f"{layer}: basis is not orthonormal (max |V^T V - I| = {error:.3e})"
+        )
+
+
+# ---- GPM incremental memory (paper Eq. 8-9, spec §7.2) ------------------------
+
+# The captured-energy post-condition may undershoot eps by at most this much. It absorbs
+# only float64 rounding; numerical-rank truncation drops eigenvalues <= rank_tol*λmax,
+# whose total energy is orders of magnitude smaller.
+ENERGY_TOL = 1e-6
+
+
+def captured_energy_fraction(M: torch.Tensor, K: torch.Tensor) -> float:
+    """``tr(M^T K M) / tr K`` — the share of a Gram's energy inside ``span(M)``.
+
+    Clamped to ``[0, 1]``: in exact arithmetic it lies there for orthonormal ``M`` and PSD
+    ``K``; the clamp only removes rounding outside that range.
+    """
+    total = float(torch.trace(K))
+    if total <= 0.0:
+        raise ValueError(f"Gram has non-positive trace {total:.3e}")
+    if M.shape[1] == 0:
+        return 0.0
+    inside = float(torch.trace(M.T @ K @ M))
+    return min(max(inside, 0.0), total) / total
+
+
+def check_captured_energy(
+    M: torch.Tensor, K: torch.Tensor, eps: float, layer: str, tol: float = ENERGY_TOL
+) -> float:
+    """The unconditional post-condition of :func:`extend_basis`: captured >= eps - tol."""
+    fraction = captured_energy_fraction(M, K)
+    if fraction < eps - tol:
+        raise RuntimeError(
+            f"{layer}: memory captures {fraction:.9f} of the task's input energy, below "
+            f"eps - tol = {eps - tol:.9f} (k = {M.shape[1]} of d = {M.shape[0]}). A full-rank "
+            "memory captures ~100%, so this is a numerical failure or an over-aggressive "
+            "rank tolerance, not capacity exhaustion."
+        )
+    return fraction
+
+
+def extend_basis(
+    M: torch.Tensor | None,
+    gram: torch.Tensor,
+    eps: float,
+    layer: str,
+    neg_tol: float,
+    rank_tol: float | None = None,
+    energy_tol: float = ENERGY_TOL,
+) -> tuple[torch.Tensor, dict]:
+    """GPM's incremental memory update on a Gram matrix (Saha et al. 2021, Eq. 8-9).
+
+    With ``R`` the new task's activations and ``K = R R^T``::
+
+        ||R||^2      = tr K
+        ||R_proj||^2 = tr(M^T K M)                      (energy already in memory)
+        R_hat R_hat^T = (I - M M^T) K (I - M M^T)        (Eq. 8, residual)
+        add the smallest k with tr(M^T K M) + sum_{i<=k} λ_hat_i >= eps tr K   (Eq. 9)
+
+    ``M = None`` or empty reduces to Eq. 5 (a fresh basis). The new directions are
+    re-orthogonalised against ``M`` (projection, then QR), ``[M, U]`` is asserted
+    orthonormal, and the captured energy ``tr(M_new^T K M_new)/tr K >= eps - energy_tol`` is
+    asserted *unconditionally*. Capacity exhaustion (``k_after == d``) is reported
+    separately in ``info``; a full memory captures ~100% and cannot violate the check.
+
+    Returns:
+        ``(M_new, info)`` with ``M_new`` float64 ``(d, k_after)``.
+    """
+    if gram.ndim != 2 or gram.shape[0] != gram.shape[1]:
+        raise ValueError(f"{layer}: Gram must be square, got {tuple(gram.shape)}")
+    if not 0.0 < eps <= 1.0:
+        raise ValueError(f"eps must lie in (0, 1], got {eps}")
+    d = gram.shape[0]
+    K = gram.to(torch.float64)
+    nonfinite = int((~torch.isfinite(K)).sum())
+    if nonfinite:
+        raise ValueError(f"{layer}: Gram has {nonfinite} non-finite entries")
+    K = 0.5 * (K + K.T)
+
+    M = torch.zeros(d, 0, dtype=torch.float64) if M is None else M.to(torch.float64)
+    if M.shape[0] != d:
+        raise ValueError(f"{layer}: memory is ({M.shape[0]}, k) but the Gram is {d}x{d}")
+    assert_orthonormal_columns(M, layer)
+    k_before = M.shape[1]
+
+    total = float(torch.trace(K))
+    if total <= 0.0:
+        raise ValueError(
+            f"{layer}: Gram has non-positive trace {total:.3e}; the task produced no "
+            "input energy at this layer"
+        )
+    proj_fraction = captured_energy_fraction(M, K)
+
+    residual_spectrum = torch.zeros(0, dtype=torch.float64)
+    if proj_fraction >= eps or k_before == d:
+        added = torch.zeros(d, 0, dtype=torch.float64)
+    else:
+        P = torch.eye(d, dtype=torch.float64) - M @ M.T
+        K_res = P @ K @ P
+        eigenvalues, eigenvectors, rank = gram_eigh(K_res, layer, neg_tol=neg_tol, rank_tol=rank_tol)
+        residual_spectrum = eigenvalues
+        cap = min(rank, d - k_before)
+        cumulative = proj_fraction * total + torch.cumsum(eigenvalues, dim=0)
+        target = torch.tensor([eps * total], dtype=torch.float64)
+        k = int(torch.searchsorted(cumulative, target, side="left")) + 1
+        k = max(1, min(k, cap))
+        U = eigenvectors[:, :k]
+        U = U - M @ (M.T @ U)  # re-orthogonalise against the memory
+        Q, Rq = torch.linalg.qr(U)
+        if float(Rq.diagonal().abs().min()) < 1e-8:
+            raise RuntimeError(
+                f"{layer}: new directions are numerically dependent on the memory "
+                f"(min |diag R| = {float(Rq.diagonal().abs().min()):.3e})"
+            )
+        added = Q
+
+    M_new = torch.cat([M, added], dim=1)
+    assert_orthonormal_columns(M_new, layer)
+    captured = check_captured_energy(M_new, K, eps, layer, tol=energy_tol)
+    k_after = M_new.shape[1]
+    return M_new, {
+        "k_before": k_before,
+        "k_added": k_after - k_before,
+        "k_after": k_after,
+        "d_in": d,
+        "rho_after": k_after / d,
+        "proj_energy_fraction": proj_fraction,
+        "captured_energy_fraction": captured,
+        "capacity_exhausted": k_after == d,
+        "residual_spectrum": residual_spectrum,
+    }
+
+
 def save_bases(path: str | Path, bases: dict[str, SubspaceBasis], meta: dict) -> Path:
-    """Persist one ``(run_id, task_idx)``'s bases, every layer at every threshold."""
+    """Persist one ``(run_id, task_idx)``'s bases, every layer at every threshold.
+
+    Written atomically (temporary file, then ``os.replace``), so an interrupted write
+    never leaves a partial file that a checkpoint could point to.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
     torch.save(
         {
             "version": BASES_FORMAT_VERSION,
@@ -302,8 +449,9 @@ def save_bases(path: str | Path, bases: dict[str, SubspaceBasis], meta: dict) ->
             "layers": list(bases),
             "bases": {name: basis.to_payload() for name, basis in bases.items()},
         },
-        path,
+        tmp,
     )
+    os.replace(tmp, path)
     return path
 
 

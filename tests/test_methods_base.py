@@ -40,12 +40,16 @@ def test_every_spec_six_hook_exists_with_the_documented_signature():
     """
     import inspect
 
+    # Deviation 4 (documented in flowcl/methods/base.py): the lifecycle hooks take
+    # (policy, task_idx, *, context) instead of §6's (task_idx, policy, dataset).
     expected = {
-        "on_task_start": ["self", "task_idx", "policy", "dataset"],
+        "on_task_start": ["self", "policy", "task_idx", "context"],
         "build_batch": ["self", "dataset", "task_idx"],
         "modify_loss": ["self", "loss", "batch", "policy", "outputs"],
         "modify_gradients": ["self", "policy", "batch_meta"],
-        "on_task_end": ["self", "task_idx", "policy", "dataset"],
+        "after_step": ["self", "policy", "step_meta"],
+        "on_task_end": ["self", "policy", "task_idx", "context"],
+        "save_artifacts": ["self", "directory", "task_idx", "context"],
         "state_dict": ["self"],
     }
     for hook, params in expected.items():
@@ -68,9 +72,10 @@ def test_seq_ft_hooks_are_all_no_ops():
 
     assert method.build_batch(dataset=None, task_idx=0) is None
     assert method.modify_loss(loss, batch={}, policy=None) is loss
-    assert method.on_task_start(0, None, None) is None
+    assert method.on_task_start(None, 0, context=None) is None
     assert method.modify_gradients(None, {}) is None
-    assert method.on_task_end(0, None, None) is None
+    assert method.on_task_end(None, 0, context=None) is None
+    assert method.save_artifacts(None, 0, context=None) == []
 
 
 def test_seq_ft_stores_nothing_and_is_exemplar_free():

@@ -70,6 +70,33 @@ def main() -> None:
             "running the curriculum sequentially."
         ),
     )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Run on an uncommitted tree (recorded). Final Stage A runs must not use this.",
+    )
+    parser.add_argument(
+        "--exist-ok",
+        action="store_true",
+        help="Write into an existing run directory. Off by default: never overwrite a run.",
+    )
+    parser.add_argument(
+        "--single-task-baseline",
+        action="store_true",
+        help="Write FWT against the Gate 0 single-task references (must exist).",
+    )
+    parser.add_argument(
+        "--t1-reference-run",
+        type=Path,
+        default=None,
+        help=(
+            "Run directory to compare the stage-0 model against (fail fast on a broken "
+            "pairing). Default for non-seq_ft methods: the seed-namespace (seq_ft) run, "
+            "if it exists."
+        ),
+    )
+    parser.add_argument("--no-t1-check", action="store_true")
+    parser.add_argument("--t1-pairing-max-rel-diff", type=float, default=None)
     args = parser.parse_args()
 
     spec = load_embodiment_spec(args.embodiment)
@@ -113,7 +140,16 @@ def main() -> None:
         print(f"[flowcl] joint reference mean success {reference.mean_rate():.3f}")
         return
 
+    from flowcl.train.continual import T1_PAIRING_MAX_REL_DIFF, seed_namespace_run_id
+
     method_name, method_kwargs = load_method_config(args.method)
+    t1_reference = args.t1_reference_run
+    if t1_reference is None and not args.no_t1_check and method_name != "seq_ft":
+        candidate = repo_root() / "results" / seed_namespace_run_id(curriculum.name, args.seed)
+        if (candidate / "checkpoints" / "stage0.pt").is_file():
+            t1_reference = candidate
+    if args.no_t1_check:
+        t1_reference = None
     run_continual(
         curriculum,
         method_name=method_name,
@@ -126,6 +162,15 @@ def main() -> None:
         bootstrap=eval_payload.get("bootstrap"),
         pretrained=not args.no_pretrained,
         evaluate=not args.no_eval,
+        exist_ok=args.exist_ok,
+        single_task_baseline=args.single_task_baseline,
+        require_clean_tree=not args.allow_dirty,
+        t1_reference_run=t1_reference,
+        t1_pairing_max_rel_diff=(
+            args.t1_pairing_max_rel_diff
+            if args.t1_pairing_max_rel_diff is not None
+            else T1_PAIRING_MAX_REL_DIFF
+        ),
     )
 
 

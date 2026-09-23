@@ -1,0 +1,1999 @@
+diff --git a/configs/analysis/gpm_pilot.yaml b/configs/analysis/gpm_pilot.yaml
+new file mode 100644
+index 0000000..f05ba3b
+--- /dev/null
++++ b/configs/analysis/gpm_pilot.yaml
+@@ -0,0 +1,37 @@
++# GPM feasibility pilot: T1 (Spatial) -> T2 (Object) from the Gate 1 stage-0 checkpoint.
++#
++# A pilot, not the Stage A comparison. The training and evaluation recipe is NOT set
++# here: it is read from the Gate 1 run's own config.yaml so it matches by construction.
++# The method config is configs/method/gpm.yaml.
++
++# Arms trained on seq_ft stage 1's exact data/s/noise stream. Both train registry
++# weights only; freeze_only has no projection and separates freezing from projection.
++arms: [gpm_projected_adam, freeze_only]
++
++# --sanity: gpm_projected_adam for this many steps (its own warmup+cosine schedule), no
++# rollouts, every sanity check asserted; plus a short freeze_only run for timing.
++sanity_steps: 1000
++freeze_only_timing_steps: 200
++# Steps excluded from throughput timing (CUDA context, cuDNN autotune, allocation).
++timing_warmup_steps: 50
++
++# Pre-registered criteria: acceptable = at least (reference - margin) on the point
++# estimate, references read from the Gate 1 artifacts (Object R[1][1] = 78% ->
++# >= 63%; Spatial R[0][0] = 90% -> >= 75%). Same 15 pp standard as Gate 1.
++criteria:
++  margin_pp: 15
++  expected_object_min: 0.63
++  expected_spatial_min: 0.75
++
++# Fixed-batch loss probes (masked flow-matching loss), identical for every checkpoint:
++# independent generator streams keyed on (tag, task).
++probe:
++  batch_size: 64
++  n_batches: 16
++  seed_tags:
++    shuffle: gpm_pilot_probe::shuffle
++    flow_time: gpm_pilot_probe::flow_time
++    noise: gpm_pilot_probe::noise
++
++# Curriculum positions evaluated with rollouts: Spatial (T1) and Object (T2).
++eval_tasks: [0, 1]
+diff --git a/configs/method/gpm.yaml b/configs/method/gpm.yaml
+new file mode 100644
+index 0000000..90034f8
+--- /dev/null
++++ b/configs/method/gpm.yaml
+@@ -0,0 +1,23 @@
++# gpm: hard projection against a fixed input-subspace memory (spec §6 item 5, §7.3).
++#
++# With projection: gradient_and_update this is NOT canonical GPM (Saha et al. 2021 use
++# SGD). The gradient is projected before AdamW and AdamW's realised update is projected
++# again after the step; reports call it gpm_projected_adam. See flowcl/methods/gpm.py.
++name: gpm
++
++# §7.2 energy threshold of the memory bases. Fixed before the pilot (Gate 3 §7.2).
++eps: 0.95
++projection: gradient_and_update
++
++# Every step, every layer: ||D M|| <= residual_weight_atol * ||W|| + residual_rtol * ||D||,
++# D = applied displacement. atol scales with ||W|| because the remaining error source is
++# fp32 rounding of W_ref + dW P (~eps32 * |W| per element); 1e-6 is ~8 * eps32.
++residual_rtol: 1.0e-3
++residual_weight_atol: 1.0e-6
++
++# Log c_l of the raw gradient and of Adam's step every this many steps.
++log_interval: 100
++
++# Incremental memory update (paper Eq. 8-9) is not implemented yet; the pilot uses a
++# fixed Task-1 memory.
++update_memory: false
+diff --git a/flowcl/experiments/gate3.py b/flowcl/experiments/gate3.py
+index c0fce49..27b924c 100644
+--- a/flowcl/experiments/gate3.py
++++ b/flowcl/experiments/gate3.py
+@@ -512,7 +512,12 @@ def update_interference(
+         total, parallel = projected_energies(delta, V, layer_ranks, name)
+         per_layer[name] = {
+             "delta_norm": math.sqrt(total),
+-            "c": {str(eps): c_from_energies(p, total, name) for eps, p in zip(thresholds, parallel)},
++            # A layer that did not move (e.g. frozen by a full-rank projector) has no
++            # interference ratio: recorded as None, not as a number.
++            "c": {
++                str(eps): (c_from_energies(p, total, name) if total > 0 else None)
++                for eps, p in zip(thresholds, parallel)
++            },
+         }
+         tot_sum += total
+         half_tot[half_of(name)] += total
+@@ -520,12 +525,17 @@ def update_interference(
+             par_sum[eps] += p
+             half_par[half_of(name)][eps] += p
+     present = sorted({half_of(name) for name in bases})
++
++    def pooled(par: float, tot: float, scope: str) -> float | None:
++        # Same rule as per layer: nothing moved means no ratio, not a number.
++        return c_from_energies(par, tot, scope) if tot > 0 else None
++
+     return {
+         "per_layer": per_layer,
+         "c_global": {
+             str(eps): {
+-                "all": c_from_energies(par_sum[eps], tot_sum, "all"),
+-                **{h: c_from_energies(half_par[h][eps], half_tot[h], h) for h in present},
++                "all": pooled(par_sum[eps], tot_sum, "all"),
++                **{h: pooled(half_par[h][eps], half_tot[h], h) for h in present},
+             }
+             for eps in thresholds
+         },
+diff --git a/flowcl/experiments/gpm_pilot.py b/flowcl/experiments/gpm_pilot.py
+new file mode 100644
+index 0000000..192838e
+--- /dev/null
++++ b/flowcl/experiments/gpm_pilot.py
+@@ -0,0 +1,819 @@
++"""GPM feasibility pilot: does hard projection let the policy learn T2 while keeping T1?
++
++Gate 3 (``docs/runs/2026-09-22_gate3.md``) passed but showed that hard projection at
++eps = 0.95 would remove ~87% of Object's gradient energy. Whether the policy can still learn
++Object is a training question. This pilot answers it for one pair of tasks before the
++rest of the build order (§10 step 7) — it is a pilot, not the Stage A comparison.
++
++Starting from the Gate 1 ``seq_ft`` stage-0 checkpoint (Spatial), each arm trains on
++Object for the Gate 1 recipe (read from that run's own ``config.yaml``):
++
++* ``gpm_projected_adam`` — registry weights only, gradient *and* AdamW's realised update
++  projected against the fixed Task-1 memory (:mod:`flowcl.methods.gpm`);
++* ``freeze_only`` — the same trainable set, no projection, to separate the effect of the
++  §7.4 freezing from the effect of projection.
++
++Pairing: both arms train on seq_ft stage 1's exact data/``s``/``A_0`` stream
++(``derive_seed(seq_ft_run_id, object_key, 1)``), a fresh AdamW per stage as in Gate 1,
++and are rolled out under **seq_ft's run_id as the seed namespace** — every episode has
++the same initial state and sampling seed as seq_ft's own stage evaluations and as the
++other arm. Provenance keeps ``method_run_id`` and ``evaluation_seed_run_id`` apart.
++
++Pre-registered outcome (:func:`classify`): Object >= R[1][1] − 15 pp and Spatial >=
++R[0][0] − 15 pp on the point estimate, references read from the Gate 1 artifacts.
++"""
++
++from __future__ import annotations
++
++import dataclasses
++import json
++import math
++import statistics
++import time
++from dataclasses import dataclass, field
++from datetime import datetime, timezone
++from pathlib import Path
++
++import torch
++from omegaconf import OmegaConf
++
++from flowcl.analysis.metrics import Estimate, paired_difference_ci
++from flowcl.analysis.subspace import load_bases
++from flowcl.data.curriculum import Curriculum
++from flowcl.envs.evaluation import EvaluationReport, eval_config_from_dict, evaluate_tasks
++from flowcl.experiments.gate3 import check_provenance, update_interference
++from flowcl.methods.gpm import GPM, allowlist, freeze_to_allowlist
++from flowcl.methods.seq_ft import SeqFT
++from flowcl.models.flow_head import draw_with_generator
++from flowcl.models.losses import valid_element_count
++from flowcl.train.checkpoint import load_checkpoint, save_checkpoint
++from flowcl.train.trainer import TrainConfig, build_dataloader, move_batch, train_one_task
++from flowcl.utils.libero_paths import repo_root
++from flowcl.utils.run import create_run, git_sha
++from flowcl.utils.seeding import derive_seed
++
++ARMS = ("gpm_projected_adam", "freeze_only")
++
++
++# ---- configuration -------------------------------------------------------------
++
++
++@dataclass
++class PilotConfig:
++    """``configs/analysis/gpm_pilot.yaml``; see the comments there."""
++
++    arms: tuple[str, ...]
++    sanity_steps: int
++    freeze_only_timing_steps: int
++    timing_warmup_steps: int
++    criteria: dict
++    probe: dict
++    eval_tasks: tuple[int, ...]
++
++    def __post_init__(self) -> None:
++        self.arms = tuple(self.arms)
++        unknown = sorted(set(self.arms) - set(ARMS))
++        if unknown:
++            raise ValueError(f"unknown arms {unknown}; available {ARMS}")
++        self.eval_tasks = tuple(self.eval_tasks)
++        if set(self.criteria) != {"margin_pp", "expected_object_min", "expected_spatial_min"}:
++            raise ValueError(f"criteria keys wrong: {sorted(self.criteria)}")
++        if set(self.probe) != {"batch_size", "n_batches", "seed_tags"}:
++            raise ValueError(f"probe keys wrong: {sorted(self.probe)}")
++        if set(self.probe["seed_tags"]) != {"shuffle", "flow_time", "noise"}:
++            raise ValueError(f"probe seed_tags wrong: {sorted(self.probe['seed_tags'])}")
++        for steps in (self.sanity_steps, self.freeze_only_timing_steps):
++            if steps <= self.timing_warmup_steps:
++                raise ValueError(
++                    f"timed runs need more than timing_warmup_steps={self.timing_warmup_steps}"
++                )
++
++    @classmethod
++    def from_dict(cls, payload: dict) -> "PilotConfig":
++        known = set(cls.__dataclass_fields__)
++        unknown, missing = sorted(set(payload) - known), sorted(known - set(payload))
++        if unknown or missing:
++            raise ValueError(f"pilot config: unknown keys {unknown}, missing keys {missing}")
++        return cls(**payload)
++
++
++def load_pilot_config(path: str | Path | None = None) -> PilotConfig:
++    path = Path(path) if path else repo_root() / "configs" / "analysis" / "gpm_pilot.yaml"
++    return PilotConfig.from_dict(OmegaConf.to_container(OmegaConf.load(path), resolve=True))
++
++
++def load_method_config(path: str | Path | None = None) -> dict:
++    path = Path(path) if path else repo_root() / "configs" / "method" / "gpm.yaml"
++    payload = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
++    if payload.pop("name", None) != "gpm":
++        raise ValueError(f"{path} is not a gpm method config")
++    return payload
++
++
++@dataclass(frozen=True)
++class PilotInputs:
++    curriculum: Curriculum
++    seq_run_dir: Path
++    stage0: Path
++    stage1: Path
++    t1_bases: Path
++    seed: int
++
++    @property
++    def seq_run_id(self) -> str:
++        return self.seq_run_dir.name
++
++
++def default_inputs(
++    curriculum: Curriculum, seed: int = 0, results_root: Path | None = None
++) -> PilotInputs:
++    from flowcl.experiments.gate2 import bases_path
++    from flowcl.train.continual import continual_run_id
++
++    root = Path(results_root) if results_root else repo_root() / "results"
++    run_id = continual_run_id("seq_ft", curriculum.name, seed)
++    run_dir = root / run_id
++    return PilotInputs(
++        curriculum=curriculum,
++        seq_run_dir=run_dir,
++        stage0=run_dir / "checkpoints" / "stage0.pt",
++        stage1=run_dir / "checkpoints" / "stage1.pt",
++        t1_bases=bases_path(run_id, 0, root),
++        seed=seed,
++    )
++
++
++def load_recipe(seq_run_dir: Path) -> tuple[TrainConfig, dict]:
++    """The Gate 1 train/eval recipe, read from that run's own ``config.yaml``."""
++    cfg = OmegaConf.to_container(OmegaConf.load(Path(seq_run_dir) / "config.yaml"), resolve=True)
++    train = TrainConfig(**cfg["train"])
++    return train, dict(cfg["eval"])
++
++
++def pilot_run_id(arm: str, curriculum: str, seed: int, sanity: bool = False) -> str:
++    return f"{curriculum}__{arm}_pilot{'_sanity' if sanity else ''}__seed{seed}"
++
++
++# ---- pre-registered criteria ---------------------------------------------------
++
++
++def criteria_thresholds(
++    object_reference: float, spatial_reference: float, criteria: dict
++) -> dict:
++    """``reference − margin`` for each task, asserted against the pre-registered values."""
++    margin = criteria["margin_pp"] / 100.0
++    object_min = round(object_reference - margin, 6)
++    spatial_min = round(spatial_reference - margin, 6)
++    expected = (criteria["expected_object_min"], criteria["expected_spatial_min"])
++    if not (math.isclose(object_min, expected[0]) and math.isclose(spatial_min, expected[1])):
++        raise ValueError(
++            f"thresholds from the Gate 1 artifacts ({object_min}, {spatial_min}) differ from "
++            f"the pre-registered ({expected[0]}, {expected[1]}); the references changed"
++        )
++    return {
++        "margin_pp": criteria["margin_pp"],
++        "object_reference": object_reference,
++        "spatial_reference": spatial_reference,
++        "object_min": object_min,
++        "spatial_min": spatial_min,
++    }
++
++
++OUTCOMES = {
++    (True, True): "hard projection is viable",
++    (False, True): "protection works, plasticity fails",
++    (True, False): "plasticity works, protection fails",
++    (False, False): "method or optimization failure",
++}
++
++
++def classify(object_estimate: Estimate, spatial_estimate: Estimate, thresholds: dict) -> dict:
++    """The pre-registered four-way outcome. Point estimates decide; CIs flag borderline."""
++    obj_ok = object_estimate.value >= thresholds["object_min"]
++    spa_ok = spatial_estimate.value >= thresholds["spatial_min"]
++
++    def straddles(est: Estimate, cut: float) -> bool:
++        return est.low < cut <= est.high
++
++    return {
++        "outcome": OUTCOMES[(obj_ok, spa_ok)],
++        "object_acceptable": obj_ok,
++        "spatial_acceptable": spa_ok,
++        "object_borderline": straddles(object_estimate, thresholds["object_min"]),
++        "spatial_borderline": straddles(spatial_estimate, thresholds["spatial_min"]),
++    }
++
++
++def _estimate_dict(est: Estimate) -> dict:
++    return {"value": est.value, "low": est.low, "high": est.high, "n": est.n,
++            "formatted": est.format_pp()}
++
++
++def paired(a: list, b: list, bootstrap: dict) -> dict:
++    est = paired_difference_ci(
++        a, b,
++        seed=bootstrap["seed"],
++        n_bootstrap=bootstrap["n_resamples"],
++        confidence=bootstrap["confidence"],
++    )
++    return {"diff": est.value, "low": est.low, "high": est.high, "n": est.n}
++
++
++# ---- measurements --------------------------------------------------------------
++
++
++def _generators(seed_tags: dict, task_key: str) -> dict[str, torch.Generator]:
++    return {
++        role: torch.Generator(device="cpu").manual_seed(derive_seed(tag, task_key, 0))
++        for role, tag in seed_tags.items()
++    }
++
++
++@torch.no_grad()
++def probe_loss(policy, dataset, probe: dict, device) -> float:
++    """Masked flow-matching loss over fixed batches, weighted by valid elements.
++
++    Identical batches, ``s`` and ``A_0`` for every checkpoint (streams keyed on the probe
++    tags and the data task), fp32, eval mode — a like-for-like stability/plasticity read.
++    """
++    if len(dataset.task_ids) != 1:
++        raise ValueError(f"probe needs a single-task dataset, got {dataset.task_ids}")
++    device = torch.device(device)
++    gens = _generators(probe["seed_tags"], dataset.task_ids[0])
++    loader = build_dataloader(
++        dataset, batch_size=probe["batch_size"], num_workers=0, shuffle=True,
++        generator=gens["shuffle"],
++    )
++    policy.eval()
++    total, weight = 0.0, 0.0
++    for idx, batch in enumerate(loader):
++        if idx >= probe["n_batches"]:
++            break
++        batch = move_batch(batch, device)
++        size = batch["actions"].shape[0]
++        s = policy.s_sampler.sample(size, device, generator=gens["flow_time"])
++        noise = draw_with_generator(
++            tuple(batch["actions"].shape), device=device, generator=gens["noise"],
++            dtype=torch.float32, normal=True,
++        )
++        with torch.autocast(device_type=device.type, enabled=False):
++            loss = float(policy(batch, s=s, noise=noise)["loss"])
++        n_b = float(valid_element_count(batch["action_mask"], policy.d_action))
++        total += loss * n_b
++        weight += n_b
++    if weight == 0:
++        raise ValueError("probe saw no valid elements")
++    return total / weight
++
++
++class StepTimer:
++    """Steps/s over a synchronised window that excludes the first ``warmup`` steps."""
++
++    def __init__(self, warmup: int, device) -> None:
++        self.warmup = warmup
++        self.device = torch.device(device)
++        self.t0: float | None = None
++        self.first = 0
++        self.last = 0
++
++    def _sync(self) -> None:
++        if self.device.type == "cuda":
++            torch.cuda.synchronize(self.device)
++
++    def __call__(self, step: int, outputs) -> None:
++        if step + 1 == self.warmup:
++            self._sync()
++            self.t0 = time.perf_counter()
++            self.first = step + 1
++        self.last = step + 1
++
++    def steps_per_second(self) -> float:
++        if self.t0 is None or self.last <= self.first:
++            raise RuntimeError("timed window is empty; run more steps than the warmup")
++        self._sync()
++        return (self.last - self.first) / (time.perf_counter() - self.t0)
++
++
++def _snapshot_frozen(policy) -> dict[str, torch.Tensor]:
++    keep = set(allowlist(policy))
++    return {n: p.detach().clone() for n, p in policy.named_parameters() if n not in keep}
++
++
++def _frozen_changes(policy, snapshot: dict[str, torch.Tensor]) -> list[str]:
++    params = dict(policy.named_parameters())
++    return [n for n, before in snapshot.items() if not torch.equal(before, params[n])]
++
++
++# ---- one arm -------------------------------------------------------------------
++
++
++@dataclass
++class ArmResult:
++    arm: str
++    method_run_id: str
++    evaluation_seed_run_id: str
++    steps: int
++    losses: list[float]
++    train_wall_clock_s: float
++    steps_per_second: float
++    freeze_report: dict
++    frozen_changed: list[str]
++    probes: dict[str, float]
++    update: dict
++    displacement_norm: dict[str, float]
++    method_state: dict
++    evaluation: EvaluationReport | None = None
++    checkpoint: str | None = None
++
++    def mean_first(self, n: int = 50) -> float:
++        return statistics.fmean(self.losses[:n])
++
++    def mean_last(self, n: int = 50) -> float:
++        return statistics.fmean(self.losses[-n:])
++
++    def summary(self, eps: float) -> dict:
++        out = {
++            "arm": self.arm,
++            "method_run_id": self.method_run_id,
++            "evaluation_seed_run_id": self.evaluation_seed_run_id,
++            "checkpoint": self.checkpoint,
++            "train": {
++                "steps": self.steps,
++                "final_loss": self.losses[-1],
++                "mean_first_50_loss": self.mean_first(),
++                "mean_last_50_loss": self.mean_last(),
++                "wall_clock_s": self.train_wall_clock_s,
++                "steps_per_second": self.steps_per_second,
++                "extrapolated_30000_steps_min": 30000 / self.steps_per_second / 60,
++            },
++            "freeze": self.freeze_report,
++            "frozen_changed": self.frozen_changed,
++            "probes": self.probes,
++            "update_c_global": self.update["c_global"][str(eps)],
++            "action_in_displacement": self.displacement_norm["flow_head.action_in"],
++            "registry_layers_not_moved": sorted(
++                n for n, v in self.displacement_norm.items() if v == 0.0
++            ),
++            "method": _method_summary(self.method_state),
++        }
++        if self.evaluation is not None:
++            out["evaluation"] = {
++                t.task_key: {**_estimate_dict(t.estimate), "successes": t.successes}
++                for t in self.evaluation.tasks
++            }
++        return out
++
++
++def _method_summary(state: dict) -> dict:
++    """Compact view of the GPM logs (full logs stay in the checkpoint and gpm_logs.json)."""
++    if state.get("name") != "gpm":
++        return {"name": state.get("name")}
++
++    def half_medians(log: dict) -> dict:
++        out = {}
++        for step, per_layer in log.items():
++            row = {}
++            for half, prefix in (("trunk", "trunk."), ("decoder", "flow_head.")):
++                vals = [v for n, v in per_layer.items() if n.startswith(prefix) and not math.isnan(v)]
++                row[half] = statistics.median(vals) if vals else None
++            out[step] = row
++        return out
++
++    residuals = state["residuals"]
++    worst = max(residuals.items(), key=lambda kv: kv[1]["max_residual_over_bound"]) if residuals else None
++    return {
++        "display_name": state["display_name"],
++        "config": state["config"],
++        "stored_mb": state["stored_mb"],
++        "memory_extended": state["memory_extended"],
++        "gradient_c_median_by_half": half_medians(state["gradient_c"]),
++        "update_c_median_by_half": half_medians(state["update_c"]),
++        "worst_residual": {"layer": worst[0], **worst[1]} if worst else None,
++    }
++
++
++def run_arm(
++    arm: str,
++    inputs: PilotInputs,
++    datasets: dict,
++    method_cfg: dict,
++    train_cfg: TrainConfig,
++    eval_cfg,
++    bootstrap: dict,
++    pilot: PilotConfig,
++    device: str,
++    steps: int,
++    evaluate: bool,
++    sanity: bool,
++    results_root: Path | None = None,
++) -> ArmResult:
++    """Train one arm from the T1 checkpoint on T2 and measure it."""
++    if arm not in ARMS:
++        raise ValueError(f"unknown arm {arm!r}")
++    curriculum = inputs.curriculum
++    spatial_key, object_key = curriculum.task_keys[0], curriculum.task_keys[1]
++
++    loaded = load_checkpoint(inputs.stage0, device=device)
++    bases, meta = load_bases(inputs.t1_bases)
++    eps = method_cfg["eps"]
++    check_provenance(loaded, bases, meta, [eps])
++    policy = loaded.policy
++    stage0_state = loaded.payload["state_dict"]
++
++    frozen_before = _snapshot_frozen(policy)
++    freeze_report = freeze_to_allowlist(policy)
++    print(
++        f"[flowcl] {arm}: trainable {freeze_report['trainable_params']:,} params in "
++        f"{freeze_report['trainable_tensors']} registry weights; froze "
++        f"{freeze_report['newly_frozen_params']:,} params "
++        f"({len(freeze_report['newly_frozen'])} tensors)",
++        flush=True,
++    )
++
++    method_run_id = pilot_run_id(arm, curriculum.name, inputs.seed, sanity)
++    run = create_run(
++        run_id=method_run_id,
++        cfg={
++            "run_id": method_run_id,
++            "arm": arm,
++            "pilot": "gpm_feasibility",
++            "evaluation_seed_run_id": inputs.seq_run_id,
++            "start_checkpoint": str(inputs.stage0),
++            "t1_bases": str(inputs.t1_bases),
++            "task_key": object_key,
++            "method": {"name": "gpm", **method_cfg} if arm == "gpm_projected_adam" else {"name": "seq_ft"},
++            "train": {**vars(train_cfg), "steps": steps},
++            "freeze": {k: v for k, v in freeze_report.items() if k != "newly_frozen"},
++        },
++        seed=inputs.seed,
++        results_root=results_root,
++        exist_ok=sanity,
++    )
++
++    if arm == "gpm_projected_adam":
++        method = GPM(**method_cfg)
++        method.set_memory(bases)
++    else:
++        method = SeqFT()
++
++    # seq_ft stage 1's exact stream: same data order, s and A_0 (up to GPU nondeterminism).
++    generator = torch.Generator(device="cpu").manual_seed(
++        derive_seed(inputs.seq_run_id, object_key, 1)
++    )
++    timer = StepTimer(pilot.timing_warmup_steps, device)
++    cfg = dataclasses.replace(train_cfg, steps=steps, device=device)
++    log = train_one_task(
++        policy, datasets[object_key], cfg, method=method, task_idx=1,
++        generator=generator, on_step=timer,
++    )
++    rate = timer.steps_per_second()
++    bad = [i for i, v in enumerate(log.losses) if not math.isfinite(v)]
++    if bad:
++        raise RuntimeError(f"{arm}: non-finite training loss at steps {bad[:10]}")
++    (run.path / "losses.json").write_text(json.dumps(log.losses) + "\n")
++
++    frozen_changed = _frozen_changes(policy, frozen_before)
++    del frozen_before
++    state = {k: v.detach().cpu() for k, v in policy.state_dict().items()}
++    update = update_interference(stage0_state, state, bases, [eps])
++    displacement = {n: v["delta_norm"] for n, v in update["per_layer"].items()}
++
++    method_state = method.state_dict()
++    if arm == "gpm_projected_adam":
++        (run.path / "gpm_logs.json").write_text(json.dumps(method_state, indent=2) + "\n")
++    checkpoint = save_checkpoint(
++        run.subdir("checkpoints") / "stage1.pt",
++        policy=policy,
++        policy_config=loaded.payload["policy_config"],
++        spec=loaded.spec,
++        stats=loaded.stats,
++        run_id=method_run_id,
++        stage=1,
++        task_key=object_key,
++        extra={
++            "arm": arm,
++            "method_run_id": method_run_id,
++            "evaluation_seed_run_id": inputs.seq_run_id,
++            "start_checkpoint": str(inputs.stage0),
++            "method_state": method_state,
++            "freeze_report": freeze_report,
++            "final_loss": log.final_loss,
++        },
++    )
++
++    probes = {
++        key: probe_loss(policy, datasets[key], pilot.probe, device)
++        for key in (spatial_key, object_key)
++    }
++
++    evaluation = None
++    if evaluate:
++        refs = [curriculum.refs[i] for i in pilot.eval_tasks]
++        evaluation = evaluate_tasks(
++            policy, refs, loaded.spec, loaded.stats,
++            run_id=inputs.seq_run_id,  # the seed namespace, see module docstring
++            cfg=eval_cfg, bootstrap=bootstrap, stage=1,
++        )
++        payload = {
++            "method_run_id": method_run_id,
++            "evaluation_seed_run_id": inputs.seq_run_id,
++            "note": "run_id below is the rollout seed namespace (seq_ft's), not this run",
++            **evaluation.as_dict(),
++        }
++        (run.subdir("eval") / "stage1.json").write_text(json.dumps(payload, indent=2) + "\n")
++
++    result = ArmResult(
++        arm=arm,
++        method_run_id=method_run_id,
++        evaluation_seed_run_id=inputs.seq_run_id,
++        steps=steps,
++        losses=log.losses,
++        train_wall_clock_s=log.wall_clock_s,
++        steps_per_second=rate,
++        freeze_report=freeze_report,
++        frozen_changed=frozen_changed,
++        probes=probes,
++        update=update,
++        displacement_norm=displacement,
++        method_state=method_state,
++        evaluation=evaluation,
++        checkpoint=str(checkpoint),
++    )
++    (run.path / "pilot.json").write_text(json.dumps(result.summary(eps), indent=2) + "\n")
++    del policy, loaded
++    if torch.cuda.is_available():
++        torch.cuda.empty_cache()
++    return result
++
++
++def time_arm(arm, inputs, datasets, method_cfg, train_cfg, pilot, device, steps) -> float:
++    """Steps/s for a short run of ``arm`` (no registry, no artifacts): overhead timing."""
++    loaded = load_checkpoint(inputs.stage0, device=device)
++    bases, meta = load_bases(inputs.t1_bases)
++    check_provenance(loaded, bases, meta, [method_cfg["eps"]])
++    freeze_to_allowlist(loaded.policy)
++    if arm == "gpm_projected_adam":
++        method = GPM(**method_cfg)
++        method.set_memory(bases)
++    else:
++        method = SeqFT()
++    object_key = inputs.curriculum.task_keys[1]
++    timer = StepTimer(pilot.timing_warmup_steps, device)
++    train_one_task(
++        loaded.policy, datasets[object_key],
++        dataclasses.replace(train_cfg, steps=steps, device=device, log_every=0),
++        method=method, task_idx=1,
++        generator=torch.Generator(device="cpu").manual_seed(
++            derive_seed(inputs.seq_run_id, object_key, 1)
++        ),
++        on_step=timer,
++    )
++    rate = timer.steps_per_second()
++    del loaded
++    if torch.cuda.is_available():
++        torch.cuda.empty_cache()
++    return rate
++
++
++# ---- the pilot -----------------------------------------------------------------
++
++
++def _reference_measurements(inputs, datasets, pilot, device, eps, bases) -> dict:
++    spatial_key, object_key = inputs.curriculum.task_keys[:2]
++    out = {}
++    for label, path in (("stage0", inputs.stage0), ("seq_ft_stage1", inputs.stage1)):
++        loaded = load_checkpoint(path, device=device)
++        out[label] = {
++            "checkpoint": str(path),
++            "probes": {
++                k: probe_loss(loaded.policy, datasets[k], pilot.probe, device)
++                for k in (spatial_key, object_key)
++            },
++        }
++        if label == "seq_ft_stage1":
++            stage0 = torch.load(inputs.stage0, map_location="cpu", weights_only=False)
++            state = {k: v.detach().cpu() for k, v in loaded.policy.state_dict().items()}
++            out[label]["update_c_global"] = update_interference(
++                stage0["state_dict"], state, bases, [eps]
++            )["c_global"][str(eps)]
++            del stage0
++        del loaded
++        if torch.cuda.is_available():
++            torch.cuda.empty_cache()
++    return out
++
++
++def run_gpm_pilot(
++    inputs: PilotInputs,
++    pilot: PilotConfig,
++    method_cfg: dict,
++    device: str = "cuda",
++    sanity: bool = False,
++    arms: tuple[str, ...] | None = None,
++    dataset_dir: Path | None = None,
++    results_root: Path | None = None,
++    out_dir: Path | None = None,
++) -> dict:
++    """Run the pilot (or its sanity check) and write the combined report."""
++    from flowcl.data.tasks import TaskRef
++    from flowcl.train.pipeline import build_dataset
++
++    for path in (inputs.stage0, inputs.stage1, inputs.t1_bases, inputs.seq_run_dir / "config.yaml"):
++        if not Path(path).is_file():
++            raise FileNotFoundError(f"pilot input missing: {path} (run Gates 1 and 2 first)")
++
++    train_cfg, eval_payload = load_recipe(inputs.seq_run_dir)
++    eval_cfg = eval_config_from_dict(eval_payload)
++    bootstrap = OmegaConf.to_container(
++        OmegaConf.load(repo_root() / "configs" / "eval" / "libero_eval.yaml"), resolve=True
++    )["bootstrap"]
++    eps = method_cfg["eps"]
++    spatial_key, object_key = inputs.curriculum.task_keys[:2]
++
++    eval0 = EvaluationReport.load(inputs.seq_run_dir / "eval" / "stage0.json").by_task()
++    eval1 = EvaluationReport.load(inputs.seq_run_dir / "eval" / "stage1.json").by_task()
++    thresholds = criteria_thresholds(
++        eval1[object_key].estimate.value, eval0[spatial_key].estimate.value, pilot.criteria
++    )
++
++    stats_ckpt = load_checkpoint(inputs.stage0, device="cpu")
++    datasets = {
++        key: build_dataset([TaskRef.from_key(key)], stats_ckpt.spec, stats_ckpt.stats,
++                           dataset_dir=dataset_dir)
++        for key in (spatial_key, object_key)
++    }
++    del stats_ckpt
++    bases, _ = load_bases(inputs.t1_bases)
++    references = _reference_measurements(inputs, datasets, pilot, device, eps, bases)
++    ref_log = json.loads((inputs.seq_run_dir / "result.json").read_text())["stages"][1]
++    references["seq_ft_stage1"]["train"] = {
++        "final_loss": ref_log["final_loss"],
++        "mean_last_50_loss": ref_log["mean_last_50_loss"],
++        "wall_clock_s": ref_log["train_wall_clock_s"],
++        "steps_per_second": ref_log["steps"] / ref_log["train_wall_clock_s"],
++    }
++    references["seq_ft_stage1"]["evaluation"] = {
++        spatial_key: _estimate_dict(eval1[spatial_key].estimate),
++        object_key: _estimate_dict(eval1[object_key].estimate),
++    }
++    references["stage0"]["evaluation"] = {spatial_key: _estimate_dict(eval0[spatial_key].estimate)}
++
++    report: dict = {
++        "pilot": "gpm_feasibility" + ("_sanity" if sanity else ""),
++        "recorded": datetime.now(timezone.utc).isoformat(),
++        "analysis_git_sha": git_sha(),
++        "evaluation_seed_run_id": inputs.seq_run_id,
++        "inputs": {k: str(getattr(inputs, k)) for k in ("stage0", "stage1", "t1_bases")},
++        "recipe": {**vars(train_cfg)},
++        "method_config": method_cfg,
++        "criteria": thresholds,
++        "references": references,
++        "arms": {},
++    }
++
++    results: dict[str, ArmResult] = {}
++    if sanity:
++        res = run_arm("gpm_projected_adam", inputs, datasets, method_cfg, train_cfg, eval_cfg,
++                      bootstrap, pilot, device, pilot.sanity_steps, evaluate=False, sanity=True,
++                      results_root=results_root)
++        results[res.arm] = res
++        freeze_rate = time_arm("freeze_only", inputs, datasets, method_cfg, train_cfg, pilot,
++                               device, pilot.freeze_only_timing_steps)
++        report["timing"] = {
++            "gpm_projected_adam_steps_per_second": res.steps_per_second,
++            "freeze_only_steps_per_second": freeze_rate,
++            "gate1_seq_ft_steps_per_second": references["seq_ft_stage1"]["train"]["steps_per_second"],
++            "extrapolated_30000_steps_min": {
++                "gpm_projected_adam": 30000 / res.steps_per_second / 60,
++                "freeze_only": 30000 / freeze_rate / 60,
++            },
++            "projection_overhead": freeze_rate / res.steps_per_second - 1,
++        }
++        report["sanity_checks"] = sanity_checks(res, references, object_key)
++    else:
++        for arm in arms or pilot.arms:
++            results[arm] = run_arm(arm, inputs, datasets, method_cfg, train_cfg, eval_cfg,
++                                   bootstrap, pilot, device, train_cfg.steps, evaluate=True,
++                                   sanity=False, results_root=results_root)
++        report.update(compare_arms(results, eval0, eval1, spatial_key, object_key,
++                                   thresholds, bootstrap))
++
++    report["arms"] = {arm: r.summary(eps) for arm, r in results.items()}
++    out_dir = Path(out_dir) if out_dir else repo_root() / "results" / "gpm_pilot"
++    out = out_dir / ("sanity.json" if sanity else "pilot.json")
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2) + "\n")
++    print_report(report, sanity)
++    print(f"[flowcl] wrote {out}", flush=True)
++    if sanity:
++        failed = [k for k, v in report["sanity_checks"].items() if not v["passed"]]
++        if failed:
++            raise RuntimeError(f"sanity checks failed: {failed} (details in {out})")
++    return report
++
++
++def sanity_checks(res: ArmResult, references: dict, object_key: str) -> dict:
++    """The asserted sanity conditions (the residual bound is enforced inside GPM itself)."""
++    full_rank = {n: r["full_rank"] for n, r in res.method_state["residuals"].items()}
++    # A layer must move if and only if its basis leaves free directions.
++    wrong = sorted(
++        n for n, v in res.displacement_norm.items() if (v > 0) == full_rank[n]
++    )
++    worst = _method_summary(res.method_state)["worst_residual"]
++    return {
++        "object_loss_decreases": {
++            "passed": res.mean_last() < res.mean_first()
++            and res.probes[object_key] < references["stage0"]["probes"][object_key],
++            "first_50": res.mean_first(),
++            "last_50": res.mean_last(),
++            "probe_object": res.probes[object_key],
++            "probe_object_stage0": references["stage0"]["probes"][object_key],
++        },
++        "updates_orthogonal": {
++            "passed": worst is not None and worst["max_residual_over_bound"] <= 1.0,
++            "worst": worst,
++        },
++        "parameters_move": {
++            "passed": not wrong,
++            "moved_iff_not_full_rank_violations": wrong,
++            "full_rank_layers": sorted(n for n, f in full_rank.items() if f),
++        },
++        "action_in_frozen": {
++            "passed": full_rank["flow_head.action_in"]
++            and res.displacement_norm["flow_head.action_in"] == 0.0,
++            "displacement": res.displacement_norm["flow_head.action_in"],
++        },
++        "frozen_untouched": {"passed": not res.frozen_changed, "changed": res.frozen_changed},
++        "finite": {"passed": all(math.isfinite(v) for v in res.losses)},
++    }
++
++
++def compare_arms(results, eval0, eval1, spatial_key, object_key, thresholds, bootstrap) -> dict:
++    """Pre-registered outcome plus the paired differences, projection effect first."""
++    out: dict = {"paired_differences": {}, "outcomes": {}}
++    succ = {
++        arm: {t.task_key: t.successes for t in r.evaluation.tasks} for arm, r in results.items()
++    }
++    est = {
++        arm: {t.task_key: t.estimate for t in r.evaluation.tasks} for arm, r in results.items()
++    }
++    if {"gpm_projected_adam", "freeze_only"} <= set(results):
++        out["paired_differences"]["gpm_projected_adam_minus_freeze_only"] = {
++            key: paired(succ["gpm_projected_adam"][key], succ["freeze_only"][key], bootstrap)
++            for key in (spatial_key, object_key)
++        }
++    for arm in results:
++        out["paired_differences"][f"{arm}_minus_seq_ft_stage1"] = {
++            key: paired(succ[arm][key], eval1[key].successes, bootstrap)
++            for key in (spatial_key, object_key)
++        }
++        out["paired_differences"][f"{arm}_minus_stage0"] = {
++            spatial_key: paired(succ[arm][spatial_key], eval0[spatial_key].successes, bootstrap)
++        }
++        out["outcomes"][arm] = {
++            "decides": arm == "gpm_projected_adam",
++            **classify(est[arm][object_key], est[arm][spatial_key], thresholds),
++        }
++    return out
++
++
++def print_report(report: dict, sanity: bool) -> None:
++    refs = report["references"]
++    print("\n[flowcl] GPM pilot" + (" (sanity)" if sanity else ""), flush=True)
++    for arm, s in report["arms"].items():
++        t = s["train"]
++        print(
++            f"  {arm}: steps {t['steps']}, loss first-50 {t['mean_first_50_loss']:.5f} -> "
++            f"last-50 {t['mean_last_50_loss']:.5f}, {t['steps_per_second']:.2f} steps/s "
++            f"(30k ≈ {t['extrapolated_30000_steps_min']:.0f} min)",
++            flush=True,
++        )
++        print(
++            "    probes " + ", ".join(f"{k.split('/')[0]} {v:.5f}" for k, v in s["probes"].items())
++            + f"; dW c_global {s['update_c_global']}",
++            flush=True,
++        )
++        worst = s["method"].get("worst_residual")
++        if worst:
++            print(f"    worst residual/bound {worst['max_residual_over_bound']:.3e} ({worst['layer']})")
++        if "evaluation" in s:
++            print("    rollouts " + ", ".join(
++                f"{k.split('/')[0]} {v['formatted']}" for k, v in s["evaluation"].items()))
++    for label in ("stage0", "seq_ft_stage1"):
++        print(
++            f"  reference {label} probes "
++            + ", ".join(f"{k.split('/')[0]} {v:.5f}" for k, v in refs[label]["probes"].items()),
++            flush=True,
++        )
++    if sanity:
++        print(f"  timing: {report['timing']}", flush=True)
++        for name, check in report["sanity_checks"].items():
++            print(f"  [{'PASS' if check['passed'] else 'FAIL'}] {name}", flush=True)
++    else:
++        for arm, o in report["outcomes"].items():
++            print(f"  outcome {arm}{' (decides)' if o['decides'] else ''}: {o['outcome']} "
++                  f"(borderline object {o['object_borderline']}, spatial {o['spatial_borderline']})")
++        for name, diffs in report["paired_differences"].items():
++            print(f"  {name}: " + ", ".join(
++                f"{k.split('/')[0]} {100 * d['diff']:+.1f} pp [{100 * d['low']:+.1f}, {100 * d['high']:+.1f}]"
++                for k, d in diffs.items()))
+diff --git a/flowcl/methods/all.py b/flowcl/methods/all.py
+index 12002db..9135b76 100644
+--- a/flowcl/methods/all.py
++++ b/flowcl/methods/all.py
+@@ -4,9 +4,11 @@ Separate from ``flowcl/methods/__init__.py`` so that importing the *interface* d
+ drag in every implementation — which matters because later methods pull in optimiser
+ and subspace machinery that the interface itself must not depend on.
+ 
+-Methods appear in the §6 implementation order.
++Methods appear in the §6 implementation order. ``gpm`` is here ahead of its build-order
++slot for the Gate 3 feasibility pilot only.
+ """
+ 
++from flowcl.methods.gpm import GPM
+ from flowcl.methods.seq_ft import SeqFT
+ 
+-__all__ = ["SeqFT"]
++__all__ = ["SeqFT", "GPM"]
+diff --git a/flowcl/methods/base.py b/flowcl/methods/base.py
+index 0601f29..e1a5db7 100644
+--- a/flowcl/methods/base.py
++++ b/flowcl/methods/base.py
+@@ -10,7 +10,7 @@ Spec §6 gives the interface verbatim::
+         def on_task_end(self, task_idx, policy, dataset) -> None: ...    # basis/Fisher update
+         def state_dict(self) -> dict: ...
+ 
+-Two deliberate additions, both documented here because §11 requires deviations to be
++Three deliberate additions, all documented here because §11 requires deviations to be
+ written down rather than absorbed:
+ 
+ 1. ``modify_loss`` takes an extra keyword-only ``outputs``. ConSFT scales the loss by a
+@@ -20,6 +20,14 @@ written down rather than absorbed:
+ 2. ``build_batch`` may return ``None`` to mean "use the runner's own dataloader". Only
+    ``replay`` needs to own sampling, and forcing every other method to reimplement
+    batching would duplicate the collate and worker setup five times.
++3. ``after_step(policy, step_meta)`` runs once per optimiser step, *after*
++   ``optimizer.step()``. §7.3 projects gradients before ``step()``, but with Adam that
++   does not make the *applied* update orthogonal: its per-coordinate scaling and AdamW's
++   decoupled weight decay move weights back into protected directions (Gate 3 §6.2).
++   Projecting the realised update needs a hook after the step. Per-step order in
++   :func:`flowcl.train.trainer.train_one_task`::
++
++       backward -> unscale_ -> modify_gradients -> clip -> step -> update -> after_step
+ 
+ :class:`BaseMethod` implements every hook as a no-op, so a method subclasses it and
+ overrides only what it changes. That is also why ``seq_ft`` is a real class with no
+@@ -66,6 +74,9 @@ class ContinualMethod(Protocol):
+     def modify_gradients(self, policy: FlowPolicy, batch_meta: dict) -> None:
+         """Rewrite ``.grad`` in place, after ``backward()`` and before ``step()``."""
+ 
++    def after_step(self, policy: FlowPolicy, step_meta: dict) -> None:
++        """Called once after each ``optimizer.step()`` (documented addition 3)."""
++
+     def on_task_end(
+         self, task_idx: int, policy: FlowPolicy, dataset: ChunkedActionDataset
+     ) -> None:
+@@ -109,6 +120,9 @@ class BaseMethod:
+     def modify_gradients(self, policy, batch_meta) -> None:
+         return None
+ 
++    def after_step(self, policy, step_meta) -> None:
++        return None
++
+     def on_task_end(self, task_idx, policy, dataset) -> None:
+         return None
+ 
+diff --git a/flowcl/methods/gpm.py b/flowcl/methods/gpm.py
+new file mode 100644
+index 0000000..0dee347
+--- /dev/null
++++ b/flowcl/methods/gpm.py
+@@ -0,0 +1,322 @@
++"""Gradient Projection Memory with AdamW-safe update projection (§6 item 5, §7.3, §7.4).
++
++Source: Saha, Garg & Roy, "Gradient Projection Memory for Continual Learning", ICLR 2021
++(arXiv:2103.09762). For a fully connected layer the new task's gradient is projected onto
++the orthogonal complement of the stored input basis (their Eq. 6)::
++
++    ∇W L ← ∇W L − (∇W L) M M^T
++
++**Deviation, and the reported name.** The paper trains with plain SGD, where projecting
++the gradient *is* projecting the update. This codebase trains with AdamW (the Gate 1
++recipe). Adam's per-coordinate scaling does not preserve subspaces and AdamW's decoupled
++weight decay shrinks weights in every direction, so a projected gradient does not give an
++orthogonal *applied* update (Gate 3 §6.2). This method therefore projects twice:
++
++1. ``modify_gradients`` — ``G ← G P`` with ``P = I − M M^T``, so Adam's moments only see the
++   free-subspace gradient;
++2. ``after_step`` — the realised displacement ``ΔW = W − W_ref`` is replaced by ``ΔW P``, so
++   the weights never move in protected directions whatever Adam or weight decay did.
++
++Because that is stricter than canonical GPM, the method reports itself as
++``gpm_projected_adam`` (``projection: gradient_and_update``), never as plain "GPM". A
++gradient-only ablation would be ``gpm_grad_only``; it is not implemented yet.
++
++Details inferred rather than taken from the paper (§11):
++
++* the memory is the §7.2 basis from :mod:`flowcl.analysis.subspace`, primary
++  (gradient-reachable) view, at one ``eps`` for every layer (the paper tunes per layer);
++* projection acts on :meth:`~flowcl.models.policy.FlowPolicy.projectable_parameters` only,
++  and *every* other parameter is frozen (:func:`freeze_to_allowlist`): §7.4's list plus the
++  encoder projections, context queries and positional embedding that §7.4 does not name;
++* the incremental memory update (paper Eq. 8–9, §7.2) is not implemented yet
++  (``update_memory`` must be false); the pilot uses a fixed Task-1 memory.
++"""
++
++from __future__ import annotations
++
++import math
++
++import torch
++
++from flowcl.analysis.subspace import SubspaceBasis
++from flowcl.methods.base import BaseMethod, register_method
++
++PROJECTION_NAMES = {"gradient_and_update": "gpm_projected_adam"}
++
++
++# ---- §7.4 allowlist -----------------------------------------------------------
++
++
++def allowlist(policy) -> tuple[str, ...]:
++    """Parameters allowed to train in projection experiments: registry weights only."""
++    return tuple(policy.projectable_parameters())
++
++
++def freeze_to_allowlist(policy) -> dict:
++    """Freeze every parameter outside :func:`allowlist`; return what was done.
++
++    Must run before the optimiser is built, so frozen tensors never enter AdamW (and so
++    never receive weight decay).
++    """
++    allowed = set(allowlist(policy))
++    params = dict(policy.named_parameters())
++    missing = sorted(allowed - set(params))
++    if missing:
++        raise RuntimeError(f"allowlisted parameters do not exist: {missing}")
++    newly_frozen = []
++    for name, param in params.items():
++        if name in allowed:
++            param.requires_grad_(True)
++        elif param.requires_grad:
++            param.requires_grad_(False)
++            newly_frozen.append(name)
++    assert_allowlist(policy)
++    return {
++        "trainable_tensors": len(allowed),
++        "trainable_params": sum(params[n].numel() for n in allowed),
++        "newly_frozen": newly_frozen,
++        "newly_frozen_params": sum(params[n].numel() for n in newly_frozen),
++    }
++
++
++def assert_allowlist(policy) -> None:
++    """Raise unless the trainable set is exactly :func:`allowlist` (§7.4)."""
++    allowed = set(allowlist(policy))
++    trainable = {n for n, p in policy.named_parameters() if p.requires_grad}
++    extra, absent = sorted(trainable - allowed), sorted(allowed - trainable)
++    if extra or absent:
++        raise RuntimeError(
++            "§7.4 projection protocol violated.\n"
++            f"  trainable but not allowlisted (forgetting would leak through these): {extra}\n"
++            f"  allowlisted but frozen: {absent}"
++        )
++
++
++# ---- the method ---------------------------------------------------------------
++
++
++class _ProjectedLayer:
++    """Per-layer runtime state: projector, basis, reference weights, tolerances."""
++
++    def __init__(self, name: str, weight: torch.nn.Parameter, basis: SubspaceBasis, eps: float, weight_atol: float):
++        d_in = weight.shape[1]
++        if basis.d_in != d_in:
++            raise ValueError(f"{name}: basis d_in {basis.d_in} != weight d_in {d_in}")
++        k = basis.ranks[eps]
++        M = basis.vectors[:, :k].to(torch.float64)
++        device = weight.device
++        self.name = name
++        self.weight = weight
++        self.k = k
++        self.full_rank = k == d_in
++        if self.full_rank:
++            # Exactly zero, not a numerically built near-zero matrix: nothing may move.
++            self.P = torch.zeros(d_in, d_in, dtype=torch.float32, device=device)
++        else:
++            eye = torch.eye(d_in, dtype=torch.float64)
++            self.P = (eye - M @ M.T).to(device=device, dtype=torch.float32)
++        self.M = M.to(device=device, dtype=torch.float32)
++        self.W_ref = weight.detach().clone()
++        self.atol = weight_atol * float(self.W_ref.norm())
++        self.max_residual = 0.0
++        self.max_residual_ratio = 0.0  # ||D M|| / (atol + rtol ||D||); must stay <= 1
++        self.displacement = torch.zeros_like(self.W_ref)  # cumulative, for reporting
++
++
++@register_method
++class GPM(BaseMethod):
++    """Hard projection against a fixed input-subspace memory; see the module docstring."""
++
++    name = "gpm"
++
++    def __init__(
++        self,
++        eps: float = 0.95,
++        projection: str = "gradient_and_update",
++        residual_rtol: float = 1e-3,
++        residual_weight_atol: float = 1e-6,
++        log_interval: int = 100,
++        update_memory: bool = False,
++    ) -> None:
++        super().__init__()
++        if projection not in PROJECTION_NAMES:
++            raise ValueError(
++                f"projection {projection!r} not implemented; available "
++                f"{sorted(PROJECTION_NAMES)}"
++            )
++        if not 0.0 < eps <= 1.0:
++            raise ValueError(f"eps must lie in (0, 1], got {eps}")
++        if log_interval < 1:
++            raise ValueError(f"log_interval must be >= 1, got {log_interval}")
++        self.eps = float(eps)
++        self.projection = projection
++        self.residual_rtol = float(residual_rtol)
++        self.residual_weight_atol = float(residual_weight_atol)
++        self.log_interval = int(log_interval)
++        self.update_memory = bool(update_memory)
++
++        self._memory: dict[str, SubspaceBasis] = {}
++        self._layers: list[_ProjectedLayer] = []
++        self._active = False
++        self.memory_extended: bool | None = None
++        # Logged every log_interval steps: layer -> c_l of the raw gradient / of Adam's step.
++        self.gradient_c: dict[int, dict[str, float]] = {}
++        self.update_c: dict[int, dict[str, float]] = {}
++        self.residuals: dict[str, dict] = {}
++        self.cumulative_displacement_norm: dict[str, float] = {}
++
++    @property
++    def display_name(self) -> str:
++        return PROJECTION_NAMES[self.projection]
++
++    def config(self) -> dict:
++        return {
++            "eps": self.eps,
++            "projection": self.projection,
++            "residual_rtol": self.residual_rtol,
++            "residual_weight_atol": self.residual_weight_atol,
++            "log_interval": self.log_interval,
++            "update_memory": self.update_memory,
++        }
++
++    def set_memory(self, bases: dict[str, SubspaceBasis]) -> None:
++        """Install a fixed memory (e.g. the Task-1 bases Gate 2 persisted)."""
++        lacking = sorted(n for n, b in bases.items() if self.eps not in b.ranks)
++        if lacking:
++            raise ValueError(f"bases lack eps={self.eps} for {lacking}")
++        self._memory = dict(bases)
++
++    # ---- §6 hooks --------------------------------------------------------------
++
++    def on_task_start(self, task_idx, policy, dataset) -> None:
++        if not self._memory:
++            if task_idx == 0:
++                self._active = False  # Task 1 trains unconstrained (paper Alg. 1)
++                return
++            raise RuntimeError(
++                f"GPM at task {task_idx} has no memory; call set_memory() or train task 0 first"
++            )
++        assert_allowlist(policy)
++        registry = policy.projectable_layers()
++        names = [e.name for e in registry]
++        if sorted(self._memory) != sorted(names):
++            raise ValueError(
++                "memory layers do not match the registry: missing "
++                f"{sorted(set(names) - set(self._memory))}, extra "
++                f"{sorted(set(self._memory) - set(names))}"
++            )
++        self._layers = [
++            _ProjectedLayer(
++                e.name, e.module.weight, self._memory[e.name], self.eps, self.residual_weight_atol
++            )
++            for e in registry
++        ]
++        self._active = True
++
++    def modify_gradients(self, policy, batch_meta) -> None:
++        if not self._active:
++            return
++        step = batch_meta["step"]
++        record = step % self.log_interval == 0
++        logged = {}
++        with torch.no_grad():
++            for layer in self._layers:
++                G = layer.weight.grad
++                if G is None:
++                    raise RuntimeError(f"{layer.name}: no gradient at step {step}")
++                if record:
++                    logged[layer.name] = _ratio(G, layer.M)
++                G.copy_(G @ layer.P)
++        if record:
++            self.gradient_c[step] = logged
++
++    def after_step(self, policy, step_meta) -> None:
++        if not self._active:
++            return
++        step = step_meta["step"]
++        record = step % self.log_interval == 0
++        logged = {}
++        residuals, norms, finite = [], [], []
++        with torch.no_grad():
++            for layer in self._layers:
++                W = layer.weight
++                delta = W - layer.W_ref
++                if record:
++                    logged[layer.name] = _ratio(delta, layer.M)
++                W.copy_(torch.addmm(layer.W_ref, delta, layer.P))
++                applied = W - layer.W_ref
++                residuals.append((applied @ layer.M).norm())
++                norms.append(applied.norm())
++                finite.append(torch.isfinite(W).all())
++                layer.displacement.add_(applied)
++                layer.W_ref.copy_(W)
++            # One device->host transfer per step instead of three per layer.
++            residuals = torch.stack(residuals).cpu().tolist()
++            norms = torch.stack(norms).cpu().tolist()
++            finite = torch.stack(finite).cpu().tolist()
++        for layer, residual, norm, ok in zip(self._layers, residuals, norms, finite):
++            if not ok:
++                raise RuntimeError(f"{layer.name}: non-finite weights at step {step}")
++            bound = layer.atol + self.residual_rtol * norm
++            if residual > bound:
++                raise RuntimeError(
++                    f"{layer.name}: applied update not orthogonal to the memory at step "
++                    f"{step}: ||D M|| = {residual:.3e} > {bound:.3e} (atol {layer.atol:.3e} "
++                    f"+ rtol {self.residual_rtol} * ||D|| {norm:.3e})"
++                )
++            layer.max_residual = max(layer.max_residual, residual)
++            if bound > 0:
++                layer.max_residual_ratio = max(layer.max_residual_ratio, residual / bound)
++        if record:
++            self.update_c[step] = logged
++
++    def on_task_end(self, task_idx, policy, dataset) -> None:
++        if self.update_memory:
++            raise NotImplementedError(
++                "incremental GPM memory update (paper Eq. 8-9, §7.2) arrives in build step "
++                "8; run with update_memory=false for the fixed-memory pilot"
++            )
++        self.memory_extended = False
++        for layer in self._layers:
++            self.residuals[layer.name] = {
++                "max_residual": layer.max_residual,
++                "max_residual_over_bound": layer.max_residual_ratio,
++                "atol": layer.atol,
++                "k": layer.k,
++                "full_rank": layer.full_rank,
++            }
++            self.cumulative_displacement_norm[layer.name] = float(layer.displacement.norm())
++        # Release ~0.5 GB of projectors and reference weights; the logs stay.
++        self._layers = []
++        self._active = False
++
++    # ---- reporting -------------------------------------------------------------
++
++    def stored_bytes(self) -> int:
++        """§8.2: the memory is the bases, k x d_in floats per layer (float32 in use)."""
++        return sum(b.ranks[self.eps] * b.d_in * 4 for b in self._memory.values())
++
++    def state_dict(self) -> dict:
++        return {
++            "name": self.name,
++            "display_name": self.display_name,
++            "config": self.config(),
++            "memory_layers": len(self._memory),
++            "stored_mb": self.stored_bytes() / 1e6,
++            "memory_extended": self.memory_extended,
++            "gradient_c": {str(k): v for k, v in self.gradient_c.items()},
++            "update_c": {str(k): v for k, v in self.update_c.items()},
++            "residuals": self.residuals,
++            "cumulative_displacement_norm": self.cumulative_displacement_norm,
++        }
++
++    def describe(self) -> str:
++        return f"{self.display_name} (eps {self.eps}, stores {self.stored_bytes() / 1e6:.2f} MB)"
++
++
++def _ratio(A: torch.Tensor, M: torch.Tensor) -> float:
++    """``||A M|| / ||A||`` (NaN for a zero ``A``, e.g. a skipped AMP step)."""
++    total = float(A.norm())
++    if total == 0.0:
++        return math.nan
++    return float((A @ M).norm()) / total
+diff --git a/flowcl/train/trainer.py b/flowcl/train/trainer.py
+index fbb56f2..d45f0fe 100644
+--- a/flowcl/train/trainer.py
++++ b/flowcl/train/trainer.py
+@@ -239,6 +239,10 @@ def train_one_task(
+ 
+         scaler.step(optimizer)
+         scaler.update()
++        # Documented §6 addition 3: the realised update is final only here, after Adam's
++        # per-coordinate scaling and weight decay. A skipped AMP step leaves weights as
++        # they were, so the method sees a zero update.
++        method.after_step(policy, {"step": step, "task_idx": task_idx})
+         scheduler.step()
+ 
+         mean_loss = accumulated / cfg.accumulation_steps
+diff --git a/scripts/gpm_pilot.py b/scripts/gpm_pilot.py
+new file mode 100644
+index 0000000..d6a5537
+--- /dev/null
++++ b/scripts/gpm_pilot.py
+@@ -0,0 +1,54 @@
++"""Thin CLI: the GPM feasibility pilot (T1 -> T2 from the Gate 1 stage-0 checkpoint).
++
++Spec §1: no logic in scripts/. See :mod:`flowcl.experiments.gpm_pilot`.
++
++Examples::
++
++    uv run python scripts/gpm_pilot.py --sanity
++    uv run python scripts/gpm_pilot.py --arms gpm_projected_adam freeze_only
++"""
++
++from __future__ import annotations
++
++import argparse
++from pathlib import Path
++
++from flowcl.data.curriculum import load_curriculum
++from flowcl.experiments.gpm_pilot import (
++    ARMS,
++    default_inputs,
++    load_method_config,
++    load_pilot_config,
++    run_gpm_pilot,
++)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--curriculum", default="seq_hetero")
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument(
++        "--sanity",
++        action="store_true",
++        help="Short gpm_projected_adam run with asserted checks and timing; no rollouts.",
++    )
++    parser.add_argument("--arms", nargs="+", choices=ARMS, default=None)
++    parser.add_argument("--config", type=Path, default=None)
++    parser.add_argument("--method-config", type=Path, default=None)
++    parser.add_argument("--device", default="cuda")
++    parser.add_argument("--out-dir", type=Path, default=None)
++    args = parser.parse_args()
++
++    run_gpm_pilot(
++        default_inputs(load_curriculum(args.curriculum), seed=args.seed),
++        pilot=load_pilot_config(args.config),
++        method_cfg=load_method_config(args.method_config),
++        device=args.device,
++        sanity=args.sanity,
++        arms=tuple(args.arms) if args.arms else None,
++        out_dir=args.out_dir,
++    )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/test_gate3.py b/tests/test_gate3.py
+index 073e1a0..d394da6 100644
+--- a/tests/test_gate3.py
++++ b/tests/test_gate3.py
+@@ -240,3 +240,17 @@ def test_verdict_and_report_serialise(result, setup, tmp_path):
+     assert payload["comparisons"]["control_below_t2"]["layers"] == {}
+     per_batch = payload["t2"]["layers"][0][f"c_per_batch@{cfg.default_eps}"]
+     assert len(per_batch) == result.n_batches
++
++
++def test_update_interference_records_none_for_a_layer_that_did_not_move(setup):
++    loaded, bases, _, _, _, cfg = setup
++    state = {k: v.clone() for k, v in loaded.policy.state_dict().items()}
++    moved, still = "trunk.blocks.0.attn.q_proj", "flow_head.action_in"
++    after = {k: v.clone() for k, v in state.items()}
++    after[f"{moved}.weight"] += 0.01
++    out = update_interference(
++        state, after, {moved: bases[moved], still: bases[still]}, cfg.energy_thresholds
++    )
++    assert out["per_layer"][still]["delta_norm"] == 0.0
++    assert all(v is None for v in out["per_layer"][still]["c"].values())
++    assert out["per_layer"][moved]["c"]["0.95"] is not None
+diff --git a/tests/test_gpm.py b/tests/test_gpm.py
+new file mode 100644
+index 0000000..08c0bf4
+--- /dev/null
++++ b/tests/test_gpm.py
+@@ -0,0 +1,278 @@
++"""GPM with AdamW-safe update projection, the §7.4 allowlist, and the trainer hook order."""
++
++from __future__ import annotations
++
++import dataclasses
++
++import numpy as np
++import pytest
++import torch
++import torch.nn as nn
++
++from flowcl.analysis.subspace import basis_from_gram
++from flowcl.data.config import load_embodiment_spec
++from flowcl.data.dataset import ChunkedActionDataset
++from flowcl.data.episode import Episode
++from flowcl.data.stats import compute_stats
++from flowcl.experiments.gate2 import collect_bases, load_subspace_config
++from flowcl.methods.base import BaseMethod
++from flowcl.methods.gpm import GPM, allowlist, assert_allowlist, freeze_to_allowlist
++from flowcl.methods.seq_ft import SeqFT
++from flowcl.models.build import build_policy
++from flowcl.models.policy import RegistryEntry
++from flowcl.train.checkpoint import LoadedCheckpoint
++from flowcl.train.trainer import TrainConfig, train_one_task
++
++NEG_TOL = 1e-8
++
++
++class Toy(nn.Module):
++    """A one-layer 'policy' exposing the registry interface GPM relies on."""
++
++    def __init__(self, d_in: int = 6, d_out: int = 4, seed: int = 0) -> None:
++        super().__init__()
++        torch.manual_seed(seed)
++        self.a = nn.Linear(d_in, d_out, bias=False)
++
++    def projectable_layers(self):
++        return (RegistryEntry("a", self.a, "trunk_mlp"),)
++
++    def projectable_parameters(self):
++        return ("a.weight",)
++
++
++def basis_for(d_in: int, k: int, seed: int = 0):
++    g = torch.Generator().manual_seed(seed)
++    q, _ = torch.linalg.qr(torch.randn(d_in, d_in, generator=g, dtype=torch.float64))
++    sigmas = torch.cat([torch.full((k,), 10.0), torch.full((d_in - k,), 1e-4)])
++    R = q @ torch.diag(sigmas.to(torch.float64))
++    basis = basis_from_gram(R @ R.T, "a", n_samples=d_in, thresholds=[0.95], neg_tol=NEG_TOL)
++    assert basis.ranks[0.95] == k
++    return basis, q
++
++
++def gpm_for(model, basis, **kwargs):
++    method = GPM(eps=0.95, **kwargs)
++    method.set_memory({"a": basis})
++    method.on_task_start(1, model, None)
++    return method
++
++
++def adamw_step(model, method, x, y, project_update: bool, wd: float = 0.1):
++    opt = torch.optim.AdamW(model.parameters(), lr=0.05, weight_decay=wd)
++    opt.zero_grad()
++    ((model.a(x) - y) ** 2).mean().backward()
++    method.modify_gradients(model, {"step": 0, "task_idx": 1})
++    opt.step()
++    if project_update:
++        method.after_step(model, {"step": 0, "task_idx": 1})
++
++
++def residual(D, M):
++    return float((D.double() @ M).norm())
++
++
++def test_projected_update_is_orthogonal_and_gradient_only_is_not():
++    """Regression guard for Adam/weight-decay leakage into protected directions."""
++    basis, _ = basis_for(6, 2)
++    M = basis.basis(0.95)
++    x, y = torch.randn(32, 6), torch.randn(32, 4)
++
++    leaky = Toy()
++    w0 = leaky.a.weight.detach().clone()
++    adamw_step(leaky, gpm_for(leaky, basis), x, y, project_update=False)
++    D = leaky.a.weight.detach() - w0
++    assert residual(D, M) > 1e-6 * float(w0.norm()) + 1e-3 * float(D.norm())
++
++    safe = Toy()
++    method = gpm_for(safe, basis)
++    adamw_step(safe, method, x, y, project_update=True)
++    D = safe.a.weight.detach() - w0
++    assert float(D.norm()) > 0
++    assert residual(D, M) <= 1e-6 * float(w0.norm()) + 1e-3 * float(D.norm())
++
++
++def test_gradient_projection_acts_on_the_input_dimension_of_a_square_layer():
++    """G = u v^T with v in span(M), u orthogonal to it: input-side projection gives 0."""
++    basis, q = basis_for(6, 2)
++    model = Toy(d_in=6, d_out=6)
++    method = gpm_for(model, basis)
++    u, v = q[:, 3].float(), q[:, 0].float()
++    model.a.weight.grad = torch.outer(u, v)
++    method.modify_gradients(model, {"step": 1, "task_idx": 1})
++    assert float(model.a.weight.grad.norm()) < 1e-6
++    # A transposed projection (P G) would have kept it: u is outside span(M).
++    P = torch.eye(6) - basis.basis(0.95).float() @ basis.basis(0.95).float().T
++    assert float((P @ torch.outer(u, v)).norm()) > 0.9
++
++
++def test_full_rank_basis_builds_an_exactly_zero_projector():
++    basis, _ = basis_for(4, 4)
++    model = Toy(d_in=4)
++    method = gpm_for(model, basis)
++    assert torch.count_nonzero(method._layers[0].P) == 0
++    w0 = model.a.weight.detach().clone()
++    adamw_step(model, method, torch.randn(8, 4), torch.randn(8, 4), project_update=True)
++    assert torch.equal(model.a.weight.detach(), w0)
++
++
++def test_residual_check_tolerates_zero_updates_and_catches_violations():
++    basis, _ = basis_for(6, 2)
++    model = Toy()
++    method = gpm_for(model, basis)
++    method.after_step(model, {"step": 0, "task_idx": 1})  # skipped AMP step: no change
++    method._layers[0].P = torch.eye(6)  # sabotage: nothing gets projected
++    with torch.no_grad():
++        model.a.weight.add_(0.1 * torch.randn_like(model.a.weight))
++    with pytest.raises(RuntimeError, match="not orthogonal"):
++        method.after_step(model, {"step": 1, "task_idx": 1})
++
++
++def test_name_memory_and_lifecycle_rules():
++    assert GPM().display_name == "gpm_projected_adam"
++    with pytest.raises(ValueError, match="not implemented"):
++        GPM(projection="gradient")
++    model = Toy()
++    with pytest.raises(RuntimeError, match="no memory"):
++        GPM().on_task_start(1, model, None)
++    first = GPM()
++    first.on_task_start(0, model, None)  # task 0 trains unconstrained
++    first.modify_gradients(model, {"step": 0})  # inactive: no-op, no grad needed
++
++    basis, _ = basis_for(6, 2)
++    with pytest.raises(NotImplementedError, match="step 8"):
++        gpm_for(model, basis, update_memory=True).on_task_end(1, model, None)
++    method = gpm_for(model, basis)
++    method.on_task_end(1, model, None)
++    assert method.memory_extended is False
++    assert method.residuals["a"]["k"] == 2
++    assert method.stored_bytes() == 2 * 6 * 4
++
++
++# ---- the real policy ------------------------------------------------------------
++
++
++@pytest.fixture(scope="module")
++def spec():
++    return load_embodiment_spec("libero_franka")
++
++
++def make_episode(spec, task, length, seed):
++    rng = np.random.default_rng(seed)
++    h, w = spec.observation.image_size
++    return Episode(
++        images={c: rng.integers(0, 255, (length, h, w, 3), dtype=np.uint8) for c in spec.cameras},
++        state=rng.normal(size=(length, spec.d_state)).astype(np.float32),
++        action=rng.uniform(-1, 1, size=(length, spec.d_action)).astype(np.float32),
++        language=f"do {task}",
++        task_id=task,
++        embodiment=spec.name,
++    )
++
++
++@pytest.fixture(scope="module")
++def setup(spec):
++    t1 = [make_episode(spec, "toy/one", 18, s) for s in range(2)]
++    t2 = [make_episode(spec, "toy/two", 18, 10 + s) for s in range(2)]
++    stats = compute_stats(t1, embodiment=spec.name, task_id="toy/one")
++    torch.manual_seed(0)
++    policy = build_policy("flowpolicy_small", spec, pretrained=False)
++    for p in policy.parameters():
++        if p.requires_grad:
++            nn.init.normal_(p, std=0.05)
++    loaded = LoadedCheckpoint(policy, spec, stats, {"run_id": "toy", "stage": 0, "task_key": "toy/one"})
++    sub = collect_bases(
++        loaded, ChunkedActionDataset(t1, spec, stats),
++        dataclasses.replace(load_subspace_config(), min_samples_per_dim=0.01, num_workers=0, batch_size=16),
++        device="cpu",
++    )
++    bases = {n: layer.primary for n, layer in sub.layers.items()}
++    return policy, bases, ChunkedActionDataset(t2, spec, stats)
++
++
++def small_cfg(steps=3):
++    return TrainConfig(steps=steps, batch_size=4, device="cpu", amp=False, num_workers=0,
++                       warmup_steps=1, log_every=0)
++
++
++def test_allowlist_is_exactly_the_registry_weights(setup):
++    policy, _, _ = setup
++    report = freeze_to_allowlist(policy)
++    trainable = {n for n, p in policy.named_parameters() if p.requires_grad}
++    assert trainable == set(policy.projectable_parameters()) == set(allowlist(policy))
++    assert report["newly_frozen"]
++    policy.trunk.position_embedding.requires_grad_(True)
++    with pytest.raises(RuntimeError, match="trainable but not allowlisted"):
++        assert_allowlist(policy)
++    policy.trunk.position_embedding.requires_grad_(False)
++
++
++def test_train_one_task_with_gpm_keeps_frozen_tensors_and_orthogonality(setup):
++    policy, bases, t2_data = setup
++    freeze_to_allowlist(policy)
++    frozen = {n: p.detach().clone() for n, p in policy.named_parameters() if not p.requires_grad}
++    method = GPM(log_interval=1)
++    method.set_memory(bases)
++    log = train_one_task(policy, t2_data, small_cfg(), method=method, task_idx=1,
++                         generator=torch.Generator().manual_seed(0))
++    assert all(np.isfinite(log.losses))
++    for n, p in policy.named_parameters():
++        if n in frozen:
++            assert torch.equal(p, frozen[n]), n
++    assert set(method.gradient_c) == {0, 1, 2} and set(method.update_c) == {0, 1, 2}
++    worst = max(r["max_residual_over_bound"] for r in method.residuals.values())
++    assert worst <= 1.0
++    # A layer moves if and only if its basis leaves free directions.
++    for name, r in method.residuals.items():
++        moved = method.cumulative_displacement_norm[name] > 0
++        assert moved != r["full_rank"], (name, r)
++    assert method.residuals["flow_head.action_in"]["full_rank"]
++
++
++class Spy(BaseMethod):
++    name = "spy"
++
++    def __init__(self, events):
++        super().__init__()
++        self.events = events
++
++    def modify_gradients(self, policy, batch_meta):
++        self.events.append("modify_gradients")
++
++    def after_step(self, policy, step_meta):
++        self.events.append("after_step")
++
++
++def test_trainer_hook_order_per_step(setup, monkeypatch):
++    """backward -> unscale_ -> modify_gradients -> clip -> step -> update -> after_step."""
++    policy, _, t2_data = setup
++    freeze_to_allowlist(policy)
++    events: list[str] = []
++
++    def wrap(owner, attr, label):
++        original = getattr(owner, attr)
++
++        def wrapper(*args, **kwargs):
++            events.append(label)
++            return original(*args, **kwargs)
++
++        monkeypatch.setattr(owner, attr, wrapper)
++
++    wrap(torch.amp.GradScaler, "unscale_", "unscale_")
++    wrap(torch.amp.GradScaler, "step", "step")
++    wrap(torch.amp.GradScaler, "update", "update")
++    wrap(torch.nn.utils, "clip_grad_norm_", "clip")
++    handle = policy.flow_head.action_out.weight.register_hook(
++        lambda g: events.append("backward")
++    )
++    try:
++        train_one_task(policy, t2_data, small_cfg(steps=2), method=Spy(events), task_idx=1,
++                       generator=torch.Generator().manual_seed(0))
++    finally:
++        handle.remove()
++    per_step = ["backward", "unscale_", "modify_gradients", "clip", "step", "update", "after_step"]
++    assert events == per_step * 2
++
++
++def test_seq_ft_after_step_is_a_no_op():
++    assert SeqFT().after_step(None, {"step": 0}) is None
+diff --git a/tests/test_gpm_pilot.py b/tests/test_gpm_pilot.py
+new file mode 100644
+index 0000000..26efbe2
+--- /dev/null
++++ b/tests/test_gpm_pilot.py
+@@ -0,0 +1,283 @@
++"""GPM feasibility pilot: pre-registered criteria, provenance, and both arms end to end."""
++
++from __future__ import annotations
++
++import dataclasses
++import json
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++import torch
++import torch.nn as nn
++
++from flowcl.analysis.metrics import Estimate, success_estimate
++from flowcl.data.config import load_embodiment_spec
++from flowcl.data.dataset import ChunkedActionDataset
++from flowcl.data.episode import Episode
++from flowcl.data.stats import compute_stats
++from flowcl.envs.evaluation import EvaluationReport, TaskEvaluation
++from flowcl.experiments import gpm_pilot
++from flowcl.experiments.gate2 import collect_bases, load_subspace_config, save_checkpoint_bases
++from flowcl.experiments.gpm_pilot import (
++    PilotInputs,
++    classify,
++    compare_arms,
++    criteria_thresholds,
++    load_method_config,
++    load_pilot_config,
++    run_arm,
++)
++from flowcl.models.build import build_policy, load_policy_config
++from flowcl.train.checkpoint import load_checkpoint, save_checkpoint
++from flowcl.train.trainer import TrainConfig
++
++T1, T2 = "toy_suite/spatial_like", "toy_suite/object_like"
++BOOT = {"n_resamples": 2000, "confidence": 0.95, "seed": 0}
++
++
++# ---- pre-registered criteria ----------------------------------------------------
++
++
++def est(value, low=None, high=None):
++    return Estimate(value, value - 0.1 if low is None else low, value + 0.1 if high is None else high, 50)
++
++
++def test_thresholds_come_from_the_references_and_are_checked():
++    cfg = load_pilot_config().criteria
++    t = criteria_thresholds(0.78, 0.90, cfg)
++    assert (t["object_min"], t["spatial_min"]) == (0.63, 0.75)
++    with pytest.raises(ValueError, match="references changed"):
++        criteria_thresholds(0.80, 0.90, cfg)
++
++
++@pytest.mark.parametrize(
++    "obj, spa, outcome",
++    [
++        (0.70, 0.80, "hard projection is viable"),
++        (0.40, 0.80, "protection works, plasticity fails"),
++        (0.70, 0.20, "plasticity works, protection fails"),
++        (0.10, 0.10, "method or optimization failure"),
++        (0.63, 0.75, "hard projection is viable"),  # thresholds are inclusive
++        (0.62, 0.75, "protection works, plasticity fails"),
++    ],
++)
++def test_four_way_outcome(obj, spa, outcome):
++    t = {"object_min": 0.63, "spatial_min": 0.75}
++    assert classify(est(obj, obj, obj), est(spa, spa, spa), t)["outcome"] == outcome
++
++
++def test_borderline_is_flagged_but_the_point_estimate_decides():
++    t = {"object_min": 0.63, "spatial_min": 0.75}
++    c = classify(est(0.60, 0.46, 0.74), est(0.90, 0.80, 0.98), t)
++    assert c["object_borderline"] and not c["object_acceptable"]
++    assert not c["spatial_borderline"] and c["spatial_acceptable"]
++
++
++# ---- end to end on a tiny policy -----------------------------------------------
++
++
++@pytest.fixture(scope="module")
++def spec():
++    return load_embodiment_spec("libero_franka")
++
++
++def make_episode(spec, task, length, seed):
++    rng = np.random.default_rng(seed)
++    h, w = spec.observation.image_size
++    return Episode(
++        images={c: rng.integers(0, 255, (length, h, w, 3), dtype=np.uint8) for c in spec.cameras},
++        state=rng.normal(size=(length, spec.d_state)).astype(np.float32),
++        action=rng.uniform(-1, 1, size=(length, spec.d_action)).astype(np.float32),
++        language=f"do {task}",
++        task_id=task,
++        embodiment=spec.name,
++    )
++
++
++def build_world(spec, root):
++    t1 = [make_episode(spec, T1, 18, s) for s in range(2)]
++    t2 = [make_episode(spec, T2, 18, 10 + s) for s in range(2)]
++    stats = compute_stats(t1, embodiment=spec.name, task_id=T1)
++    datasets = {T1: ChunkedActionDataset(t1, spec, stats), T2: ChunkedActionDataset(t2, spec, stats)}
++
++    torch.manual_seed(0)
++    policy = build_policy("flowpolicy_small", spec, pretrained=False)
++    for p in policy.parameters():
++        if p.requires_grad:
++            nn.init.normal_(p, std=0.05)
++    stage0 = save_checkpoint(
++        root / "toy_seq" / "checkpoints" / "stage0.pt", policy=policy,
++        policy_config=load_policy_config("flowpolicy_small"), spec=spec, stats=stats,
++        run_id="toy_seq", stage=0, task_key=T1,
++    )
++    sub_cfg = dataclasses.replace(
++        load_subspace_config(), min_samples_per_dim=0.01, num_workers=0, batch_size=16
++    )
++    sub = collect_bases(load_checkpoint(stage0), datasets[T1], sub_cfg, device="cpu",
++                        checkpoint_path=stage0)
++    bases = save_checkpoint_bases(sub, sub_cfg, results_root=root)
++    inputs = PilotInputs(
++        curriculum=SimpleNamespace(name="toy", task_keys=(T1, T2), refs=("r_spatial", "r_object")),
++        seq_run_dir=root / "toy_seq", stage0=stage0, stage1=stage0, t1_bases=bases, seed=0,
++    )
++    return root, inputs, datasets
++
++
++@pytest.fixture(scope="module")
++def world(spec, tmp_path_factory):
++    return build_world(spec, tmp_path_factory.mktemp("results"))
++
++
++def fake_evaluate(record, successes_by_task):
++    def evaluate(policy, refs, spec, stats, run_id, cfg, bootstrap=None, stage=None):
++        record.append(run_id)
++        return EvaluationReport(
++            run_id=run_id, stage=stage,
++            tasks=[
++                TaskEvaluation(key, s, [100] * len(s), [0] * len(s), success_estimate(s))
++                for key, s in successes_by_task.items()
++            ],
++        )
++    return evaluate
++
++
++def run(arm, world, monkeypatch, successes):
++    root, inputs, datasets = world
++    seen: list[str] = []
++    monkeypatch.setattr(gpm_pilot, "evaluate_tasks", fake_evaluate(seen, successes))
++    result = run_arm(
++        arm, inputs, datasets, load_method_config(),
++        TrainConfig(steps=4, batch_size=4, device="cpu", amp=False, num_workers=0,
++                    warmup_steps=1, log_every=0),
++        eval_cfg=None, bootstrap=BOOT,
++        pilot=dataclasses.replace(load_pilot_config(), timing_warmup_steps=1),
++        device="cpu", steps=4, evaluate=True, sanity=False, results_root=root,
++    )
++    return result, seen
++
++
++GPM_SUCC = {T1: [True] * 40 + [False] * 10, T2: [True] * 30 + [False] * 20}
++FREEZE_SUCC = {T1: [False] * 50, T2: [True] * 45 + [False] * 5}
++
++
++def test_both_arms_end_to_end(world, monkeypatch):
++    root, inputs, _ = world
++    gpm, seen = run("gpm_projected_adam", world, monkeypatch, GPM_SUCC)
++    freeze, _ = run("freeze_only", world, monkeypatch, FREEZE_SUCC)
++
++    # Rollouts use seq_ft's run id as the seed namespace; provenance keeps both ids.
++    assert seen == ["toy_seq"]
++    for r in (gpm, freeze):
++        run_dir = root / r.method_run_id
++        eval_file = json.loads((run_dir / "eval" / "stage1.json").read_text())
++        assert eval_file["method_run_id"] == r.method_run_id
++        assert eval_file["evaluation_seed_run_id"] == "toy_seq"
++        summary = json.loads((run_dir / "pilot.json").read_text())
++        assert summary["method_run_id"] == r.method_run_id
++        assert summary["evaluation_seed_run_id"] == "toy_seq"
++        assert r.frozen_changed == []
++        assert r.freeze_report["trainable_tensors"] == len(r.displacement_norm)
++        assert (run_dir / "checkpoints" / "stage1.pt").is_file()
++        assert set(r.probes) == {T1, T2}
++
++    assert gpm.method_run_id == "toy__gpm_projected_adam_pilot__seed0"
++    # Projection: the total displacement stays out of the T1 subspace; without it, it does not.
++    assert gpm.update["c_global"]["0.95"]["all"] < 1e-3
++    assert freeze.update["c_global"]["0.95"]["all"] > 0.05
++    assert gpm.displacement_norm["flow_head.action_in"] == 0.0
++    assert gpm.method_state["display_name"] == "gpm_projected_adam"
++
++    eval0 = {T1: TaskEvaluation(T1, [True] * 45 + [False] * 5, [], [], success_estimate([1] * 45 + [0] * 5))}
++    eval1 = {
++        T1: TaskEvaluation(T1, [False] * 50, [], [], success_estimate([0] * 50)),
++        T2: TaskEvaluation(T2, [True] * 39 + [False] * 11, [], [], success_estimate([1] * 39 + [0] * 11)),
++    }
++    thresholds = criteria_thresholds(0.78, 0.90, load_pilot_config().criteria)
++    out = compare_arms({"gpm_projected_adam": gpm, "freeze_only": freeze}, eval0, eval1, T1, T2,
++                       thresholds, BOOT)
++    diff = out["paired_differences"]["gpm_projected_adam_minus_freeze_only"]
++    assert diff[T1]["diff"] == pytest.approx(0.8 - 0.0)
++    assert diff[T2]["diff"] == pytest.approx(0.6 - 0.9)
++    assert out["outcomes"]["gpm_projected_adam"]["decides"] is True
++    assert out["outcomes"]["gpm_projected_adam"]["outcome"] == "protection works, plasticity fails"
++    assert out["outcomes"]["freeze_only"]["decides"] is False
++
++
++# ---- the orchestration (references, timing, sanity checks, report) --------------
++
++
++def write_seq_run(root, spec_train_steps):
++    """The Gate 1 artifacts the pilot reads: config.yaml, result.json, eval/stage{0,1}.json."""
++    from omegaconf import OmegaConf
++
++    run_dir = root / "toy_seq"
++    OmegaConf.save(
++        OmegaConf.create({
++            "train": {"steps": spec_train_steps, "batch_size": 4, "lr": 1e-4, "weight_decay": 1e-4,
++                      "grad_clip": 1.0, "warmup_steps": 1, "log_every": 0, "num_workers": 0,
++                      "device": "cpu", "accumulation_steps": 1, "amp": False},
++            "eval": {"n_episodes": 50, "max_steps": 600, "execute_k": None, "euler_steps": 10,
++                     "temporal_ensembling": False, "temporal_ensemble_coef": 0.01,
++                     "image_size": 128, "record_video": False},
++        }),
++        run_dir / "config.yaml",
++    )
++    (run_dir / "result.json").write_text(json.dumps({"stages": [
++        {}, {"final_loss": 0.0076, "mean_last_50_loss": 0.0075, "train_wall_clock_s": 2558.0,
++             "steps": 30000}]}))
++
++    def task(key, succ):
++        return TaskEvaluation(key, succ, [100] * 50, [0] * 50, success_estimate(succ))
++
++    EvaluationReport("toy_seq", 0, [task(T1, [True] * 45 + [False] * 5)]).save(
++        run_dir / "eval" / "stage0.json")
++    EvaluationReport("toy_seq", 1, [task(T1, [False] * 50),
++                                    task(T2, [True] * 39 + [False] * 11)]).save(
++        run_dir / "eval" / "stage1.json")
++
++
++@pytest.fixture()
++def pilot_world(spec, tmp_path, monkeypatch):
++    import flowcl.data.tasks as tasks
++    import flowcl.train.pipeline as pipeline
++
++    root, inputs, datasets = build_world(spec, tmp_path / "results")
++    write_seq_run(root, spec_train_steps=4)
++    monkeypatch.setattr(tasks.TaskRef, "from_key", staticmethod(lambda key: key))
++    monkeypatch.setattr(pipeline, "build_dataset", lambda refs, *a, **k: datasets[refs[0]])
++    cfg = dataclasses.replace(load_pilot_config(), sanity_steps=6, freeze_only_timing_steps=3,
++                              timing_warmup_steps=1)
++    return root, inputs, cfg
++
++
++def test_sanity_mode_runs_the_whole_orchestration(pilot_world):
++    root, inputs, cfg = pilot_world
++    out_dir = root / "gpm_pilot"
++    try:
++        gpm_pilot.run_gpm_pilot(inputs, cfg, load_method_config(), device="cpu", sanity=True,
++                                results_root=root, out_dir=out_dir)
++    except RuntimeError as exc:  # 6 steps from random weights may not reduce the loss
++        assert "object_loss_decreases" in str(exc) and "updates_orthogonal" not in str(exc)
++    report = json.loads((out_dir / "sanity.json").read_text())
++    checks = report["sanity_checks"]
++    for name in ("updates_orthogonal", "parameters_move", "action_in_frozen",
++                 "frozen_untouched", "finite"):
++        assert checks[name]["passed"], (name, checks[name])
++    assert report["criteria"]["object_min"] == 0.63
++    assert set(report["timing"]["extrapolated_30000_steps_min"]) == {"gpm_projected_adam", "freeze_only"}
++    assert report["evaluation_seed_run_id"] == "toy_seq"
++
++
++def test_full_mode_writes_outcomes_and_paired_differences(pilot_world, monkeypatch):
++    root, inputs, cfg = pilot_world
++    seen: list[str] = []
++    monkeypatch.setattr(gpm_pilot, "evaluate_tasks", fake_evaluate(seen, GPM_SUCC))
++    report = gpm_pilot.run_gpm_pilot(inputs, cfg, load_method_config(), device="cpu",
++                                     results_root=root, out_dir=root / "gpm_pilot")
++    assert seen == ["toy_seq", "toy_seq"]
++    assert set(report["arms"]) == {"gpm_projected_adam", "freeze_only"}
++    assert "gpm_projected_adam_minus_freeze_only" in report["paired_differences"]
++    assert report["outcomes"]["gpm_projected_adam"]["decides"]
++    saved = json.loads((root / "gpm_pilot" / "pilot.json").read_text())
++    assert saved["outcomes"] == report["outcomes"]

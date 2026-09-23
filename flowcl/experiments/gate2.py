@@ -252,22 +252,36 @@ def probe_indices(dataset: ChunkedActionDataset, n: int) -> list[int]:
     return padded[:n_padded] + full[:n_full]
 
 
-def collect_bases(
-    loaded: LoadedCheckpoint,
+@dataclass
+class TaskCapture:
+    """Streamed Grams for one task at one checkpoint, plus the reachability rule."""
+
+    accumulators: dict
+    reachability: dict[str, bool]
+    reachability_expected: dict[str, bool]
+
+    def primary_view(self, name: str) -> str:
+        """``valid`` only where the probe showed padded positions carry no gradient."""
+        return VIEW_VALID if self.reachability.get(name) is False else VIEW_ALL
+
+
+def capture_task_grams(
+    policy,
     dataset: ChunkedActionDataset,
     cfg: SubspaceConfig,
-    device: str | torch.device = "cuda",
-    checkpoint_path: Path | None = None,
-) -> CheckpointSubspace:
-    """Probe reachability, capture Grams over ``dataset``, and build every basis."""
+    device: str | torch.device,
+    probe_seed: int,
+    capture_seed: int,
+) -> TaskCapture:
+    """Reachability probe + forward-only Gram capture over ``dataset`` (§7.1).
+
+    Shared by Gate 2 (:func:`collect_bases`) and GPM's memory update, so both measure a
+    task's input subspace identically. Seeds are explicit so each caller owns its
+    namespace. Raises if any layer's primary view has fewer than
+    ``cfg.min_samples_per_dim`` samples per input dimension.
+    """
     device = torch.device(device)
-    policy = loaded.policy.to(device)
     policy.eval()
-    run_id = loaded.run_id
-    task_key = loaded.task_key
-    if run_id is None or task_key is None:
-        raise ValueError("checkpoint lacks run_id/task_key; cannot tag its bases")
-    started = time.perf_counter()
 
     # 1. Gradient reachability of padded action positions.
     probe_batch = move_batch(
@@ -276,9 +290,7 @@ def collect_bases(
         ),
         device,
     )
-    probe_generator = torch.Generator(device="cpu").manual_seed(
-        derive_seed(f"gate2_probe::{run_id}", task_key, 0)
-    )
+    probe_generator = torch.Generator(device="cpu").manual_seed(probe_seed)
     reachability = probe_policy_reachability(policy, probe_batch, probe_generator)
     expected = expected_reachability(
         policy.registry_names(), len(policy.flow_head.blocks)
@@ -298,9 +310,7 @@ def collect_bases(
         s_bin_edges=cfg.s_bin_edges if cfg.tag_s_bins else None,
         binned_views=binned_views,
     )
-    generator = torch.Generator(device="cpu").manual_seed(
-        derive_seed(f"gate2_capture::{run_id}", task_key, 0)
-    )
+    generator = torch.Generator(device="cpu").manual_seed(capture_seed)
     loader = build_dataloader(
         dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, shuffle=False
     )
@@ -318,11 +328,12 @@ def collect_bases(
             )
             capture.forward_policy(policy, batch, s, noise)
 
-    # 3. Sample-count check on the view each basis will actually use, then bases.
-    groups = {entry.name: entry.group for entry in policy.projectable_layers()}
+    result = TaskCapture(capture.accumulators, reachability, expected)
+
+    # 3. Sample-count check on the view each basis will actually use.
     too_few = []
-    for name, acc in capture.accumulators.items():
-        view = VIEW_VALID if reachability.get(name) is False else VIEW_ALL
+    for name, acc in result.accumulators.items():
+        view = result.primary_view(name)
         ratio = acc.n[view] / acc.d_in
         if ratio < cfg.min_samples_per_dim:
             too_few.append(f"{name} ({view}): N={acc.n[view]}, N/d={ratio:.2f}")
@@ -332,10 +343,41 @@ def collect_bases(
             f"on {len(too_few)} layer(s); bases from too few samples are garbage:\n  "
             + "\n  ".join(too_few)
         )
+    return result
+
+
+def collect_bases(
+    loaded: LoadedCheckpoint,
+    dataset: ChunkedActionDataset,
+    cfg: SubspaceConfig,
+    device: str | torch.device = "cuda",
+    checkpoint_path: Path | None = None,
+) -> CheckpointSubspace:
+    """Probe reachability, capture Grams over ``dataset``, and build every basis."""
+    device = torch.device(device)
+    policy = loaded.policy.to(device)
+    policy.eval()
+    run_id = loaded.run_id
+    task_key = loaded.task_key
+    if run_id is None or task_key is None:
+        raise ValueError("checkpoint lacks run_id/task_key; cannot tag its bases")
+    started = time.perf_counter()
+
+    task = capture_task_grams(
+        policy,
+        dataset,
+        cfg,
+        device,
+        probe_seed=derive_seed(f"gate2_probe::{run_id}", task_key, 0),
+        capture_seed=derive_seed(f"gate2_capture::{run_id}", task_key, 0),
+    )
+    capture_accumulators = task.accumulators
+    reachability, expected = task.reachability, task.reachability_expected
+    groups = {entry.name: entry.group for entry in policy.projectable_layers()}
 
     layers: dict[str, LayerSubspace] = {}
     binned: dict[str, dict] = {}
-    for name, acc in capture.accumulators.items():
+    for name, acc in capture_accumulators.items():
         views = {
             view: basis_from_gram(
                 acc.gram[view],

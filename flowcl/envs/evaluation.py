@@ -65,16 +65,25 @@ class EvaluationReport:
     run_id: str
     stage: int | None
     tasks: list[TaskEvaluation] = field(default_factory=list)
+    # ``run_id`` is the rollout seed namespace. When it is shared across methods, these
+    # record which run the evaluated policy belongs to and which namespace seeded it.
+    method_run_id: str | None = None
+    seed_namespace_run_id: str | None = None
 
     def by_task(self) -> dict[str, TaskEvaluation]:
         return {t.task_key: t for t in self.tasks}
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "run_id": self.run_id,
             "stage": self.stage,
             "tasks": [t.as_dict() for t in self.tasks],
         }
+        if self.method_run_id is not None:
+            out["method_run_id"] = self.method_run_id
+        if self.seed_namespace_run_id is not None:
+            out["seed_namespace_run_id"] = self.seed_namespace_run_id
+        return out
 
     def save(self, path: str | Path) -> Path:
         path = Path(path)
@@ -88,6 +97,8 @@ class EvaluationReport:
         return cls(
             run_id=payload["run_id"],
             stage=payload.get("stage"),
+            method_run_id=payload.get("method_run_id"),
+            seed_namespace_run_id=payload.get("seed_namespace_run_id"),
             tasks=[
                 TaskEvaluation(
                     task_key=t["task_key"],

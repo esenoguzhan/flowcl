@@ -147,6 +147,7 @@ def train_one_task(
     task_idx: int = 0,
     generator: torch.Generator | None = None,
     on_step: Callable[[int, dict], None] | None = None,
+    context=None,
 ) -> TrainLog:
     """Train ``policy`` on one task's ``dataset`` for ``cfg.steps`` optimiser steps.
 
@@ -161,10 +162,14 @@ def train_one_task(
         generator: RNG for ``s`` and ``A_0``, so a stage is reproducible.
         on_step: Callback invoked as ``on_step(step, outputs)`` after each optimiser
             step. Used by the §7.1 analysis hooks to capture activations at an interval.
+        context: :class:`~flowcl.methods.base.TaskContext` for the lifecycle hooks,
+            built by the continual runner. Other callers get a minimal one with no seed
+            namespace; a method that needs one raises.
 
     Returns:
         A :class:`TrainLog`.
     """
+    from flowcl.methods.base import TaskContext
     from flowcl.methods.seq_ft import SeqFT
 
     if method is None:
@@ -173,6 +178,18 @@ def train_one_task(
     device = torch.device(cfg.device)
     policy.to(device)
     policy.train()
+
+    if context is None:
+        task_ids = getattr(dataset, "task_ids", ())
+        context = TaskContext(
+            task_key=task_ids[0] if len(task_ids) == 1 else None,
+            dataset=dataset,
+            device=str(device),
+        )
+
+    # Before the optimiser is built: a method may freeze parameters here (GPM's §7.4
+    # allowlist), and a frozen parameter must never enter AdamW.
+    method.on_task_start(policy, task_idx, context=context)
 
     optimizer = build_optimizer(policy, cfg)
     scheduler = build_scheduler(optimizer, cfg)
@@ -184,8 +201,6 @@ def train_one_task(
         generator=generator,
     )
     batches = _cycle(loader)
-
-    method.on_task_start(task_idx, policy, dataset)
 
     scaler = torch.amp.GradScaler(device.type, enabled=cfg.amp and device.type == "cuda")
     log = TrainLog()
@@ -258,6 +273,6 @@ def train_one_task(
                 flush=True,
             )
 
-    method.on_task_end(task_idx, policy, dataset)
+    method.on_task_end(policy, task_idx, context=context)
     log.wall_clock_s = time.perf_counter() - started
     return log

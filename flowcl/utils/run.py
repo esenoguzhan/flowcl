@@ -164,3 +164,26 @@ def validate_run(run_dir: Path) -> None:
     ]
     if empty:
         raise ValueError(f"Run {run_dir} has empty artifacts: {empty}")
+
+
+def file_sha256(path: str | Path, chunk_size: int = 1 << 20) -> str:
+    """SHA-256 of a file, streamed. Used to tie checkpoints to the artifacts they need."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_write_text(path: str | Path, text: str) -> Path:
+    """Write ``text`` to ``path`` via a temporary file and ``os.replace``."""
+    import os
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return path

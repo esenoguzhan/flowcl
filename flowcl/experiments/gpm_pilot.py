@@ -107,6 +107,10 @@ def load_method_config(path: str | Path | None = None) -> dict:
     payload = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
     if payload.pop("name", None) != "gpm":
         raise ValueError(f"{path} is not a gpm method config")
+    # The pilot ran with a fixed Task-1 memory. configs/method/gpm.yaml now describes the
+    # four-task sequence (update_memory: true); forcing false keeps the pilot equivalent
+    # to what ran, and the override is recorded in the pilot's method_config.
+    payload["update_memory"] = False
     return payload
 
 

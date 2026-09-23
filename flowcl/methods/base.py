@@ -10,7 +10,7 @@ Spec §6 gives the interface verbatim::
         def on_task_end(self, task_idx, policy, dataset) -> None: ...    # basis/Fisher update
         def state_dict(self) -> dict: ...
 
-Three deliberate additions, all documented here because §11 requires deviations to be
+Five deliberate deviations, all documented here because §11 requires deviations to be
 written down rather than absorbed:
 
 1. ``modify_loss`` takes an extra keyword-only ``outputs``. ConSFT scales the loss by a
@@ -29,6 +29,17 @@ written down rather than absorbed:
 
        backward -> unscale_ -> modify_gradients -> clip -> step -> update -> after_step
 
+4. The lifecycle hooks take ``(policy, task_idx, *, context)`` instead of §6's
+   ``(task_idx, policy, dataset)``. :class:`TaskContext` carries everything else a method
+   needs about the stage -- the dataset, the task key, the device and the run's seed
+   namespace -- from exactly one source. GPM's memory update needs the device and seed
+   namespace; passing them ad hoc would give the dataset two sources.
+5. ``save_artifacts(directory, task_idx, *, context) -> list[Path]`` runs after each
+   stage's ``on_task_end``. A method writes what it must persist (GPM: the accumulated
+   memory) and returns the paths; the runner hashes them and records the paths and
+   SHA-256s in that stage's checkpoint, so a checkpoint names the exact artifacts the
+   next stage needs without the runner ever branching on the method.
+
 :class:`BaseMethod` implements every hook as a no-op, so a method subclasses it and
 overrides only what it changes. That is also why ``seq_ft`` is a real class with no
 body rather than ``method=None``: the runner then has exactly one code path, and the
@@ -37,6 +48,8 @@ B1 baseline is exercised by the same machinery as everything else.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import torch
@@ -45,16 +58,37 @@ from flowcl.data.dataset import ChunkedActionDataset
 from flowcl.models.policy import FlowPolicy
 
 
+@dataclass(frozen=True)
+class TaskContext:
+    """What a method knows about the stage it is in (documented deviation 4).
+
+    Attributes:
+        task_key: Curriculum task key, or ``None`` for a multi-task dataset.
+        dataset: The stage's training data.
+        device: Device the policy trains on.
+        seed_namespace_run_id: Run id every seeded stream of this run derives from
+            (training, rollouts, memory capture). ``None`` outside a continual run, and a
+            method that needs it must raise rather than invent one.
+        method_run_id: This run's own id, for artifact provenance.
+    """
+
+    task_key: str | None
+    dataset: ChunkedActionDataset | None
+    device: str
+    seed_namespace_run_id: str | None = None
+    method_run_id: str | None = None
+
+
 @runtime_checkable
 class ContinualMethod(Protocol):
-    """Spec §6. See the module docstring for the two documented additions."""
+    """Spec §6. See the module docstring for the five documented deviations."""
 
     name: str
 
     def on_task_start(
-        self, task_idx: int, policy: FlowPolicy, dataset: ChunkedActionDataset
+        self, policy: FlowPolicy, task_idx: int, *, context: TaskContext
     ) -> None:
-        """Called once before a stage's optimisation begins."""
+        """Called once before a stage's optimiser is built (so it may freeze parameters)."""
 
     def build_batch(
         self, dataset: ChunkedActionDataset, task_idx: int
@@ -78,9 +112,14 @@ class ContinualMethod(Protocol):
         """Called once after each ``optimizer.step()`` (documented addition 3)."""
 
     def on_task_end(
-        self, task_idx: int, policy: FlowPolicy, dataset: ChunkedActionDataset
+        self, policy: FlowPolicy, task_idx: int, *, context: TaskContext
     ) -> None:
         """Called once after a stage, e.g. to update a basis or a Fisher estimate."""
+
+    def save_artifacts(
+        self, directory: Path, task_idx: int, *, context: TaskContext
+    ) -> list[Path]:
+        """Persist what the next stage needs; return the written paths (deviation 5)."""
 
     def state_dict(self) -> dict:
         """Everything needed to resume, and the §8.2 memory accounting."""
@@ -90,7 +129,7 @@ class BaseMethod:
     """No-op implementation of every §6 hook.
 
     Subclass and override only the hooks a method actually uses. The no-op defaults are
-    not merely convenient: they mean the runner calls the same five hooks in the same
+    not merely convenient: they mean the runner calls the same hooks in the same
     order for every method, so a difference between two methods' results cannot come
     from a difference in control flow.
     """
@@ -108,7 +147,7 @@ class BaseMethod:
 
     # ---- §6 hooks --------------------------------------------------------------
 
-    def on_task_start(self, task_idx, policy, dataset) -> None:
+    def on_task_start(self, policy, task_idx, *, context) -> None:
         return None
 
     def build_batch(self, dataset, task_idx) -> dict | None:
@@ -123,8 +162,11 @@ class BaseMethod:
     def after_step(self, policy, step_meta) -> None:
         return None
 
-    def on_task_end(self, task_idx, policy, dataset) -> None:
+    def on_task_end(self, policy, task_idx, *, context) -> None:
         return None
+
+    def save_artifacts(self, directory, task_idx, *, context) -> list[Path]:
+        return []
 
     def state_dict(self) -> dict:
         return {"name": self.name}

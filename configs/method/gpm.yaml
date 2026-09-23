@@ -18,6 +18,11 @@ residual_weight_atol: 1.0e-6
 # Log c_l of the raw gradient and of Adam's step every this many steps.
 log_interval: 100
 
-# Incremental memory update (paper Eq. 8-9) is not implemented yet; the pilot uses a
-# fixed Task-1 memory.
-update_memory: false
+# Incremental memory update after every task (paper Eq. 8-9, spec §7.2): capture the
+# task's registry-layer inputs (primary, gradient-reachable view) at the post-training
+# weights and extend the memory to eps. The T1->T2 pilot forces this to false (fixed
+# Task-1 memory) in flowcl/experiments/gpm_pilot.py.
+update_memory: true
+# configs/analysis/<name>.yaml supplying the capture settings (tokens per sample, batch
+# size, workers, Gram tolerances, minimum samples per dimension) — the same as Gate 2.
+capture_config: subspace

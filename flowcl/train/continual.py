@@ -37,8 +37,11 @@ from flowcl.models.build import build_policy, load_policy_config
 from flowcl.train.checkpoint import save_checkpoint
 from flowcl.train.pipeline import build_dataset, fit_stats
 from flowcl.train.trainer import TrainConfig, TrainLog, train_one_task
-from flowcl.utils.run import RunHandle, create_run
+from flowcl.utils.run import RunHandle, create_run, file_sha256, git_sha
 from flowcl.utils.seeding import derive_seed
+
+# Default fail-fast bound for the T1 pairing check (see :func:`t1_pairing_check`).
+T1_PAIRING_MAX_REL_DIFF = 0.05
 
 
 @dataclass
@@ -52,6 +55,7 @@ class StageRecord:
     train_log: TrainLog
     checkpoint: Path
     evaluation: EvaluationReport
+    method_artifacts: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -64,6 +68,7 @@ class StageRecord:
             "steps": self.train_log.steps,
             "train_wall_clock_s": self.train_log.wall_clock_s,
             "checkpoint": str(self.checkpoint),
+            "method_artifacts": self.method_artifacts,
             "evaluation": self.evaluation.as_dict(),
         }
 
@@ -81,6 +86,9 @@ class ContinualResult:
     stages: list[StageRecord] = field(default_factory=list)
     systems: dict = field(default_factory=dict)
     run: RunHandle | None = None
+    seed_namespace_run_id: str | None = None
+    method_registry_name: str | None = None
+    t1_pairing: dict | None = None
 
     def estimates(self) -> dict[tuple[int, str], Estimate]:
         """``(stage, task_key) -> Estimate``, so no rate travels without its CI."""
@@ -96,7 +104,10 @@ class ContinualResult:
     def as_dict(self, baseline: dict[str, float] | None = None) -> dict:
         return {
             "run_id": self.run_id,
+            "method_run_id": self.run_id,
+            "seed_namespace_run_id": self.seed_namespace_run_id,
             "method": self.method,
+            "method_registry_name": self.method_registry_name,
             "curriculum": self.curriculum,
             "seed": self.seed,
             "task_keys": list(self.task_keys),
@@ -112,6 +123,7 @@ class ContinualResult:
             "metrics": self.summary(baseline).as_dict(),
             "stages": [record.as_dict() for record in self.stages],
             "systems": self.systems,
+            "t1_pairing": self.t1_pairing,
         }
 
     def save(self, path: str | Path, baseline: dict[str, float] | None = None) -> Path:
@@ -124,6 +136,80 @@ class ContinualResult:
 def continual_run_id(method: str, curriculum: str, seed: int) -> str:
     """Stable run id. Every field that changes the result is in the name."""
     return f"{curriculum}__{method}__seed{seed}"
+
+
+def seed_namespace_run_id(curriculum: str, seed: int) -> str:
+    """The run id every method's seeded streams derive from (§8.3).
+
+    Training data order, flow times and noise, rollout seeds, and GPM's memory capture
+    all derive from this id, never from a method's own run id, so every method in a
+    comparison is paired with every other. It is the B1 baseline's id: for ``seq_ft``
+    nothing changes, so the Gate 1 run stays reproducible and every later method is
+    paired with it.
+    """
+    return continual_run_id("seq_ft", curriculum, seed)
+
+
+def method_label(method, method_name: str) -> str:
+    """The variant-specific name used in run ids and reports (e.g. ``gpm_projected_adam``)."""
+    return getattr(method, "display_name", None) or method_name
+
+
+def t1_pairing_check(
+    checkpoint: Path,
+    reference_run: Path,
+    train_log: TrainLog,
+    policy,
+    max_rel_diff: float = T1_PAIRING_MAX_REL_DIFF,
+) -> dict:
+    """Compare this run's stage-0 model with the reference run's (fail-fast pairing guard).
+
+    Methods whose Task 1 is unconstrained train it on the reference's exact stream from
+    the same initialisation, so the two stage-0 models should nearly coincide. Bitwise
+    equality is not expected (GPU nondeterminism over 30 000 steps), and the reference's
+    per-step losses were never stored, so this compares final trainable weights and the
+    final / last-50 losses. ``max_rel_diff`` is a judgement that catches a broken pairing
+    (wrong stream or init diverges by O(0.1-1)), not a calibrated bound; the measured
+    numbers are recorded whatever they are.
+    """
+    reference_run = Path(reference_run)
+    ref_payload = torch.load(
+        reference_run / "checkpoints" / "stage0.pt", map_location="cpu", weights_only=False
+    )
+    mine = torch.load(checkpoint, map_location="cpu", weights_only=False)["state_dict"]
+    ref = ref_payload["state_dict"]
+    groups = {f"{e.name}.weight": e.group for e in policy.projectable_layers()}
+    trainable = [n for n, p in policy.named_parameters() if p.requires_grad]
+    num: dict[str, float] = {}
+    den: dict[str, float] = {}
+    for name in trainable:
+        if name not in ref:
+            raise KeyError(f"reference stage-0 checkpoint lacks {name}")
+        a, b = mine[name].to(torch.float64), ref[name].to(torch.float64)
+        group = groups.get(name, "other")
+        num[group] = num.get(group, 0.0) + float(((a - b) ** 2).sum())
+        den[group] = den.get(group, 0.0) + float((b**2).sum())
+    if sum(den.values()) == 0.0:
+        raise ValueError("reference stage-0 trainable weights are all zero; nothing to compare")
+    overall = (sum(num.values()) / sum(den.values())) ** 0.5
+    ref_stage = json.loads((reference_run / "result.json").read_text())["stages"][0]
+    return {
+        "reference_run": str(reference_run),
+        "rel_weight_diff": overall,
+        # A group whose reference norm is zero has no relative difference; its absolute
+        # difference is reported instead of a made-up ratio.
+        "rel_weight_diff_by_group": {
+            g: ((num[g] / den[g]) ** 0.5 if den[g] > 0 else None) for g in num
+        },
+        "abs_weight_diff_by_group": {g: num[g] ** 0.5 for g in num},
+        "final_loss": {"this": train_log.final_loss, "reference": ref_stage["final_loss"]},
+        "mean_last_50_loss": {
+            "this": train_log.mean_last(50),
+            "reference": ref_stage["mean_last_50_loss"],
+        },
+        "max_rel_diff": max_rel_diff,
+        "passed": overall <= max_rel_diff,
+    }
 
 
 def run_continual(
@@ -141,6 +227,10 @@ def run_continual(
     pretrained: bool = True,
     exist_ok: bool = True,
     evaluate: bool = True,
+    single_task_baseline: bool = False,
+    require_clean_tree: bool = False,
+    t1_reference_run: Path | None = None,
+    t1_pairing_max_rel_diff: float = T1_PAIRING_MAX_REL_DIFF,
 ) -> ContinualResult:
     """Train one policy through ``curriculum`` under ``method_name``.
 
@@ -153,22 +243,56 @@ def run_continual(
         evaluate: Set False to exercise the training path without a GL context. The
             retention matrix is then empty and no metric can be computed, which is
             correct: there is no such thing as a rollout-free success rate.
+        single_task_baseline: Load the Gate 0 single-task references and write FWT
+            (raises if they are missing).
+        require_clean_tree: Refuse to start on a ``-dirty`` git tree (final Stage A
+            runs need clean, committed provenance).
+        t1_reference_run: Run directory to compare the stage-0 model against
+            (:func:`t1_pairing_check`); the run stops there if the check fails.
+
+    Seeding: every stream derives from :func:`seed_namespace_run_id`, not from this
+    run's id; both ids are recorded in the config, checkpoints, eval files and result.
+
+    Per-stage order (a checkpoint never references an artifact that does not exist)::
+
+        train (ends with on_task_end) -> save_artifacts -> sha256 -> save_checkpoint
+        -> [stage 0: T1 pairing check] -> evaluate
 
     Returns:
         A :class:`ContinualResult` whose artifacts are already on disk.
     """
     from flowcl.methods.base import build_method
 
+    from flowcl.methods.base import TaskContext
+
+    if require_clean_tree:
+        sha = git_sha()
+        if sha.endswith("-dirty"):
+            raise RuntimeError(
+                f"working tree is dirty ({sha}); final runs need clean, committed "
+                "provenance. Commit first, or pass --allow-dirty (recorded)."
+            )
+
     method = build_method(method_name, **(method_kwargs or {}))
-    run_id = continual_run_id(method_name, curriculum.name, seed)
+    label = method_label(method, method_name)
+    run_id = continual_run_id(label, curriculum.name, seed)
+    seed_ns = seed_namespace_run_id(curriculum.name, seed)
     raw_policy_cfg = load_policy_config(policy_config)
 
     run = create_run(
         run_id=run_id,
         cfg={
             "run_id": run_id,
+            "method_run_id": run_id,
+            "seed_namespace_run_id": seed_ns,
             "seed": seed,
-            "method": {"name": method_name, **(method_kwargs or {})},
+            "method": {"name": method_name, "display_name": label, **(method_kwargs or {})},
+            "provenance": {
+                "require_clean_tree": require_clean_tree,
+                "t1_reference_run": str(t1_reference_run) if t1_reference_run else None,
+                "t1_pairing_max_rel_diff": t1_pairing_max_rel_diff,
+                "single_task_baseline": single_task_baseline,
+            },
             "curriculum": {
                 "name": curriculum.name,
                 "tasks": [
@@ -211,7 +335,9 @@ def run_continual(
     matrix = RetentionMatrix.empty(curriculum.task_keys)
     result = ContinualResult(
         run_id=run_id,
-        method=method_name,
+        method=label,
+        method_registry_name=method_name,
+        seed_namespace_run_id=seed_ns,
         curriculum=curriculum.name,
         seed=seed,
         task_keys=curriculum.task_keys,
@@ -242,8 +368,15 @@ def run_continual(
             dataset_dir=dataset_dir,
         )
 
+        context = TaskContext(
+            task_key=stage.task_key,
+            dataset=dataset,
+            device=train_cfg.device,
+            seed_namespace_run_id=seed_ns,
+            method_run_id=run_id,
+        )
         generator = torch.Generator(device="cpu").manual_seed(
-            derive_seed(run_id, stage.task_key, stage_idx)
+            derive_seed(seed_ns, stage.task_key, stage_idx)
         )
         train_log = train_one_task(
             policy,
@@ -252,7 +385,18 @@ def run_continual(
             method=method,
             task_idx=stage_idx,
             generator=generator,
+            context=context,
         )
+
+        # Artifacts first (written atomically), hashed from disk, then referenced by the
+        # checkpoint: a checkpoint never names an artifact that does not yet exist.
+        artifact_paths = method.save_artifacts(
+            run.subdir("method"), stage_idx, context=context
+        )
+        method_artifacts = [
+            {"path": str(Path(p).relative_to(run.path)), "sha256": file_sha256(p)}
+            for p in artifact_paths
+        ]
 
         checkpoint = save_checkpoint(
             run.subdir("checkpoints") / f"stage{stage_idx}.pt",
@@ -264,12 +408,35 @@ def run_continual(
             stage=stage_idx,
             task_key=stage.task_key,
             extra={
-                "method": method_name,
+                "method": label,
+                "method_registry_name": method_name,
+                "method_run_id": run_id,
+                "seed_namespace_run_id": seed_ns,
                 "curriculum": curriculum.name,
                 "method_state": method.state_dict(),
+                "method_artifacts": method_artifacts,
                 "final_loss": train_log.final_loss,
             },
         )
+
+        if stage_idx == 0 and t1_reference_run is not None:
+            check = t1_pairing_check(
+                checkpoint, t1_reference_run, train_log, policy, t1_pairing_max_rel_diff
+            )
+            result.t1_pairing = check
+            run.artifact("t1_pairing.json").write_text(json.dumps(check, indent=2) + "\n")
+            print(
+                f"[flowcl] T1 pairing vs {t1_reference_run}: relative weight difference "
+                f"{check['rel_weight_diff']:.4f} (max {t1_pairing_max_rel_diff})",
+                flush=True,
+            )
+            if not check["passed"]:
+                raise RuntimeError(
+                    f"T1 pairing check failed: relative weight difference "
+                    f"{check['rel_weight_diff']:.4f} > {t1_pairing_max_rel_diff}. The run's "
+                    "Task-1 stream or initialisation does not match the reference; stopping "
+                    "before 5 h of dependent work (details in t1_pairing.json)."
+                )
 
         # §8.2: evaluate on every task, including the unseen ones, or FWT is lost.
         evaluation = (
@@ -278,14 +445,16 @@ def run_continual(
                 curriculum.refs,
                 spec,
                 stats,
-                run_id=run_id,
+                run_id=seed_ns,  # the rollout seed namespace, shared by every method
                 cfg=eval_cfg,
                 bootstrap=bootstrap,
                 stage=stage_idx,
             )
             if evaluate
-            else EvaluationReport(run_id=run_id, stage=stage_idx)
+            else EvaluationReport(run_id=seed_ns, stage=stage_idx)
         )
+        evaluation.method_run_id = run_id
+        evaluation.seed_namespace_run_id = seed_ns
         evaluation.save(run.subdir("eval") / f"stage{stage_idx}.json")
 
         for task_position, task_key in enumerate(curriculum.task_keys):
@@ -304,6 +473,7 @@ def run_continual(
                 train_log=train_log,
                 checkpoint=checkpoint,
                 evaluation=evaluation,
+                method_artifacts=method_artifacts,
             )
         )
         # Episodes hold every demo's pixels; releasing the stage's dataset keeps peak
@@ -321,7 +491,12 @@ def run_continual(
     }
 
     if evaluate:
-        result.save(run.artifact("result.json"))
+        baseline = (
+            baseline_from_single_task_runs(curriculum.task_keys, seed, results_root)
+            if single_task_baseline
+            else None
+        )
+        result.save(run.artifact("result.json"), baseline=baseline)
         print(
             f"\n[flowcl] {run_id} F_1 = "
             f"{result.summary().final_average_success:.3f}",

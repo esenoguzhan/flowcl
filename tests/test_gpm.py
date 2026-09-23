@@ -15,7 +15,7 @@ from flowcl.data.dataset import ChunkedActionDataset
 from flowcl.data.episode import Episode
 from flowcl.data.stats import compute_stats
 from flowcl.experiments.gate2 import collect_bases, load_subspace_config
-from flowcl.methods.base import BaseMethod
+from flowcl.methods.base import BaseMethod, TaskContext
 from flowcl.methods.gpm import GPM, allowlist, assert_allowlist, freeze_to_allowlist
 from flowcl.methods.seq_ft import SeqFT
 from flowcl.models.build import build_policy
@@ -24,6 +24,7 @@ from flowcl.train.checkpoint import LoadedCheckpoint
 from flowcl.train.trainer import TrainConfig, train_one_task
 
 NEG_TOL = 1e-8
+CTX = TaskContext(task_key=None, dataset=None, device="cpu")
 
 
 class Toy(nn.Module):
@@ -54,7 +55,7 @@ def basis_for(d_in: int, k: int, seed: int = 0):
 def gpm_for(model, basis, **kwargs):
     method = GPM(eps=0.95, **kwargs)
     method.set_memory({"a": basis})
-    method.on_task_start(1, model, None)
+    method.on_task_start(model, 1, context=CTX)
     return method
 
 
@@ -134,17 +135,18 @@ def test_name_memory_and_lifecycle_rules():
         GPM(projection="gradient")
     model = Toy()
     with pytest.raises(RuntimeError, match="no memory"):
-        GPM().on_task_start(1, model, None)
+        GPM().on_task_start(model, 1, context=CTX)
     first = GPM()
-    first.on_task_start(0, model, None)  # task 0 trains unconstrained
+    first.on_task_start(model, 0, context=CTX)  # task 0 trains unconstrained
     first.modify_gradients(model, {"step": 0})  # inactive: no-op, no grad needed
 
     basis, _ = basis_for(6, 2)
-    with pytest.raises(NotImplementedError, match="step 8"):
-        gpm_for(model, basis, update_memory=True).on_task_end(1, model, None)
+    # A memory update needs a seed namespace to seed the capture: refuse, don't invent one.
+    with pytest.raises(RuntimeError, match="seed_namespace_run_id"):
+        gpm_for(model, basis, update_memory=True).on_task_end(model, 1, context=CTX)
     method = gpm_for(model, basis)
-    method.on_task_end(1, model, None)
-    assert method.memory_extended is False
+    method.on_task_end(model, 1, context=CTX)
+    assert method.memory_extended == {1: False}
     assert method.residuals["a"]["k"] == 2
     assert method.stored_bytes() == 2 * 6 * 4
 
@@ -276,3 +278,158 @@ def test_trainer_hook_order_per_step(setup, monkeypatch):
 
 def test_seq_ft_after_step_is_a_no_op():
     assert SeqFT().after_step(None, {"step": 0}) is None
+
+
+# ---- accumulated memory (build step 8) -----------------------------------------
+
+
+@pytest.fixture()
+def capture_yaml(tmp_path):
+    """The Gate 2 capture config, relaxed so tiny fake datasets pass the N/d check."""
+    from omegaconf import OmegaConf
+
+    from flowcl.utils.libero_paths import repo_root
+
+    cfg = OmegaConf.load(repo_root() / "configs" / "analysis" / "subspace.yaml")
+    cfg.min_samples_per_dim = 0.01
+    cfg.num_workers = 0
+    cfg.batch_size = 16
+    path = tmp_path / "capture.yaml"
+    OmegaConf.save(cfg, path)
+    return str(path)
+
+
+def fresh_policy(spec):
+    torch.manual_seed(0)
+    policy = build_policy("flowpolicy_small", spec, pretrained=False)
+    for p in policy.parameters():
+        if p.requires_grad:
+            nn.init.normal_(p, std=0.05)
+    return policy
+
+
+def task_data(spec, key, seed):
+    episodes = [make_episode(spec, key, 18, seed + s) for s in range(2)]
+    return episodes
+
+
+def run_three_tasks(spec, capture_yaml, monkeypatch=None):
+    from flowcl.train import trainer as trainer_module
+
+    keys = ["toy/one", "toy/two", "toy/three"]
+    episodes = {k: task_data(spec, k, 10 * i) for i, k in enumerate(keys)}
+    stats = compute_stats(episodes[keys[0]], embodiment=spec.name, task_id=keys[0])
+    policy = fresh_policy(spec)
+    method = GPM(update_memory=True, capture_config=capture_yaml, log_interval=1)
+    optimizer_params: dict[int, set] = {}
+    if monkeypatch is not None:
+        real = trainer_module.build_optimizer
+
+        def spy(policy_, cfg_):
+            opt = real(policy_, cfg_)
+            ids = {id(p) for g in opt.param_groups for p in g["params"]}
+            optimizer_params[len(optimizer_params)] = {
+                n for n, p in policy_.named_parameters() if id(p) in ids
+            }
+            return opt
+
+        monkeypatch.setattr(trainer_module, "build_optimizer", spy)
+    snapshots = []
+    for idx, key in enumerate(keys):
+        data = ChunkedActionDataset(episodes[key], spec, stats)
+        ctx = TaskContext(task_key=key, dataset=data, device="cpu",
+                          seed_namespace_run_id="toy_ns", method_run_id="toy_run")
+        train_one_task(policy, data, small_cfg(), method=method, task_idx=idx,
+                       generator=torch.Generator().manual_seed(idx), context=ctx)
+        snapshots.append({n: p.detach().clone() for n, p in policy.named_parameters()})
+    return policy, method, optimizer_params, snapshots, keys
+
+
+def test_memory_accumulates_across_tasks_and_freezing_precedes_the_optimizer(
+    spec, capture_yaml, monkeypatch
+):
+    policy, method, optimizer_params, snapshots, keys = run_three_tasks(spec, capture_yaml, monkeypatch)
+    assert sorted(method.memory_history) == [0, 1, 2]
+    for name in policy.registry_names():
+        rhos = [method.memory_history[t][name]["rho_after"] for t in range(3)]
+        assert rhos == sorted(rhos), (name, rhos)  # occupancy never decreases
+        for t in range(3):
+            assert method.memory_history[t][name]["captured_energy_fraction"] >= 0.95 - 1e-6
+    # Task 0 trained everything; from task 1 the optimiser only ever saw registry weights.
+    assert optimizer_params[0] > set(allowlist(policy))
+    assert optimizer_params[1] == optimizer_params[2] == set(allowlist(policy))
+    frozen = [n for n in snapshots[0] if n not in set(allowlist(policy))]
+    for n in frozen:
+        assert torch.equal(snapshots[0][n], snapshots[2][n]), n
+    assert sorted(method.task_logs) == [0, 1, 2]
+    assert method.task_logs[0]["projected"] is False and method.task_logs[2]["projected"] is True
+
+
+def test_artifacts_round_trip_and_restore_verifies_the_hash(spec, capture_yaml, tmp_path):
+    from flowcl.analysis.subspace import load_bases
+    from flowcl.utils.run import file_sha256
+
+    policy, method, _, _, keys = run_three_tasks(spec, capture_yaml)
+    ctx = TaskContext(task_key=keys[1], dataset=None, device="cpu",
+                      seed_namespace_run_id="toy_ns", method_run_id="toy_run")
+    paths = method.save_artifacts(tmp_path, 1, context=ctx)
+    memory_path, logs_path = paths
+    assert memory_path.name == "memory_task1.pt" and logs_path.name == "gpm_logs_task1.json"
+    assert not list(tmp_path.glob("*.tmp"))
+    bases, meta = load_bases(memory_path)
+    assert meta["kind"] == "accumulated_memory"
+    assert (meta["method_run_id"], meta["seed_namespace_run_id"]) == ("toy_run", "toy_ns")
+    for name, basis in bases.items():
+        torch.testing.assert_close(basis.vectors, method._memory[name])
+
+    restored = GPM(update_memory=True, capture_config=capture_yaml)
+    restored.restore_memory(memory_path, file_sha256(memory_path), method_run_id="toy_run", task_idx=1)
+    ctx2 = TaskContext(task_key="toy/next", dataset=None, device="cpu")
+    method.on_task_start(policy, 3, context=ctx2)
+    restored.on_task_start(policy, 3, context=ctx2)
+    for a, b in zip(method._layers, restored._layers):
+        assert torch.equal(a.P, b.P), a.name
+
+    with open(memory_path, "ab") as handle:
+        handle.write(b"tamper")
+    with pytest.raises(ValueError, match="SHA-256"):
+        GPM().restore_memory(memory_path, file_sha256(logs_path))
+    with pytest.raises(ValueError, match="does not match"):
+        GPM().restore_memory(memory_path, file_sha256(memory_path), task_idx=2)
+
+
+def test_memory_capture_seeds_depend_on_namespace_task_and_index(spec, monkeypatch):
+    import flowcl.experiments.gate2 as gate2
+    from flowcl.utils.seeding import derive_seed
+
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def fake_capture(policy, dataset, cfg, device, probe_seed, capture_seed):
+        seen.append((probe_seed, capture_seed))
+        raise Stop
+
+    monkeypatch.setattr(gate2, "capture_task_grams", fake_capture)
+    method = GPM(update_memory=True)
+    for ns, key, idx in (("ns_a", "toy/one", 0), ("ns_b", "toy/one", 0), ("ns_a", "toy/one", 1)):
+        ctx = TaskContext(task_key=key, dataset=object(), device="cpu", seed_namespace_run_id=ns)
+        with pytest.raises(Stop):
+            method.on_task_end(None, idx, context=ctx)
+        assert seen[-1][1] == derive_seed(ns, f"gpm_memory::{key}", idx)
+    assert len({s[1] for s in seen}) == 3 and len({s[0] for s in seen}) == 3
+
+
+def test_interrupted_artifact_write_leaves_no_partial_file(tmp_path, monkeypatch):
+    import os
+
+    from flowcl.utils.run import atomic_write_text
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        atomic_write_text(tmp_path / "gpm_logs_task0.json", "{}")
+    assert not (tmp_path / "gpm_logs_task0.json").exists()
