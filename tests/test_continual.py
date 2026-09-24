@@ -535,6 +535,78 @@ def test_failed_t1_pairing_stops_the_run_before_evaluation(
     assert (tmp_path / "test_pair__seq_ft__seed0" / "t1_pairing.json").is_file()
 
 
+def test_stage_identity_check_is_exact(tmp_path):
+    from flowcl.models.build import build_policy
+    from flowcl.train.continual import stage_identity_check
+
+    torch.manual_seed(0)
+    state = build_policy(TINY_POLICY, load_embodiment_spec("libero_franka"), pretrained=False).state_dict()
+    ref_dir = tmp_path / "ref"
+    (ref_dir / "checkpoints").mkdir(parents=True)
+    torch.save({"state_dict": state}, ref_dir / "checkpoints" / "stage1.pt")
+    mine = tmp_path / "mine.pt"
+
+    torch.save({"state_dict": state}, mine)
+    check = stage_identity_check(mine, ref_dir, 1)
+    assert check["passed"] and check["n_different"] == 0 and check["n_tensors"] == len(state)
+
+    name = next(k for k, v in state.items() if v.is_floating_point())
+    changed = dict(state)
+    changed[name] = state[name].clone()
+    flat = changed[name].view(-1)
+    flat[0] = torch.nextafter(flat[0], flat[0] + 1)  # one element, exactly one ulp
+    torch.save({"state_dict": changed}, mine)
+    check = stage_identity_check(mine, ref_dir, 1)
+    assert not check["passed"] and check["different"] == [name]
+
+    torch.save({"state_dict": {k: v for k, v in state.items() if k != name}}, mine)
+    assert stage_identity_check(mine, ref_dir, 1)["missing"] == [name]
+    with pytest.raises(FileNotFoundError):
+        stage_identity_check(mine, ref_dir, 0)
+
+
+def test_identity_check_passes_for_a_deterministic_rerun(
+    dataset_dir, two_task_curriculum, tiny_train_cfg, tmp_path
+):
+    import json
+
+    common = dict(method_name="seq_ft", spec=load_embodiment_spec("libero_franka"),
+                  policy_config=TINY_POLICY, train_cfg=tiny_train_cfg,
+                  eval_cfg=EvalConfig(n_episodes=1), seed=0, dataset_dir=dataset_dir,
+                  pretrained=False, evaluate=False)
+    first = run_continual(two_task_curriculum, results_root=tmp_path / "a", **common)
+    second = run_continual(two_task_curriculum, results_root=tmp_path / "b",
+                           identity_reference_run=tmp_path / "a" / first.run_id,
+                           identity_stages=(0, 1), **common)
+    run_dir = tmp_path / "b" / second.run_id
+    for stage in (0, 1):
+        check = json.loads((run_dir / f"identity_stage{stage}.json").read_text())
+        assert check["passed"], check
+    assert set(second.identity_checks) == {"0", "1"}
+
+
+def test_failed_identity_check_stops_the_run_before_evaluation(
+    dataset_dir, two_task_curriculum, tiny_train_cfg, tmp_path, monkeypatch
+):
+    import flowcl.train.continual as continual_module
+
+    events = []
+    monkeypatch.setattr(continual_module, "evaluate_tasks", fake_evaluation(events))
+    monkeypatch.setattr(continual_module, "stage_identity_check",
+                        lambda *a, **k: {"passed": False, "n_different": 3, "n_tensors": 9,
+                                         "missing": [], "extra": [], "different": ["x"]})
+    with pytest.raises(RuntimeError, match="identity check failed at stage 0"):
+        run_continual(
+            two_task_curriculum, method_name="seq_ft",
+            spec=load_embodiment_spec("libero_franka"), policy_config=TINY_POLICY,
+            train_cfg=tiny_train_cfg, eval_cfg=EvalConfig(n_episodes=2), seed=0,
+            dataset_dir=dataset_dir, results_root=tmp_path, pretrained=False,
+            identity_reference_run=tmp_path / "whatever", identity_stages=(0, 1),
+        )
+    assert events == []  # stopped before any rollout
+    assert (tmp_path / "test_pair__seq_ft__seed0" / "identity_stage0.json").is_file()
+
+
 def test_require_clean_tree_refuses_a_dirty_tree(two_task_curriculum, tiny_train_cfg, tmp_path, monkeypatch):
     import flowcl.train.continual as continual_module
 

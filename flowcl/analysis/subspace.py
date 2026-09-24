@@ -341,6 +341,23 @@ def check_captured_energy(
     return fraction
 
 
+# Below this much energy outside memory (as a share of tr K), a task has no new energy: the
+# adaptive target would otherwise ask for 90% of rounding noise.
+NEW_ENERGY_ATOL = 1e-12
+
+
+def adaptive_target(proj: float, eps: float, new_energy_fraction: float | None) -> float:
+    """The captured-energy target: ``eps``, or ``min(1, max(eps, proj + f (1 - proj)))``.
+
+    Returns ``eps`` itself (not a recomputed equal float) whenever it is the larger term, so
+    the default and the adaptive variant take bit-identical paths on a first task.
+    """
+    if new_energy_fraction is None:
+        return eps
+    adaptive = proj + new_energy_fraction * (1.0 - proj)
+    return min(1.0, adaptive) if adaptive > eps else eps
+
+
 def extend_basis(
     M: torch.Tensor | None,
     gram: torch.Tensor,
@@ -349,6 +366,7 @@ def extend_basis(
     neg_tol: float,
     rank_tol: float | None = None,
     energy_tol: float = ENERGY_TOL,
+    new_energy_fraction: float | None = None,
 ) -> tuple[torch.Tensor, dict]:
     """GPM's incremental memory update on a Gram matrix (Saha et al. 2021, Eq. 8-9).
 
@@ -365,6 +383,13 @@ def extend_basis(
     asserted *unconditionally*. Capacity exhaustion (``k_after == d``) is reported
     separately in ``info``; a full memory captures ~100% and cannot violate the check.
 
+    ``new_energy_fraction = f`` (adaptive variant) raises the target to
+    ``min(1, max(eps, proj + f (1 - proj)))``: at least ``f`` of the task's energy *not
+    already in memory* is protected, never less than ``eps`` of the total. At ``proj = 0``
+    (a first task) the target is exactly ``eps`` and the path is identical to ``None``.
+    Because ``proj + f (1 - proj) > proj`` whenever ``proj < 1``, every layer with any new
+    energy left is extended.
+
     Returns:
         ``(M_new, info)`` with ``M_new`` float64 ``(d, k_after)``.
     """
@@ -372,6 +397,8 @@ def extend_basis(
         raise ValueError(f"{layer}: Gram must be square, got {tuple(gram.shape)}")
     if not 0.0 < eps <= 1.0:
         raise ValueError(f"eps must lie in (0, 1], got {eps}")
+    if new_energy_fraction is not None and not 0.0 < new_energy_fraction < 1.0:
+        raise ValueError(f"new_energy_fraction must lie in (0, 1), got {new_energy_fraction}")
     d = gram.shape[0]
     K = gram.to(torch.float64)
     nonfinite = int((~torch.isfinite(K)).sum())
@@ -392,9 +419,11 @@ def extend_basis(
             "input energy at this layer"
         )
     proj_fraction = captured_energy_fraction(M, K)
+    target_fraction = adaptive_target(proj_fraction, eps, new_energy_fraction)
 
     residual_spectrum = torch.zeros(0, dtype=torch.float64)
-    if proj_fraction >= eps or k_before == d:
+    no_new_energy = new_energy_fraction is not None and 1.0 - proj_fraction <= NEW_ENERGY_ATOL
+    if proj_fraction >= target_fraction or k_before == d or no_new_energy:
         added = torch.zeros(d, 0, dtype=torch.float64)
     else:
         P = torch.eye(d, dtype=torch.float64) - M @ M.T
@@ -403,7 +432,7 @@ def extend_basis(
         residual_spectrum = eigenvalues
         cap = min(rank, d - k_before)
         cumulative = proj_fraction * total + torch.cumsum(eigenvalues, dim=0)
-        target = torch.tensor([eps * total], dtype=torch.float64)
+        target = torch.tensor([target_fraction * total], dtype=torch.float64)
         k = int(torch.searchsorted(cumulative, target, side="left")) + 1
         k = max(1, min(k, cap))
         U = eigenvectors[:, :k]
@@ -418,7 +447,7 @@ def extend_basis(
 
     M_new = torch.cat([M, added], dim=1)
     assert_orthonormal_columns(M_new, layer)
-    captured = check_captured_energy(M_new, K, eps, layer, tol=energy_tol)
+    captured = check_captured_energy(M_new, K, target_fraction, layer, tol=energy_tol)
     k_after = M_new.shape[1]
     return M_new, {
         "k_before": k_before,
@@ -427,6 +456,7 @@ def extend_basis(
         "d_in": d,
         "rho_after": k_after / d,
         "proj_energy_fraction": proj_fraction,
+        "target_fraction": target_fraction,
         "captured_energy_fraction": captured,
         "capacity_exhausted": k_after == d,
         "residual_spectrum": residual_spectrum,

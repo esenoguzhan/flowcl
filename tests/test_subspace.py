@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from flowcl.analysis.subspace import (
+    adaptive_target,
     assert_orthonormal_columns,
     basis_from_gram,
     captured_energy_fraction,
@@ -274,3 +275,72 @@ def test_non_finite_or_zero_grams_raise(bad):
     K = torch.full((4, 4), bad, dtype=torch.float64)
     with pytest.raises(ValueError):
         extend_basis(None, K, 0.95, "toy", neg_tol=NEG_TOL)
+
+
+# ---- adaptive target (new_energy_fraction) ------------------------------------------
+
+
+def unit(d, idx):
+    return torch.eye(d, dtype=torch.float64)[:, idx]
+
+
+def test_adaptive_target_formula_and_eps_floor():
+    assert adaptive_target(0.0, 0.95, None) == 0.95
+    assert adaptive_target(0.0, 0.95, 0.9) == 0.95        # first task: exactly eps
+    assert adaptive_target(0.9, 0.95, 0.9) == pytest.approx(0.99)
+    assert adaptive_target(1 / 3, 0.95, 0.9) == 0.95      # the eps floor binds
+    assert adaptive_target(0.9999, 0.95, 0.9) == pytest.approx(0.99999)
+
+
+def test_adaptive_first_task_is_bitwise_the_default():
+    R = activations_in(range(8), 10, 200, 0, scales=[3, 2, 1.5, 1, 0.5, 0.3, 0.2, 0.1])
+    K = R @ R.T
+    M0, info0 = extend_basis(None, K, 0.95, "toy", neg_tol=NEG_TOL)
+    M1, info1 = extend_basis(None, K, 0.95, "toy", neg_tol=NEG_TOL, new_energy_fraction=0.9)
+    assert torch.equal(M0, M1)
+    assert info1["target_fraction"] == info0["target_fraction"] == 0.95
+
+
+def test_adaptive_protects_ninety_percent_of_the_new_energy():
+    # 90% of the energy already in memory (e0..e2); the new 10% spread over e3..e7.
+    K = torch.diag(torch.tensor([30, 30, 30, 4, 3, 2.5, 0.25, 0.25, 0, 0], dtype=torch.float64))
+    M = unit(10, [0, 1, 2])
+    _, plain = extend_basis(M, K, 0.95, "toy", neg_tol=NEG_TOL)
+    M2, info = extend_basis(M, K, 0.95, "toy", neg_tol=NEG_TOL, new_energy_fraction=0.9)
+    assert plain["k_added"] == 2                          # 0.90 -> 0.97: 70% of the new energy
+    assert info["proj_energy_fraction"] == pytest.approx(0.9)
+    assert info["target_fraction"] == pytest.approx(0.99)
+    assert info["k_added"] == 3                           # 4 + 3 + 2.5 of the new 10
+    assert info["captured_energy_fraction"] >= 0.99 - 1e-6
+    share = (info["captured_energy_fraction"] - 0.9) / 0.1
+    assert share >= 0.9 - 1e-9
+    assert_orthonormal_columns(M2, "toy")
+
+
+def test_adaptive_extends_a_layer_that_is_almost_fully_covered():
+    K = torch.diag(torch.tensor([99.99, 0.01, 0, 0], dtype=torch.float64))
+    M = unit(4, [0])
+    _, plain = extend_basis(M, K, 0.95, "toy", neg_tol=NEG_TOL)
+    _, info = extend_basis(M, K, 0.95, "toy", neg_tol=NEG_TOL, new_energy_fraction=0.9)
+    assert plain["k_added"] == 0 and info["k_added"] == 1
+
+
+def test_adaptive_ignores_rounding_level_new_energy():
+    K = torch.diag(torch.tensor([1.0, 1e-14, 0, 0], dtype=torch.float64))
+    _, info = extend_basis(unit(4, [0]), K, 0.95, "toy", neg_tol=NEG_TOL, new_energy_fraction=0.9)
+    assert info["k_added"] == 0
+
+
+def test_adaptive_eps_floor_and_exhaustion():
+    K = torch.eye(3, dtype=torch.float64)
+    M2, info = extend_basis(unit(3, [0]), K, 0.95, "toy", neg_tol=NEG_TOL, new_energy_fraction=0.9)
+    assert info["target_fraction"] == 0.95               # 1/3 + 0.9 * 2/3 = 0.933 < eps
+    assert info["capacity_exhausted"] and M2.shape == (3, 3)
+    assert info["captured_energy_fraction"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("bad", [0.0, 1.0, 1.5, -0.1])
+def test_adaptive_rejects_invalid_fractions(bad):
+    with pytest.raises(ValueError, match="new_energy_fraction"):
+        extend_basis(None, torch.eye(3, dtype=torch.float64), 0.95, "toy", neg_tol=NEG_TOL,
+                     new_energy_fraction=bad)

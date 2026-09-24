@@ -155,8 +155,14 @@ class GPM(BaseMethod):
         log_interval: int = 100,
         update_memory: bool = False,
         capture_config: str = "subspace",
+        new_energy_fraction: float | None = None,
     ) -> None:
-        """``capture_config``: a ``configs/analysis/<name>.yaml`` name, or a YAML path."""
+        """``capture_config``: a ``configs/analysis/<name>.yaml`` name, or a YAML path.
+
+        ``new_energy_fraction = f`` selects the adaptive memory target
+        ``max(eps, p + f (1 - p))`` (:func:`flowcl.analysis.subspace.adaptive_target`), and
+        a distinct display name (``..._ne90`` for ``f = 0.9``). ``None`` is plain eps.
+        """
         super().__init__()
         if projection not in PROJECTION_NAMES:
             raise ValueError(
@@ -167,6 +173,13 @@ class GPM(BaseMethod):
             raise ValueError(f"eps must lie in (0, 1], got {eps}")
         if log_interval < 1:
             raise ValueError(f"log_interval must be >= 1, got {log_interval}")
+        if new_energy_fraction is not None and not 0.0 < new_energy_fraction < 1.0:
+            raise ValueError(
+                f"new_energy_fraction must lie in (0, 1), got {new_energy_fraction}"
+            )
+        self.new_energy_fraction = (
+            None if new_energy_fraction is None else float(new_energy_fraction)
+        )
         self.eps = float(eps)
         self.projection = projection
         self.residual_rtol = float(residual_rtol)
@@ -192,7 +205,10 @@ class GPM(BaseMethod):
 
     @property
     def display_name(self) -> str:
-        return PROJECTION_NAMES[self.projection]
+        name = PROJECTION_NAMES[self.projection]
+        if self.new_energy_fraction is not None:
+            name += f"_ne{round(100 * self.new_energy_fraction)}"
+        return name
 
     def config(self) -> dict:
         return {
@@ -203,6 +219,7 @@ class GPM(BaseMethod):
             "log_interval": self.log_interval,
             "update_memory": self.update_memory,
             "capture_config": self.capture_config,
+            "new_energy_fraction": self.new_energy_fraction,
         }
 
     # ---- memory ----------------------------------------------------------------
@@ -256,6 +273,7 @@ class GPM(BaseMethod):
                 name,
                 neg_tol=cfg.neg_tol,
                 rank_tol=cfg.rank_tol,
+                new_energy_fraction=self.new_energy_fraction,
             )
             self._memory[name] = M_new
             self._memory_samples[name] = self._memory_samples.get(name, 0) + acc.n[view]
@@ -289,6 +307,9 @@ class GPM(BaseMethod):
             problems.append(f"kind {meta.get('kind')!r}")
         if meta.get("eps") != self.eps:
             problems.append(f"eps {meta.get('eps')} != {self.eps}")
+        stored_f = meta.get("config", {}).get("new_energy_fraction")
+        if stored_f != self.new_energy_fraction:
+            problems.append(f"new_energy_fraction {stored_f} != {self.new_energy_fraction}")
         if method_run_id is not None and meta.get("method_run_id") != method_run_id:
             problems.append(f"method_run_id {meta.get('method_run_id')!r} != {method_run_id!r}")
         if task_idx is not None and meta.get("task_idx") != task_idx:

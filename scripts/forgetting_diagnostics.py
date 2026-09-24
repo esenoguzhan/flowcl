@@ -24,9 +24,17 @@ def main() -> None:
     parser.add_argument("--dataset-dir", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument(
+        "--method-run", default=None,
+        help="Override the config's method_run (a run directory name under results/); "
+             "recorded in the report's config. The decision rule is unchanged.",
+    )
     args = parser.parse_args()
+    config = load_diag_config(args.config)
+    if args.method_run is not None:
+        config["method_run"] = args.method_run
     run_forgetting_diagnostics(
-        load_diag_config(args.config), dataset_dir=args.dataset_dir, device=args.device,
+        config, dataset_dir=args.dataset_dir, device=args.device,
         allow_dirty=args.allow_dirty, out=args.out,
     )
 

@@ -37,7 +37,7 @@ from flowcl.models.build import build_policy, load_policy_config
 from flowcl.train.checkpoint import save_checkpoint
 from flowcl.train.pipeline import build_dataset, fit_stats
 from flowcl.train.trainer import TrainConfig, TrainLog, train_one_task
-from flowcl.utils.run import RunHandle, create_run, file_sha256, git_sha
+from flowcl.utils.run import RunHandle, atomic_write_text, create_run, file_sha256, git_sha
 from flowcl.utils.seeding import derive_seed
 
 # Default fail-fast bound for the T1 pairing check (see :func:`t1_pairing_check`).
@@ -89,6 +89,7 @@ class ContinualResult:
     seed_namespace_run_id: str | None = None
     method_registry_name: str | None = None
     t1_pairing: dict | None = None
+    identity_checks: dict[str, dict] = field(default_factory=dict)
 
     def estimates(self) -> dict[tuple[int, str], Estimate]:
         """``(stage, task_key) -> Estimate``, so no rate travels without its CI."""
@@ -124,6 +125,7 @@ class ContinualResult:
             "stages": [record.as_dict() for record in self.stages],
             "systems": self.systems,
             "t1_pairing": self.t1_pairing,
+            "identity_checks": self.identity_checks,
         }
 
     def save(self, path: str | Path, baseline: dict[str, float] | None = None) -> Path:
@@ -153,6 +155,36 @@ def seed_namespace_run_id(curriculum: str, seed: int) -> str:
 def method_label(method, method_name: str) -> str:
     """The variant-specific name used in run ids and reports (e.g. ``gpm_projected_adam``)."""
     return getattr(method, "display_name", None) or method_name
+
+
+def stage_identity_check(checkpoint: Path, reference_run: Path, stage: int) -> dict:
+    """Every state-dict tensor of this stage must equal the reference run's, bit for bit.
+
+    For a variant that is identical to a reference run up to some stage by construction
+    (e.g. the adaptive GPM target equals eps at T1, so stages 0-1 match the plain GPM
+    run). Unlike :func:`t1_pairing_check` this is exact: training here is deterministic
+    (a crashed and rerun GPM run reproduced its checkpoints bitwise). Method-agnostic.
+    """
+    ref_path = Path(reference_run) / "checkpoints" / f"stage{stage}.pt"
+    if not ref_path.is_file():
+        raise FileNotFoundError(f"identity reference checkpoint missing: {ref_path}")
+    mine = torch.load(checkpoint, map_location="cpu", weights_only=False)["state_dict"]
+    ref = torch.load(ref_path, map_location="cpu", weights_only=False)["state_dict"]
+    shared = sorted(set(mine) & set(ref))
+    different = [n for n in shared if not torch.equal(mine[n], ref[n])]
+    missing, extra = sorted(set(ref) - set(mine)), sorted(set(mine) - set(ref))
+    return {
+        "stage": stage,
+        "reference_run": str(reference_run),
+        "reference_checkpoint": str(ref_path),
+        "reference_sha256": file_sha256(ref_path),
+        "n_tensors": len(shared),
+        "n_different": len(different),
+        "different": different,
+        "missing": missing,
+        "extra": extra,
+        "passed": not (different or missing or extra),
+    }
 
 
 def t1_pairing_check(
@@ -231,6 +263,8 @@ def run_continual(
     require_clean_tree: bool = False,
     t1_reference_run: Path | None = None,
     t1_pairing_max_rel_diff: float = T1_PAIRING_MAX_REL_DIFF,
+    identity_reference_run: Path | None = None,
+    identity_stages: tuple[int, ...] = (),
 ) -> ContinualResult:
     """Train one policy through ``curriculum`` under ``method_name``.
 
@@ -249,6 +283,10 @@ def run_continual(
             runs need clean, committed provenance).
         t1_reference_run: Run directory to compare the stage-0 model against
             (:func:`t1_pairing_check`); the run stops there if the check fails.
+        identity_reference_run: Run directory whose checkpoints this run must equal
+            exactly at ``identity_stages`` (:func:`stage_identity_check`); checked right
+            after each listed stage's checkpoint, before evaluation, and the run stops
+            on a mismatch.
 
     Seeding: every stream derives from :func:`seed_namespace_run_id`, not from this
     run's id; both ids are recorded in the config, checkpoints, eval files and result.
@@ -256,7 +294,7 @@ def run_continual(
     Per-stage order (a checkpoint never references an artifact that does not exist)::
 
         train (ends with on_task_end) -> save_artifacts -> sha256 -> save_checkpoint
-        -> [stage 0: T1 pairing check] -> evaluate
+        -> [stage 0: T1 pairing check] -> [identity check] -> evaluate
 
     Returns:
         A :class:`ContinualResult` whose artifacts are already on disk.
@@ -292,6 +330,10 @@ def run_continual(
                 "t1_reference_run": str(t1_reference_run) if t1_reference_run else None,
                 "t1_pairing_max_rel_diff": t1_pairing_max_rel_diff,
                 "single_task_baseline": single_task_baseline,
+                "identity_reference_run": (
+                    str(identity_reference_run) if identity_reference_run else None
+                ),
+                "identity_stages": list(identity_stages),
             },
             "curriculum": {
                 "name": curriculum.name,
@@ -436,6 +478,26 @@ def run_continual(
                     f"{check['rel_weight_diff']:.4f} > {t1_pairing_max_rel_diff}. The run's "
                     "Task-1 stream or initialisation does not match the reference; stopping "
                     "before 5 h of dependent work (details in t1_pairing.json)."
+                )
+
+        if identity_reference_run is not None and stage_idx in identity_stages:
+            check = stage_identity_check(checkpoint, identity_reference_run, stage_idx)
+            result.identity_checks[str(stage_idx)] = check
+            atomic_write_text(
+                run.artifact(f"identity_stage{stage_idx}.json"), json.dumps(check, indent=2) + "\n"
+            )
+            print(
+                f"[flowcl] identity vs {identity_reference_run} stage {stage_idx}: "
+                f"{check['n_different']} of {check['n_tensors']} tensors differ",
+                flush=True,
+            )
+            if not check["passed"]:
+                raise RuntimeError(
+                    f"identity check failed at stage {stage_idx}: {check['n_different']} "
+                    f"tensors differ (missing {len(check['missing'])}, extra "
+                    f"{len(check['extra'])}) from {identity_reference_run}. The run is not "
+                    "the paired variant it claims to be; stopping before evaluation "
+                    f"(details in identity_stage{stage_idx}.json)."
                 )
 
         # §8.2: evaluate on every task, including the unseen ones, or FWT is lost.

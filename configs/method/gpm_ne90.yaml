@@ -1,0 +1,25 @@
+# gpm_ne90: gpm_projected_adam with the adaptive memory target (the causal test after the
+# forgetting diagnostics, docs/runs/2026-09-24_gpm_forgetting_diagnostics.md §8).
+#
+# Identical to configs/method/gpm.yaml except new_energy_fraction. After each task the
+# memory is extended until it captures
+#
+#     c_target = max(eps, p + new_energy_fraction * (1 - p))
+#
+# of the task's input energy, p = the share already inside memory: at least 90% of each
+# task's *new* energy is protected, never less than eps of the total. At T1 (p = 0) the
+# target is exactly eps, so stage 0, T1's memory and stage 1 are bitwise identical to the
+# gpm_projected_adam seed-0 run (checked fail-fast by the runner's identity check).
+# Pre-registered outcome rule: configs/analysis/adaptive_gpm.yaml. Display name
+# gpm_projected_adam_ne90; registry name gpm.
+name: gpm
+
+eps: 0.95
+projection: gradient_and_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+new_energy_fraction: 0.90

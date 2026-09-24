@@ -389,6 +389,9 @@ def test_artifacts_round_trip_and_restore_verifies_the_hash(spec, capture_yaml, 
     restored.on_task_start(policy, 3, context=ctx2)
     for a, b in zip(method._layers, restored._layers):
         assert torch.equal(a.P, b.P), a.name
+    assert meta["config"]["new_energy_fraction"] is None
+    with pytest.raises(ValueError, match="new_energy_fraction"):
+        GPM(new_energy_fraction=0.9).restore_memory(memory_path, file_sha256(memory_path))
 
     with open(memory_path, "ab") as handle:
         handle.write(b"tamper")
@@ -396,6 +399,29 @@ def test_artifacts_round_trip_and_restore_verifies_the_hash(spec, capture_yaml, 
         GPM().restore_memory(memory_path, file_sha256(logs_path))
     with pytest.raises(ValueError, match="does not match"):
         GPM().restore_memory(memory_path, file_sha256(memory_path), task_idx=2)
+
+
+def test_adaptive_variant_name_config_and_method_yaml():
+    from flowcl.data.config import load_method_config
+    from flowcl.train.continual import continual_run_id
+
+    assert GPM().display_name == "gpm_projected_adam"
+    assert GPM().config()["new_energy_fraction"] is None
+    variant = GPM(new_energy_fraction=0.9)
+    assert variant.display_name == "gpm_projected_adam_ne90"
+    assert variant.config()["new_energy_fraction"] == 0.9
+    assert (continual_run_id(variant.display_name, "seq_hetero", 0)
+            == "seq_hetero__gpm_projected_adam_ne90__seed0")
+    for bad in (0.0, 1.0, 1.2):
+        with pytest.raises(ValueError, match="new_energy_fraction"):
+            GPM(new_energy_fraction=bad)
+
+    name, kwargs = load_method_config("gpm_ne90")
+    plain_name, plain = load_method_config("gpm")
+    assert name == plain_name == "gpm"
+    assert kwargs.pop("new_energy_fraction") == 0.9
+    assert kwargs == plain  # otherwise identical to the plain GPM config
+    assert GPM(**load_method_config("gpm_ne90")[1]).display_name == "gpm_projected_adam_ne90"
 
 
 def test_memory_capture_seeds_depend_on_namespace_task_and_index(spec, monkeypatch):

@@ -96,6 +96,13 @@ def main() -> None:
         ),
     )
     parser.add_argument("--no-t1-check", action="store_true")
+    parser.add_argument(
+        "--identity-reference-run",
+        type=Path,
+        default=None,
+        help="Run whose checkpoints this run must equal bitwise at --identity-stages.",
+    )
+    parser.add_argument("--identity-stages", type=int, nargs="*", default=[])
     parser.add_argument("--t1-pairing-max-rel-diff", type=float, default=None)
     args = parser.parse_args()
 
@@ -171,6 +178,8 @@ def main() -> None:
             if args.t1_pairing_max_rel_diff is not None
             else T1_PAIRING_MAX_REL_DIFF
         ),
+        identity_reference_run=args.identity_reference_run,
+        identity_stages=tuple(args.identity_stages),
     )
 
 
