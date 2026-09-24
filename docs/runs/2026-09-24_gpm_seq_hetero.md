@@ -506,7 +506,14 @@ arbitrary switch of every layer to ε = 0.99:
 - The protection rule is settled first; then the final configuration is repeated across seeds.
 - That needs seq_ft seeds 1–2 for pairing (about 5.5 h each), plus about 5 h per method run.
 
-The results will be recorded in `docs/runs/2026-09-2X_gpm_forgetting_diagnostics.md`.
+**Outcome** (24 Sep, `2026-09-24_gpm_forgetting_diagnostics.md`):
+- **Case D in both comparisons.** Loss damage is selective by the pre-registered ratio, but no layer
+  gives the forgotten task twice the control's interference, and the tail is flat.
+- **Two localized mechanisms are ruled out:** direct interference that is larger for the forgotten
+  task, and drift amplification.
+- **What remains points to roughly uniform residual interference** (~9% per layer, ~30% of seq_ft's)
+  that the tasks tolerate differently in closed loop.
+- That record's §8 sets out the next decision.
 
 ---
 
