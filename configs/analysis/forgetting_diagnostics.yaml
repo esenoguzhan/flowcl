@@ -1,0 +1,76 @@
+# No-training forgetting diagnostics after the four-task gpm_projected_adam run (seed 0).
+#
+# PRE-REGISTERED before the diagnostics run (docs/runs/2026-09-24_gpm_seq_hetero.md §14).
+# Commit this file first: scripts/forgetting_diagnostics.py refuses a dirty tree.
+#
+# The diagnostics localize a likely mechanism for the T2/T3 forgetting; they do not
+# establish causality. The causal test is the adaptive-GPM intervention (case A only).
+
+# Run directories under results/. Both share the seq_ft seed namespace.
+method_run: seq_hetero__gpm_projected_adam__seed0
+reference_run: seq_hetero__seq_ft__seed0
+
+# Fixed-batch loss probe L[i][j]: the pilot's exact probe (same tags), so seq_ft's stage-0/1
+# values reproduce pilot.json's recorded references.
+probe:
+  batch_size: 64
+  n_batches: 16
+  seed_tags:
+    shuffle: gpm_pilot_probe::shuffle
+    flow_time: gpm_pilot_probe::flow_time
+    noise: gpm_pilot_probe::noise
+
+# Instrument check (fail loud): seq_ft L[0][0], L[0][1], L[1][0], L[1][1] against
+# pilot.json references (stage0 and seq_ft_stage1 probes), to this relative tolerance.
+instrument_check:
+  pilot_json: gpm_pilot/pilot.json   # under results/
+  rel_tol: 1.0e-3
+
+# Input Grams: Gate 2's capture (configs/analysis/<capture_config>.yaml) on the memory's
+# primary view. Seeds derive_seed(seed_namespace, "<tag>::<task_key>", 0) — independent of
+# the stage, so K^(i) and K^(i+1) see identical observations, s and noise.
+capture_config: subspace
+capture_seed_tags:
+  probe: diag_interference_probe
+  capture: diag_interference
+
+# Curriculum positions (0 = Spatial, 1 = Object, 2 = Goal, 3 = LIBERO-10). A transition
+# [a, b] trains task b; target = the task forgotten across it, control = a task retained
+# across the same update. The primary comparison decides; the secondary replicates.
+comparisons:
+  primary:
+    transition: [1, 2]   # Goal trains
+    target: 1            # Object: 78% -> 2%
+    control: 0           # Spatial: 94% -> 90%
+  secondary:
+    transition: [2, 3]   # LIBERO-10 trains
+    target: 2            # Goal: 94% -> 56%
+    control: 0           # Spatial: 90% -> 88%
+
+# Pre-registered decision rule. R_O = L[b][target]/L[a][target], R_S = the same for the
+# control. q_l = r_l(target)/r_l(control) per registry layer (zero/inf rules in
+# flowcl.analysis.interference.relative_interference); Q = median of q_l per half, on the
+# stage-a (direct) and stage-b (after drift) activations.
+#
+#   loss state:  stable        R_O <  loss_ratio_min
+#                nonselective  R_O >= loss_ratio_min and R_O/R_S <  selectivity_min
+#                selective     R_O >= loss_ratio_min and R_O/R_S >= selectivity_min
+#   case C  stable, whatever Q                     rollout / probe-loss mismatch
+#   case E  nonselective                           non-selective degradation; inconclusive
+#   case A  selective, Q_direct >= q_large (either half)            direct interference
+#   case B  selective, Q_direct small, Q_drift >= q_large (either half)  drift / stale bases
+#   case D  selective, both small                  sparse or downstream interference
+#
+# All thresholds are judgements, not calibrated bounds. All boundaries are inclusive.
+decision:
+  loss_ratio_min: 2.0
+  selectivity_min: 2.0
+  q_large: 2.0
+
+# Reported, not decisive: tail of q_l per half and overall.
+reporting:
+  percentiles: [0.75, 0.90]
+  q_share_threshold: 2.0
+  top_k: 5
+
+out: forgetting_diag/report.json   # under results/

@@ -154,3 +154,80 @@ def energy_weighted_ratio(
     if len(parallel) != len(total) or not parallel:
         raise ValueError(f"{layer}: need matching, non-empty per-batch energies")
     return c_from_energies(sum(parallel), sum(total), layer)
+
+
+# ---- activation interference (forgetting diagnostics) --------------------------
+#
+# Where ``c_l`` asks how much of a *gradient* points into the protected subspace, these
+# ask how much a realised *update* changes an old task's layer output. With the old
+# task's inputs to the layer stacked as columns of ``X`` and ``K = X X^T`` (the Gram that
+# :func:`flowcl.experiments.gate2.capture_task_grams` streams):
+#
+#     ||ΔW X||_F² = tr(ΔW K ΔW^T),    ||W X||_F² = tr(W K W^T),
+#     ||(I - M M^T) X||_F² / ||X||_F² = 1 - tr(M^T K M) / tr K,
+#
+# so every quantity comes from the Gram, exactly, without storing activations.
+
+
+def _quadratic_trace(A: torch.Tensor, K: torch.Tensor) -> float:
+    """``tr(A K A^T)`` in float64, clamped at 0 (``K`` is PSD; negatives are rounding)."""
+    return max(float(((A @ K) * A).sum()), 0.0)
+
+
+def activation_interference(
+    dW: torch.Tensor, W: torch.Tensor, K: torch.Tensor, layer: str = ""
+) -> float:
+    """``r = ||ΔW X||_F / ||W X||_F = sqrt(tr(ΔW K ΔW^T) / tr(W K W^T))``.
+
+    Both zero -> 0 (nothing moved on inputs that produce nothing). Only the denominator
+    zero -> ``inf`` (the layer produced no output on these inputs, and the update does).
+
+    Args:
+        dW: Weight change ``(d_out, d_in)``.
+        W: Reference weight ``(d_out, d_in)``, the start of the transition.
+        K: The old task's input Gram ``(d_in, d_in)`` at this layer.
+    """
+    if dW.shape != W.shape or W.ndim != 2:
+        raise ValueError(f"{layer}: dW {tuple(dW.shape)} and W {tuple(W.shape)} must match")
+    if K.shape != (W.shape[1], W.shape[1]):
+        raise ValueError(
+            f"{layer}: Gram is {tuple(K.shape)} but W is {tuple(W.shape)}; the Gram lives "
+            "in the input dimension (dim 1 of nn.Linear.weight)"
+        )
+    tensors = {"dW": dW, "W": W, "K": K}
+    for name, t in tensors.items():
+        nonfinite = int((~torch.isfinite(t)).sum())
+        if nonfinite:
+            raise ValueError(f"{layer}: {name} has {nonfinite} non-finite entries")
+    K64 = 0.5 * (K.to(torch.float64) + K.to(torch.float64).T)
+    num = _quadratic_trace(dW.to(torch.float64), K64)
+    den = _quadratic_trace(W.to(torch.float64), K64)
+    if den == 0.0:
+        return 0.0 if num == 0.0 else math.inf
+    return math.sqrt(num / den)
+
+
+def energy_outside(M: torch.Tensor, K: torch.Tensor) -> float:
+    """``1 - tr(M^T K M) / tr K``: the share of the inputs' energy the memory leaves free."""
+    from flowcl.analysis.subspace import captured_energy_fraction
+
+    return 1.0 - captured_energy_fraction(M.to(torch.float64), K.to(torch.float64))
+
+
+def relative_interference(target: float, control: float) -> float | None:
+    """``q = r_target / r_control`` with explicit zero/inf rules; ``None`` = excluded.
+
+    * both zero, or both inf: excluded (``None``) — no comparison is defined;
+    * control zero or target inf (the other finite and non-zero): ``inf``;
+    * target zero or control inf (the other finite): ``0``.
+    """
+    for name, v in (("target", target), ("control", control)):
+        if math.isnan(v) or v < 0.0:
+            raise ValueError(f"{name} interference must be >= 0 and not NaN, got {v}")
+    if (target == 0.0 and control == 0.0) or (math.isinf(target) and math.isinf(control)):
+        return None
+    if math.isinf(target) or control == 0.0:
+        return math.inf
+    if target == 0.0 or math.isinf(control):
+        return 0.0
+    return target / control

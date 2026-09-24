@@ -2,7 +2,8 @@
 
 **Status:** the pre-registered plasticity criteria are **met on all four tasks** (T4 borderline).
 Final retention is **met for T1 only**: T2 (Object) ends at 0%, T3 (Goal) at 56%. The SGP fallback
-is **not triggered**. The pre-registered rules do not say what follows a retention failure (§14).  
+is **not triggered**. The pre-registered rules did not cover a retention failure; §14 sets the next
+step: no-training diagnostics under a newly pre-registered decision rule.  
 **Date (local, CEST / UTC+2):** Thu 24 Sep 2026, 12:41 → 17:38 (4 h 58 min). A first attempt was lost
 to a machine crash on 23 Sep at 16:04, during stage 2 (§10).  
 **Machine:** `gamma`, RTX 4090, AMP on (Gate 1 recipe)  
@@ -13,8 +14,9 @@ to a machine crash on 23 Sep at 16:04, during stage 2 (§10).
 (`2026-09-22_gate3.md`), pilot (`2026-09-23_gpm_pilot.md`)
 
 This note accompanies `results/gpm_seq/report.json`, written by `scripts/sequence_report.py`. Cite
-the JSON for numbers. Numbers marked **†** were computed for this note from the run's artifacts with
-one-off scripts and are **not** in `report.json` (§12).
+the JSON for numbers. Every number here is in it; where the key is not obvious, it is named. The
+first draft of this note computed several of them with one-off scripts; they now come from the
+report (§12, item 8).
 
 ---
 
@@ -49,16 +51,21 @@ Point estimates decide. A CI that straddles its threshold is flagged `borderline
 
 ## 2. Decision
 
+**Overall.** This run falsified the capacity-collapse hypothesis it was built to test. Fixed
+total-energy GPM strongly protected T1 but allocated substantially less coverage to the novel
+input-energy components introduced by T2–T4. T2 and T3 were subsequently forgotten; the planned
+diagnostics (§14) test whether residual under-protection explains those failures.
+
 | Question | Answer |
 |---|---|
 | Pre-registered outcome | **Plasticity OK on all four tasks** (T4 borderline). **Final retention OK on T1, FAIL on T2 (0%) and T3 (56%).** SGP fallback **not triggered**. |
-| Did memory exhaust the free subspace in T3/T4? This is the risk the step was built to probe. | **No.** After T4 the median occupancy is 0.615 in the trunk and 0.058 in the decoder. Only `action_in` (`d_in = 7`) is full, and it has been full since T1 (§5). |
+| Did memory exhaust the free subspace in T3/T4? This is the risk the step was built to probe. | **Capacity was not globally exhausted.** After T4 the median occupancy is 0.615 in the trunk and 0.058 in the decoder. Only `action_in` (`d_in = 7`) is full, and it has been full since T1. But `trunk.blocks.{1..7}.mlp.fc2` already sit at ρ = 0.75–0.82, so stronger protection could make capacity a real T3/T4 constraint (§5). |
 | Did plasticity collapse? | **No.** 90 / 78 / 94 / 90% against thresholds of 75 / 63 / 85 / 83%. A small cost may be emerging: −6 and −8 pp against seq_ft on T3 and T4, with CIs reaching 0 (§8). |
 | Is T1 retained? | **Yes.** 88% after three more tasks (90% at stage 0). That is +88 pp over seq_ft. |
 | Are T2 and T3 retained? | **No.** Object fell from 78% to 2% as soon as Goal was trained, then to 0%, the same end state as seq_ft. Goal fell from 94% to 56% while LIBERO-10 was trained. |
 | Is the forgetting a pipeline defect? | **No evidence of one** (§7). Every realized update met the orthogonality bound, at worst 2.5% of it. All 565 state-dict tensors outside the allowlist are bit-identical from stage 0 to stage 3. Normalization stats were frozen at T1. Each task's projector was built from the accumulated memory. The forgetting enters through the projected layers, within GPM's known approximations. |
-| Why is T1 protected but not T2/T3? | **Not established.** Leading hypothesis (§6): ε is applied to a task's *total* input energy. Later tasks share 90–94% of theirs with earlier tasks, so the criterion protects only 22–49% of what is **new** in each later task, against 95% for T1. |
-| What does the pre-registered rule say to do next? | **Nothing.** It covers plasticity collapse (→ SGP). SGP relaxes protection, the opposite of what failed here. The next step needs a decision (§14). |
+| Why is T1 protected but not T2/T3? | **Not established.** Measured (§6): ε is applied to a task's *total* input energy. Later tasks share 90–94% of theirs with memory, so only 22–49% of what is **new** in each later task was protected, against 95% for T1. Whether this under-protection explains the forgetting remains to be tested. The diagnostics localize the likely mechanism; the adaptive-GPM intervention is the causal test. |
+| What does the pre-registered rule say to do next? | **Nothing.** It covers plasticity collapse (→ SGP). SGP relaxes protection, the opposite of what failed here. §14 sets the next step: no-training diagnostics under a newly pre-registered rule. |
 
 ---
 
@@ -100,9 +107,10 @@ reduces to minus the mean Gate 0 baseline (92 / 100 / 100%).
 
 ---
 
-## 4. Where the forgetting happens (episode level †)
+## 4. Where the forgetting happens (episode level)
 
-The same 50 episode seeds are used at every stage, so each transition is paired:
+The same 50 episode seeds are used at every stage, so each transition is paired (report
+`episode_transitions`, which raises if seeds differ between stages):
 
 | Task | Transition | both succeed | lost | gained | median success horizon |
 |---|---|---:|---:|---:|---|
@@ -128,8 +136,8 @@ Three distinct patterns:
 
 ## 5. Capacity: did memory exhaust the free subspace?
 
-**No.** Occupancy `ρ_l = k_l / d_l` is dimension-based, never decreases, and is checked (§7).
-Values are the median over the group's layers, with [min, max]:
+**Not globally.** Occupancy `ρ_l = k_l / d_l` is dimension-based, never decreases, and is checked
+(§7). Values are the median over the group's layers, with [min, max]:
 
 | Group (layers) | after T1 | after T2 | after T3 | after T4 |
 |---|---:|---:|---:|---:|
@@ -145,8 +153,8 @@ Values are the median over the group's layers, with [min, max]:
 | **decoder median ρ** (report) | **0.044** | **0.049** | **0.051** | **0.058** |
 | `k_added`, trunk / decoder | 18 278 / 2 367 | 2 621 / 1 006 | 2 050 / 349 | 1 519 / 618 |
 
-The per-group rows and the `k_added` split are †, taken from `memory_history` in
-`memory_task3.pt`. The half medians are in the report.
+Report `capacity[τ][group]` for the group rows and `capacity[τ][trunk|decoder]` for the half
+medians and `k_added`; all come from `memory_history` in `memory_task3.pt`.
 
 - **The most occupied layers** are `trunk.blocks.{1..7}.mlp.fc2`, at 0.75–0.82 after T4. For
   example, `blocks.5.mlp.fc2` holds 1 680 of 2 048 dimensions.
@@ -154,8 +162,9 @@ The per-group rows and the `k_added` split are †, taken from `memory_history` 
   dimensions: 14%, 11% and 8% of T1's 18 278.
 - **The decoder barely grows**, except for cross-attention, which reads the trunk's tokens and fills
   up like the trunk does.
-- **For four tasks, capacity is not the binding constraint.** The risk this step was built to probe
-  did not materialize.
+- **Capacity was not globally exhausted**, so the risk this step was built to probe did not
+  materialize over four tasks. But `trunk.blocks.{1..7}.mlp.fc2` already sit at ρ = 0.75–0.82: a
+  stronger protection rule could make capacity a real T3/T4 constraint.
 
 ---
 
@@ -164,17 +173,20 @@ The per-group rows and the `k_added` split are †, taken from `memory_history` 
 At the end of task τ, Eq. 9 measures how much of τ's input energy already lies in memory
 (`proj_energy_fraction`). Eq. 8 then adds directions until the total reaches ε = 0.95. Each task
 therefore leaves about 5% of its **total** energy unprotected: `captured_energy_fraction` in
-`memory_history` is ≥ 0.95 in every layer. How that 5% compares with the part of the task that is **new**, meaning
-not already in memory, differs sharply between T1 and later tasks (medians over layers †):
+`memory_history` is ≥ 0.95 in every layer. How that 5% compares with the part of the task that is
+**new**, meaning not already in memory, differs sharply between T1 and later tasks (medians over
+layers; report `capacity[τ][half].median_new_energy_protected`):
 
 | Task | trunk: energy already in memory | trunk: share of the new energy protected | decoder: already in memory | decoder: share of the new energy protected |
 |---|---:|---:|---:|---:|
 | T1 Spatial | 0 | **0.95** | 0 | **0.95** |
 | T2 Object | 0.903 | **0.49** | 0.939 | **0.24** |
 | T3 Goal | 0.921 | **0.38** | 0.943 | **0.22** |
-| T4 LIBERO-10 | 0.926 | **0.33** | 0.935 | **0.26** |
+| T4 LIBERO-10 | 0.926 | **0.33** | 0.935 | **0.27** |
 
-The protected share of new energy is `(captured − proj) / (1 − proj)`, computed per layer.
+The protected share of new energy is `(captured − proj) / (1 − proj)`, computed per layer. Layers
+whose new energy is numerically zero (`proj ≥ 1 − 1e-12`) have no share and are left out of the
+median.
 
 **Reading.**
 - For T1, the unprotected 5% is 5% of everything the task has.
@@ -186,7 +198,9 @@ The protected share of new energy is `(captured − proj) / (1 − proj)`, compu
   it shares with Spatial, its protection is much weaker than ε = 0.95 suggests. T1's is not.
 
 This fits the pattern in §4: T1 is intact, while T2 and T3 are damaged by the very next task.
-**It is a hypothesis, not a demonstrated mechanism.** Three alternatives are not excluded:
+**Whether this under-protection explains the forgetting remains to be tested.** The diagnostics
+localize the likely mechanism; the adaptive-GPM intervention is the causal test. Three alternatives
+are not excluded:
 1. **Stale bases (compounding drift).** Each memory describes a task's inputs at the weights where
    it was captured. Changes in earlier layers shift the inputs that later layers receive, and this
    compounds. It would hit T1 too, but T1 has had more of its energy protected from the start.
@@ -196,14 +210,15 @@ This fits the pattern in §4: T1 is intact, while T2 and T3 are damaged by the v
 3. **Task order or content.** This run cannot separate "second task" from "Object". That would need
    `seq_hetero_reverse`.
 
-§14 lists the cheap diagnostics that would discriminate between these.
+§14 gives the pre-registered diagnostics that discriminate between them.
 
 ---
 
 ## 7. Mechanism and numerical guarantees
 
 The median over layers of the raw-gradient overlap `c_l` with memory, and of AdamW's step before the
-update projection, logged every 100 steps †. Each cell is trunk / decoder:
+update projection, logged every 100 steps (report `dynamics[τ].gradient_c_per_step` and
+`update_c_per_step`). Each cell is trunk / decoder:
 
 | Stage (memory) | step 0 | 100 | 1 000 | 5 000 | 15 000 | 25 000 | 29 900 |
 |---|---|---|---|---|---|---|---|
@@ -223,19 +238,25 @@ update projection, logged every 100 steps †. Each cell is trunk / decoder:
    removes it. The rise at step 29 900 (lr ≈ 2.7e-9) repeats in every stage, which is consistent
    with the pilot's untested weight-decay explanation.
 
-**Guarantees checked** (report `provenance_checks`, plus † where stated):
+**Guarantees checked** (report `provenance_checks` and `dynamics`):
 - The residual `‖D M‖ ≤ 1e-6‖W‖ + 1e-3‖D‖` held on every step for every layer. Worst per stage:
-  2.44%, 2.49% and 2.45% of the bound. The median over layers was 1.5–1.9% †.
+  2.44%, 2.49% and 2.45% of the bound. The median over layers was 1.5%, 1.7% and 1.9%
+  (`median_residual_over_bound`).
 - Occupancy never decreases.
-- Frozen parameters: no non-allowlisted parameter changed from stage 0 in any later checkpoint
-  (report). A wider check over all 656 state-dict tensors, including buffers, found the 565 outside
-  the allowlist bit-identical from stage 0 to stage 3 †.
-- 90 of the 91 allowlisted layers moved; `action_in`, whose projector is exactly 0, did not †.
+- Frozen tensors (`frozen_from_stage1`, which now covers the whole state dict): all 565 state-dict
+  tensors outside the allowlist are bit-identical to stage 0 in every later checkpoint. That covers
+  T1-trained parameters, never-trained backbones and persistent buffers.
+- 90 of the 91 allowlisted layers moved at every stage; `action_in`, whose projector is exactly 0,
+  did not (`moved_allowlisted`, `unmoved_allowlisted`).
 - Normalization stats were fitted on T1 only and asserted against their fingerprint before every
   stage.
-- Each task's projector was built from the memory accumulated so far †:
-  - every task's `k_before` equals the previous task's `k_after`;
-  - `_update_memory` writes the extended basis back into `_memory`, which `on_task_start` then uses
+- Each task's projector was built from the memory accumulated so far (`memory_chained`, PASS):
+  - every task's `k_before` equals the previous task's `k_after`, and each stored basis has its
+    recorded rank;
+  - the previous memory lies inside the next: `‖M_{τ−1}ᵀ M_τ‖²_F / k_{τ−1}` = 1 − 7e-16 at every
+    step. Equal ranks alone would not show this;
+  - it is also the exact prefix of the next (`prefix_identical`). In the code, `_update_memory`
+    writes the extended basis back into `_memory`, which `on_task_start` then uses
     (`flowcl/methods/gpm.py:260`, `:325`).
 
 ---
@@ -270,16 +291,29 @@ Stage 1 of this run repeats the pilot's T1→T2 experiment:
 | Spatial | 80.0 [68, 90] | 94.0 [86, 100] | **+14 pp [+2, +26]** |
 | Object | 88.0 [78, 96] | 78.0 [66, 88] | −10 pp [−24, +4] |
 
-The two T1 memories were compared directly †:
+The two T1 memories were compared directly at ε = 0.95 (report
+`pilot_comparison.t1_memory_overlap`):
+- **Notation.** `a` is the pilot's basis: Gate 2's `U`, cut to its ε = 0.95 prefix exactly as the
+  pilot used it (Gate 2 stores `U` up to ε = 0.99). `b` is this run's `memory_task0`. With
+  `s = ‖M_aᵀ M_b‖²_F`:
+  - `s/k_a = 1` means the pilot's basis lies inside this run's;
+  - `s/k_b = 1` means the reverse.
 - **How the capture works.** It iterates the full T1 dataset in a fixed order, and its token
   subsample has a fixed seed. The capture seed draws only the flow time `s` and the noise that forms
   the decoder's noisy-action input.
-- **The trunk memories are identical:** `‖M_aᵀ M_b‖² / max k` = 1.000, with equal ranks.
-- **The decoder memories differ slightly:**
-  - self-attention: overlap median 0.98 (min 0.89);
-  - MLP: median 0.99 (min 0.94);
-  - cross-attention: median 1.00 (min 0.90);
-  - `action_out`: 0.91, and it holds 3 more dimensions in this run.
+- **The trunk memories are identical.** `s/k_a` = 1.000 and `s/k_b` = 1.000 at the median (min
+  0.999); ranks differ by at most one dimension.
+- **The decoder memories differ slightly**, in both directions:
+
+  | Decoder group | `s/k_a` median (min) | `s/k_b` median (min) | `k_b − k_a` |
+  |---|---:|---:|---|
+  | self-attention | 0.998 (0.888) | 0.988 (0.940) | −1 to +1 |
+  | MLP | 0.997 (0.975) | 0.989 (0.942) | 0 to +4 |
+  | cross-attention | 1.000 (0.983) | 1.000 (0.900) | 0 to +1 |
+  | `action_out` | 0.984 | 0.910 | +3 (40 vs 37) |
+
+  For `action_out`, the pilot's basis lies almost entirely inside this run's, which adds three
+  directions. The self-attention bases are slightly rotated relative to each other near the ε cutoff.
 
 **Consequence.** A perturbation confined to the low-energy edge of the decoder memory moved stage-1
 outcomes by 10–14 pp, and one of the two differences lies outside its CI. Rollout CIs cover
@@ -313,9 +347,10 @@ time and nothing else.
 | `seed_namespace` | PASS: `seq_hetero__seq_ft__seed0` |
 | `t1_pairing` | PASS: relative weight difference **0.0** overall and in every group; final and last-50 losses equal to seq_ft's |
 | `occupancy_non_decreasing` | PASS |
+| `memory_chained` | PASS: each memory contains the previous one (containment 1 − 7e-16) as its exact prefix, and the ranks chain |
 | `residuals_within_bound` | PASS: worst 0.0249 of the bound |
 | `artifact_hashes_match` | PASS: every `method_artifacts` SHA-256 in every checkpoint matches the file on disk |
-| `frozen_from_stage1` | PASS: no non-allowlisted parameter differs from stage 0 |
+| `frozen_from_stage1` | PASS: all 565 state-dict tensors outside the allowlist equal stage 0; 90 of 91 allowlisted layers moved per stage |
 
 ---
 
@@ -348,16 +383,23 @@ time and nothing else.
 5. **Summary metrics have no CIs.** F_1, NBT and AUC are point values, as in Gate 1. Spec §11 asks
    for a CI on every number, and a paired bootstrap over rollouts is not yet implemented.
 6. **FWT is uninformative** on this curriculum (§3).
-7. **The pre-registration has a gap.** It anticipated plasticity collapse, not retention failure
-   with plasticity intact (§14).
-8. **Numbers marked † come from one-off scripts** over the listed artifacts:
-   - the episode transitions and per-group capacity (§4, §5);
-   - the new-energy shares (§6);
-   - the per-step `c_l` table (§7);
-   - the basis overlaps (§9);
-   - the 656-tensor check (§7).
+7. **The pre-registration had a gap.** It anticipated plasticity collapse, not retention failure
+   with plasticity intact. For the next step, the gap is closed by a separate decision rule,
+   committed before the diagnostics run (§14).
+8. **One-off numbers were moved into the report.** The first draft of this note computed several
+   numbers with one-off scripts. `sequence_report.py` now computes all of them, and the report was
+   regenerated:
+   - the episode transitions (§4);
+   - the per-group capacity and new-energy shares (§5, §6);
+   - the per-step `c_l` (§7);
+   - the whole-state-dict frozen check and the memory chain (§7);
+   - the T1 basis overlaps (§9).
 
-   Before any of them is cited in the thesis, they belong in `sequence_report.py`.
+   Two values changed:
+   - T4's decoder new-energy median went from 0.26 to 0.27, because the one-off median did not
+     exclude layers whose share is undefined.
+   - The §9 overlaps are now the directional `s/k_a` and `s/k_b`, which replace an ad-hoc `max(k)`
+     normalization.
 
 ---
 
@@ -365,15 +407,17 @@ time and nothing else.
 
 1. **Anything beyond one seed.** §9 shows single cells move 10–14 pp from a decoder-memory
    perturbation alone.
-2. **Why T2 and T3 are forgotten.** §6 is a hypothesis with three live alternatives.
+2. **Why T2 and T3 are forgotten.** §6 measures an under-protection, but whether it explains the
+   forgetting is open, with three live alternatives.
 3. **Whether a stricter memory criterion fixes retention** without costing plasticity or capacity.
-4. **Loss-level forgetting.** This run has no fixed-batch probe-loss matrix; the pilot had one.
+4. **Loss-level forgetting.** This run has no fixed-batch probe-loss matrix; the pilot had one. The
+   diagnostics add it (§14).
 5. **Whether the pattern depends on task order** (no `seq_hetero_reverse` run).
 6. **Anything about `gpm_grad_only`, SGP or other ε values.**
 
 ---
 
-## 14. Consequences and next step (decision needed)
+## 14. Consequences and next step (decided)
 
 **Where the pre-registered plan stands.**
 - The build-step-8 plan said: more seeds if the criteria pass, the SGP fallback if they fail. The
@@ -383,29 +427,86 @@ time and nothing else.
 - **SGP is not indicated by this failure mode.** It scales protection down by importance, trading
   stability for plasticity. Here plasticity held and stability failed.
 
-**Options, in order of information per GPU-hour:**
+**Next step: no-training diagnostics.**
+- **How they run.** `scripts/forgetting_diagnostics.py`, on the existing checkpoints. The decision
+  rule is pre-registered in `configs/analysis/forgetting_diagnostics.yaml` and committed before the
+  run; the script refuses a dirty tree.
+- **What they can show.** They localize the likely mechanism. They cannot establish causality.
 
-1. **Diagnostics with no training** (recommended first; about 1 h including code, on the existing
-   checkpoints):
-   1. A fixed-batch probe-loss matrix `L[i][j]` for all four checkpoints of both runs, as in pilot
-      §3. It shows whether Object's collapse is a large loss increase, or a cliff on a modest one.
-   2. The per-layer interference activation `‖ΔW x‖ / ‖W x‖` on Object's inputs. This is the pilot's
-      §10 follow-up 1, still open. Compute it with stage-1 inputs, which measures the direct ε
-      residual, and with the stage-2 checkpoint's own inputs, which measures compounded drift. The
-      result separates §6's hypothesis from alternative 1.
-   3. Add the new-energy share (§6) and the per-group capacity (§5) to `sequence_report.py`, so both
-      are in `report.json`.
-2. **A pre-registered protection variant**: seed 0, four tasks, about 5 h. Which one depends on
-   step 1. Candidates:
-   - a criterion on the *new* energy: extend until `(captured − proj)/(1 − proj) ≥ ε_new` as well as
-     `captured ≥ ε`;
-   - a per-task increasing ε, as in the paper;
-   - ε = 0.99 from T2 on.
+1. **A fixed-batch loss matrix** `L[i][j]` for all four checkpoints of both runs, using the pilot's
+   exact probe. seq_ft's stage-0/1 cells must reproduce the pilot's recorded values; the script
+   fails loudly otherwise.
+2. **Per-layer activation interference** `r_l = ‖ΔW X‖ / ‖W X‖`, computed exactly from input Grams.
+   The primary comparison takes the update that trained Goal (stage 1 → 2) and applies it to:
+   - Object's inputs (the target, forgotten);
+   - Spatial's inputs (the control, which survived the same update).
 
-   Each costs capacity. The trunk is 38% free at the median, but `mlp.fc2` layers are already at
-   0.82.
-3. **Seeds 1–2**, only once the configuration is settled, as the build-step-8 plan requires. This
-   needs seq_ft seeds 1–2 for pairing (about 5.5 h each), plus the method runs (about 5 h each).
+   Each is measured two ways:
+   - **direct**, on stage-1 activations: the unprotected residual;
+   - **after drift**, on stage-2 activations: the same update on drifted inputs.
+
+   The capture seeds do not depend on the stage, so both measurements see identical observations,
+   `s` and noise. A secondary comparison repeats this for Goal across LIBERO-10's update
+   (stage 2 → 3).
+
+**Pre-registered decision rule** (as committed in the config):
+
+The quantities:
+- the loss ratios `R_O = L[2][Object] / L[1][Object]` and `R_S = L[2][Spatial] / L[1][Spatial]`;
+- per layer, `q_l = r_l(Object) / r_l(Spatial)`, with explicit zero and inf rules:
+  - both zero, or both inf: the layer is excluded;
+  - control zero or target inf: `q_l` is inf;
+  - target zero or control inf: `q_l` is 0;
+- `Q_direct` and `Q_drift`, the median of `q_l` per half on stage-1 and stage-2 activations.
+  "Large" means `Q ≥ 2` in either half.
+
+| Loss state | Condition (inclusive) |
+|---|---|
+| approximately stable | `R_O < 2` |
+| non-selective worsening | `R_O ≥ 2` and `R_O / R_S < 2` |
+| selective worsening | `R_O ≥ 2` and `R_O / R_S ≥ 2` |
+
+Exactly one case applies:
+
+| Case | Condition | Interpretation → next step |
+|---|---|---|
+| C | approximately stable, whatever Q is | **Rollout / probe-loss mismatch.** Closed-loop fragility is one candidate, not a conclusion → inspect rollouts and task order. Stronger projection is not yet justified. |
+| E | non-selective worsening | **Non-selective degradation.** The control comparison is inconclusive. |
+| A | selective, `Q_direct` large | **Direct unprotected interference** → test adaptive GPM. |
+| B | selective, `Q_direct` small, `Q_drift` large | **Compounded representation drift / stale bases.** |
+| D | selective, both Q small | **Sparse-layer or downstream interference** that the medians miss → inspect the tail and the top layers. |
+
+Low medians alone are never read as fragility. Always reported, but not decisive:
+- the 75th and 90th percentiles and the maximum of `q_l`;
+- the share of layers with `q_l ≥ 2`;
+- the top five layers with their groups;
+- the seq_ft anchor `r_gpm / r_seqft`;
+- the energy outside memory before and after drift;
+- the Goal replication, flagged if it disagrees with the primary case.
+
+The thresholds are judgements, not calibrated bounds.
+
+**If case A: the adaptive variant, which is the causal test.** This is a single variant, not an
+arbitrary switch of every layer to ε = 0.99:
+
+    c_target = max(0.95, p + 0.90 (1 − p)),    p = proj_energy_fraction
+
+- **What it protects.** At least 90% of each task's new energy. At p ≈ 0.90 its effective total
+  threshold is ≈ 0.99.
+- **A built-in check.** At T1 (p = 0) the target is 0.95, so stage 0 and T1's memory must be bitwise
+  identical to this run's.
+- **What it would show.** Under-protection explains the forgetting only if this variant improves T2
+  retention.
+- **What it risks.** It costs capacity. With `mlp.fc2` layers already at 0.82, capacity could become
+  a real T3/T4 constraint, so the capacity table is part of its readout.
+- It gets its own plan and pre-registration.
+
+**Seeds 1–2 wait.**
+- A 78 → 0 collapse is not plausibly explained by the 10–14 pp run-to-run variance in §9.
+- The protection rule is settled first; then the final configuration is repeated across seeds.
+- That needs seq_ft seeds 1–2 for pairing (about 5.5 h each), plus about 5 h per method run.
+
+The results will be recorded in `docs/runs/2026-09-2X_gpm_forgetting_diagnostics.md`.
 
 ---
 
@@ -416,14 +517,19 @@ time and nothing else.
 > within 15 pp of unconstrained fine-tuning (90, 78, 94 and 90% against 90, 78, 100 and 98%).
 > Retention was not uniform. The first task kept 88.0% [78.0, 96.0] after three further tasks, where
 > fine-tuning kept 0%. The second task (Object) fell from 78% to 2% as soon as the third was trained,
-> and the third (Goal) fell from 94% to 56.0% [42.0, 70.0] during the fourth. Memory did not approach
-> capacity: after four tasks the median layer protected 62% of the trunk's input dimensions.
-> Later tasks shared 90–94% of their input energy with earlier ones, so a criterion of 95% on total
-> energy protected only 22–49% of the energy new to each later task, against 95% for the first. We
-> hypothesise that this asymmetry, rather than capacity, limits retention in this setting.
+> and the third (Goal) fell from 94% to 56.0% [42.0, 70.0] during the fourth. Capacity was not
+> globally exhausted: after four tasks the median layer protected 62% of the trunk's input
+> dimensions, although the most occupied MLP layers reached 82%. Fixed total-energy GPM strongly
+> protected the first task but allocated substantially less coverage to the novel input-energy
+> components introduced by the later tasks. Those tasks shared 90–94% of their input energy with
+> earlier ones, so a criterion of 95% on total energy protected only 22–49% of the energy new to
+> each of them, against 95% for the first. The second and third tasks were subsequently forgotten;
+> the diagnostics and the intervention described next test whether residual under-protection
+> explains those failures.
 
-Do not write "GPM prevents forgetting" or "GPM fails". It retained the first task and lost the later
-ones, from one seed, with a mechanism that is not yet verified.
+Do not write "GPM prevents forgetting", "GPM fails", or that under-protection *caused* the
+forgetting. It retained the first task and lost the later ones, from one seed, and the mechanism is
+not yet verified.
 
 ---
 
@@ -431,8 +537,10 @@ ones, from one seed, with a mechanism that is not yet verified.
 
 ```
 results/gpm_seq/report.json                   # canonical: criteria, both R matrices, paired cells,
-                                              # metrics, capacity (per half), dynamics, pilot
-                                              # comparison, provenance checks
+                                              # metrics, capacity (per half and group, new-energy
+                                              # shares), episode transitions, dynamics (per step),
+                                              # pilot comparison (incl. T1 memory overlap),
+                                              # provenance checks (incl. memory_chained)
 results/seq_hetero__gpm_projected_adam__seed0/
     config.yaml  git_sha  libero_submodule_sha  requirements.txt  seed.json  stats.json
     result.json                               # R matrix, F_1 / NBT / AUC / FWT, per-stage losses and
@@ -452,4 +560,4 @@ Inputs, read only:
 - `results/seq_hetero__seq_ft__seed0/{config.yaml, result.json, eval/, checkpoints/stage0.pt}`
 - `results/single__*__seed0/eval.json` (FWT)
 - `results/gpm_pilot/pilot.json`
-- `results/seq_hetero__seq_ft__seed0/bases/task0.pt` (§9 †)
+- `results/seq_hetero__seq_ft__seed0/bases/task0.pt` (Gate 2's T1 basis, §9)

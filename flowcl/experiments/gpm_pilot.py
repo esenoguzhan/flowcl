@@ -38,16 +38,15 @@ import torch
 from omegaconf import OmegaConf
 
 from flowcl.analysis.metrics import Estimate, paired_difference_ci
+from flowcl.analysis.probes import probe_loss
 from flowcl.analysis.subspace import load_bases
 from flowcl.data.curriculum import Curriculum
 from flowcl.envs.evaluation import EvaluationReport, eval_config_from_dict, evaluate_tasks
 from flowcl.experiments.gate3 import check_provenance, update_interference
 from flowcl.methods.gpm import GPM, allowlist, freeze_to_allowlist
 from flowcl.methods.seq_ft import SeqFT
-from flowcl.models.flow_head import draw_with_generator
-from flowcl.models.losses import valid_element_count
 from flowcl.train.checkpoint import load_checkpoint, save_checkpoint
-from flowcl.train.trainer import TrainConfig, build_dataloader, move_batch, train_one_task
+from flowcl.train.trainer import TrainConfig, train_one_task
 from flowcl.utils.libero_paths import repo_root
 from flowcl.utils.run import create_run, git_sha
 from flowcl.utils.seeding import derive_seed
@@ -224,50 +223,8 @@ def paired(a: list, b: list, bootstrap: dict) -> dict:
 
 
 # ---- measurements --------------------------------------------------------------
-
-
-def _generators(seed_tags: dict, task_key: str) -> dict[str, torch.Generator]:
-    return {
-        role: torch.Generator(device="cpu").manual_seed(derive_seed(tag, task_key, 0))
-        for role, tag in seed_tags.items()
-    }
-
-
-@torch.no_grad()
-def probe_loss(policy, dataset, probe: dict, device) -> float:
-    """Masked flow-matching loss over fixed batches, weighted by valid elements.
-
-    Identical batches, ``s`` and ``A_0`` for every checkpoint (streams keyed on the probe
-    tags and the data task), fp32, eval mode — a like-for-like stability/plasticity read.
-    """
-    if len(dataset.task_ids) != 1:
-        raise ValueError(f"probe needs a single-task dataset, got {dataset.task_ids}")
-    device = torch.device(device)
-    gens = _generators(probe["seed_tags"], dataset.task_ids[0])
-    loader = build_dataloader(
-        dataset, batch_size=probe["batch_size"], num_workers=0, shuffle=True,
-        generator=gens["shuffle"],
-    )
-    policy.eval()
-    total, weight = 0.0, 0.0
-    for idx, batch in enumerate(loader):
-        if idx >= probe["n_batches"]:
-            break
-        batch = move_batch(batch, device)
-        size = batch["actions"].shape[0]
-        s = policy.s_sampler.sample(size, device, generator=gens["flow_time"])
-        noise = draw_with_generator(
-            tuple(batch["actions"].shape), device=device, generator=gens["noise"],
-            dtype=torch.float32, normal=True,
-        )
-        with torch.autocast(device_type=device.type, enabled=False):
-            loss = float(policy(batch, s=s, noise=noise)["loss"])
-        n_b = float(valid_element_count(batch["action_mask"], policy.d_action))
-        total += loss * n_b
-        weight += n_b
-    if weight == 0:
-        raise ValueError("probe saw no valid elements")
-    return total / weight
+# ``probe_loss`` lives in :mod:`flowcl.analysis.probes` (shared with the forgetting
+# diagnostics); it is imported above unchanged.
 
 
 class StepTimer:

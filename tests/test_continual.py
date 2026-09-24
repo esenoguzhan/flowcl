@@ -479,8 +479,10 @@ def test_gpm_three_stages_end_to_end(dataset_dir, tiny_train_cfg, tmp_path):
                                     "seed_namespace_run_id": "test_trio__seq_ft__seed0"}, {})
     checks = provenance_checks(method_view, RunView(Path("test_trio__seq_ft__seed0"), {}, {}))
     for name in ("seed_namespace", "occupancy_non_decreasing", "residuals_within_bound",
-                 "artifact_hashes_match", "frozen_from_stage1"):
+                 "artifact_hashes_match", "frozen_from_stage1", "memory_chained"):
         assert checks[name]["passed"], (name, checks[name])
+    assert checks["memory_chained"]["prefix_identical"]
+    assert checks["frozen_from_stage1"]["n_tensors_outside_allowlist"] > 0
 
 
 def test_t1_pairing_check_passes_on_a_match_and_catches_a_mismatch(tmp_path):
