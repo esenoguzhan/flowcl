@@ -29,10 +29,17 @@ def main() -> None:
         help="Override the config's method_run (a run directory name under results/); "
              "recorded in the report's config. The decision rule is unchanged.",
     )
+    parser.add_argument(
+        "--reference-run", default=None,
+        help="Override the config's reference_run (the paired seq_ft run directory name); "
+             "recorded in the report's config.",
+    )
     args = parser.parse_args()
     config = load_diag_config(args.config)
     if args.method_run is not None:
         config["method_run"] = args.method_run
+    if args.reference_run is not None:
+        config["reference_run"] = args.reference_run
     run_forgetting_diagnostics(
         config, dataset_dir=args.dataset_dir, device=args.device,
         allow_dirty=args.allow_dirty, out=args.out,

@@ -5,8 +5,12 @@
 # below are asserted against them, so a changed reference fails loudly.
 criteria:
   margin_pp: 15
-  # R_ref[j][j] - 15 pp for j = 0..3.
-  expected_thresholds: [0.75, 0.63, 0.85, 0.83]
+  # R_ref[j][j] - 15 pp for j = 0..3, per paired seq_ft reference run: each method run is
+  # judged against its own seed's reference (decided 25 Sep 2026, before any seed-1 method
+  # result existed). An unlisted reference raises: pre-register its thresholds first.
+  expected_thresholds_by_reference:
+    seq_hetero__seq_ft__seed0: [0.75, 0.63, 0.85, 0.83]   # Gate 1: 90 / 78 / 100 / 98
+    seq_hetero__seq_ft__seed1: [0.81, 0.75, 0.85, 0.83]   # 96 / 90 / 100 / 98
   # Plasticity OK for task j:        R[j][j] >= threshold_j
   # Final retention OK for task j<3: R[3][j] >= threshold_j
   # SGP fallback triggered if plasticity fails on any of these task indices (T3, T4).

@@ -79,11 +79,20 @@ def load_report_config(path: str | Path | None = None) -> dict:
 # ---- pre-registered criteria ---------------------------------------------------
 
 
-def criteria_thresholds(reference_diagonal: list[float], criteria: dict) -> list[float]:
-    """``R_ref[j][j] - margin`` per task, asserted against the pre-registered values."""
+def criteria_thresholds(
+    reference_diagonal: list[float], criteria: dict, reference_run_id: str
+) -> list[float]:
+    """``R_ref[j][j] - margin`` per task, asserted against the values pre-registered for
+    this reference run (each method run is judged against its own seed's seq_ft run)."""
     margin = criteria["margin_pp"] / 100.0
     thresholds = [round(r - margin, 6) for r in reference_diagonal]
-    expected = criteria["expected_thresholds"]
+    registered = criteria["expected_thresholds_by_reference"]
+    if reference_run_id not in registered:
+        raise ValueError(
+            f"no thresholds pre-registered for reference run {reference_run_id!r} "
+            f"(have {sorted(registered)}); add them to sequence_report.yaml before judging"
+        )
+    expected = registered[reference_run_id]
     if len(thresholds) != len(expected) or not all(
         math.isclose(a, b) for a, b in zip(thresholds, expected)
     ):
@@ -539,7 +548,7 @@ def build_report(
     n = method.n_tasks
 
     ref_diag = [reference.cell(j, j).estimate.value for j in range(n)]
-    thresholds = criteria_thresholds(ref_diag, config["criteria"])
+    thresholds = criteria_thresholds(ref_diag, config["criteria"], reference.run_dir.name)
     estimates = {(i, j): method.cell(i, j).estimate for i in range(n) for j in range(n)}
 
     def matrix(run: RunView) -> list[list[str]]:
@@ -583,17 +592,28 @@ def build_report(
             }
 
     if pilot_json and Path(pilot_json).is_file():
-        pilot = json.loads(Path(pilot_json).read_text())["arms"]["gpm_projected_adam"]["evaluation"]
-        report["pilot_comparison"] = {
-            key: {
-                "pilot": pilot[key]["value"],
-                "sequence_stage1": method.cell(1, method.task_keys.index(key)).estimate.value,
-                "paired_diff": _paired(
-                    method.cell(1, method.task_keys.index(key)).successes, pilot[key]["successes"], bootstrap
-                ),
+        payload = json.loads(Path(pilot_json).read_text())
+        pilot_ns = payload.get("evaluation_seed_run_id")
+        method_ns = method.result.get("seed_namespace_run_id")
+        if pilot_ns != method_ns:
+            # The pilot's episodes are paired only within its own seed namespace; comparing
+            # them with another seed's cells would be a silently unpaired difference.
+            report["pilot_comparison"] = {
+                "skipped": f"pilot rolled out under {pilot_ns!r}, this run under {method_ns!r}"
             }
-            for key in pilot
-        }
+        else:
+            pilot = payload["arms"]["gpm_projected_adam"]["evaluation"]
+            report["pilot_comparison"] = {
+                key: {
+                    "pilot": pilot[key]["value"],
+                    "sequence_stage1": method.cell(1, method.task_keys.index(key)).estimate.value,
+                    "paired_diff": _paired(
+                        method.cell(1, method.task_keys.index(key)).successes,
+                        pilot[key]["successes"], bootstrap,
+                    ),
+                }
+                for key in pilot
+            }
     gate2_t1 = reference.run_dir / "bases" / "task0.pt"
     memory_t1 = method.run_dir / "method" / "memory_task0.pt"
     if gate2_t1.is_file() and memory_t1.is_file():

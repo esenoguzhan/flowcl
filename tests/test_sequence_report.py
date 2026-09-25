@@ -39,9 +39,19 @@ def est(v, low=None, high=None):
 
 def test_thresholds_come_from_the_reference_diagonal():
     criteria = load_report_config()["criteria"]
-    assert criteria_thresholds(REF_DIAG, criteria) == [0.75, 0.63, 0.85, 0.83]
+    assert criteria_thresholds(REF_DIAG, criteria, "seq_hetero__seq_ft__seed0") == [0.75, 0.63, 0.85, 0.83]
     with pytest.raises(ValueError, match="reference run changed"):
-        criteria_thresholds([0.90, 0.80, 1.00, 0.98], criteria)
+        criteria_thresholds([0.90, 0.80, 1.00, 0.98], criteria, "seq_hetero__seq_ft__seed0")
+
+
+def test_thresholds_are_per_paired_reference_and_must_be_preregistered():
+    criteria = load_report_config()["criteria"]
+    seed1 = [0.96, 0.90, 1.00, 0.98]
+    assert criteria_thresholds(seed1, criteria, "seq_hetero__seq_ft__seed1") == [0.81, 0.75, 0.85, 0.83]
+    with pytest.raises(ValueError, match="reference run changed"):
+        criteria_thresholds(REF_DIAG, criteria, "seq_hetero__seq_ft__seed1")  # seed 0's diagonal
+    with pytest.raises(ValueError, match="pre-registered"):
+        criteria_thresholds(seed1, criteria, "seq_hetero__seq_ft__seed2")
 
 
 def grid(diag, final_row):
@@ -302,10 +312,32 @@ def write_run(root, name, diag, final_row, with_memory):
     return run_dir
 
 
+def config_for(reference_name):
+    config = load_report_config()
+    config["criteria"]["expected_thresholds_by_reference"] = {reference_name: [0.75, 0.63, 0.85, 0.83]}
+    return config
+
+
+def test_pilot_comparison_is_skipped_for_another_seed_namespace(tmp_path):
+    ref = write_run(tmp_path, "ref", REF_DIAG, [0.0, 0.0, 0.0, 0.98], with_memory=False)
+    gpm = write_run(tmp_path, "gpm", [0.9, 0.88, 0.5, 0.9], [0.8, 0.7, 0.5, 0.9], with_memory=False)
+    pilot = tmp_path / "pilot.json"
+    evaluation = {KEYS[0]: {"value": 0.8, "successes": [True] * 40 + [False] * 10}}
+    for ns, skipped in (("other_namespace", True), ("ref", False)):
+        pilot.write_text(json.dumps({"evaluation_seed_run_id": ns,
+                                     "arms": {"gpm_projected_adam": {"evaluation": evaluation}}}))
+        report = build_report(gpm, ref, pilot_json=pilot, config=config_for("ref"),
+                              verify_checkpoints=False)
+        assert ("skipped" in report["pilot_comparison"]) == skipped
+        if not skipped:
+            assert report["pilot_comparison"][KEYS[0]]["pilot"] == 0.8
+
+
 def test_build_report_end_to_end_on_synthetic_runs(tmp_path):
     ref = write_run(tmp_path, "ref", REF_DIAG, [0.0, 0.0, 0.0, 0.98], with_memory=False)
     gpm = write_run(tmp_path, "gpm", [0.9, 0.88, 0.5, 0.9], [0.8, 0.7, 0.5, 0.9], with_memory=True)
-    report = build_report(gpm, ref, pilot_json=None, verify_checkpoints=False)
+    report = build_report(gpm, ref, pilot_json=None, config=config_for("ref"),
+                          verify_checkpoints=False)
     assert report["criteria"]["thresholds"] == [0.75, 0.63, 0.85, 0.83]
     assert report["outcome"]["sgp_fallback_triggered"] and report["outcome"]["sgp_fallback_tasks"] == [2]
     assert report["paired_cells"]["3,0"]["diff"] == pytest.approx(0.8)

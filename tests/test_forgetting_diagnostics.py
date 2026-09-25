@@ -273,11 +273,16 @@ def test_diagnostics_end_to_end_on_tiny_runs(dataset_dir, tmp_path, monkeypatch)
 
     monkeypatch.setattr(gate2, "capture_task_grams", recording_capture)
 
+    # A pilot recorded under another seed namespace: its references do not apply here.
+    (tmp_path / "gpm_pilot").mkdir()
+    (tmp_path / "gpm_pilot" / "pilot.json").write_text(
+        json.dumps({"evaluation_seed_run_id": "seq_hetero__seq_ft__seed0"}))
     cfg = load_diag_config()
     cfg.update({
         "method_run": gpm.run_id, "reference_run": "test_trio__seq_ft__seed0",
         "probe": {**cfg["probe"], "batch_size": 2, "n_batches": 1},
-        "instrument_check": None, "capture_config": str(capture_path),
+        "instrument_check": {"pilot_json": "gpm_pilot/pilot.json", "rel_tol": 1e-3},
+        "capture_config": str(capture_path),
         "comparisons": {"primary": {"transition": [1, 2], "target": 1, "control": 0}},
     })
     report = run_forgetting_diagnostics(cfg, results_root=tmp_path, dataset_dir=dataset_dir,
@@ -302,3 +307,6 @@ def test_diagnostics_end_to_end_on_tiny_runs(dataset_dir, tmp_path, monkeypatch)
     written = json.loads((tmp_path / "diag.json").read_text())
     assert written["decision"]["primary_case"] == report["decision"]["primary_case"]
     assert written["allow_dirty"] is True
+    check = written["instrument_check"]
+    assert check["not_applicable"] and check["passed"] is None
+    assert "does not replace the probe-loss instrument check" in check["reason"]

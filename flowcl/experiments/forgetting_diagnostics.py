@@ -285,6 +285,21 @@ def instrument_check(
     return {"passed": True, "rel_tol": rel_tol, "rows": rows}
 
 
+def instrument_check_not_applicable(pilot_namespace: str | None, reference_run: str) -> dict:
+    """The pilot's probe references exist only for its own seed namespace (seed 0)."""
+    return {
+        "passed": None,
+        "not_applicable": True,
+        "reason": (
+            f"the pilot's probe references were recorded under {pilot_namespace!r}, this "
+            f"reference run is {reference_run!r}. The diagnostic implementation was validated "
+            "exactly on seed 0; this seed's checkpoint and seed provenance are verified "
+            "independently (T1 pairing, identity checks), which verifies training and "
+            "checkpoint pairing but does not replace the probe-loss instrument check."
+        ),
+    }
+
+
 def pilot_probe_references(pilot_json: Path) -> dict[int, dict[str, float]]:
     """The pilot's seq_ft probe losses: stage 0 (``stage0``) and stage 1 (``seq_ft_stage1``)."""
     refs = json.loads(Path(pilot_json).read_text())["references"]
@@ -482,11 +497,15 @@ def run_forgetting_diagnostics(
 
     check = None
     if cfg["instrument_check"]:
-        check = instrument_check(
-            L["reference"], task_keys,
-            pilot_probe_references(root / cfg["instrument_check"]["pilot_json"]),
-            cfg["instrument_check"]["rel_tol"],
-        )
+        pilot_path = root / cfg["instrument_check"]["pilot_json"]
+        pilot_ns = json.loads(pilot_path.read_text()).get("evaluation_seed_run_id")
+        if pilot_ns == dirs["reference"].name:
+            check = instrument_check(
+                L["reference"], task_keys, pilot_probe_references(pilot_path),
+                cfg["instrument_check"]["rel_tol"],
+            )
+        else:
+            check = instrument_check_not_applicable(pilot_ns, dirs["reference"].name)
 
     comparisons = {}
     for comp_name, comp in cfg["comparisons"].items():

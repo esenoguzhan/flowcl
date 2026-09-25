@@ -12,11 +12,14 @@ retention is the causal question; this module evaluates the rule pre-registered 
   90% new-energy share (an implementation check);
 * **interference** — Object's realised per-layer interference under Goal's update fell to
   at most ``max_ratio`` of the baseline's (manipulation strength);
+* **premise** — the baseline actually forgot Object across T3 (otherwise the test does not
+  apply);
 * **retention x plasticity** — the paired transition gain on Object, judged jointly with
   T3 plasticity, then durable retention and T4 plasticity.
 
-:func:`classify_adaptive` maps the check results to the verdict; everything it needs is
-computed from the run artifacts by :func:`build_adaptive_report`.
+Each seed is judged against its own paired seq_ft reference (per-seed thresholds,
+:func:`resolve_seed`). :func:`classify_adaptive` maps the check results to one seed's
+verdict; :func:`classify_replication` applies the symmetric replication rule across seeds.
 """
 
 from __future__ import annotations
@@ -50,6 +53,21 @@ VERDICTS = {
                           "and T3 was learned.",
     "durable_support": "Strong / durable support: transition support, Object retained at the "
                        "final stage, and T4 learned.",
+    "not_applicable_baseline_retained": "Not applicable: the baseline did not forget Object "
+                                        "across T3, so there was no forgetting to remove.",
+}
+
+REPLICATION = {
+    "inconclusive_invalid": "Replication inconclusive: at least one seed's comparison or "
+                            "implementation was invalid.",
+    "not_applicable": "Replication not applicable: at least one seed's baseline did not forget.",
+    "inconclusive": "Replication inconclusive: at least one seed's result was exploratory, a "
+                    "trade-off, or inconclusive.",
+    "replicated": "Replicated: every seed shows causal transition support.",
+    "durably_replicated": "Durably replicated: every seed shows strong / durable support.",
+    "consistently_not_supported": "Consistently not supported: no seed shows a retention gain.",
+    "not_replicated": "Not replicated: the seeds disagree (support in some, not_supported in "
+                      "others).",
 }
 
 
@@ -58,21 +76,47 @@ def load_adaptive_config(path: str | Path | None = None) -> dict:
     return OmegaConf.to_container(OmegaConf.load(path), resolve=True)
 
 
+def resolve_seed(cfg: dict, seed: int) -> dict:
+    """The shared rule plus one seed's runs, reports, thresholds and output (a flat dict)."""
+    seeds = {int(k): v for k, v in cfg["seeds"].items()}
+    if seed not in seeds:
+        raise ValueError(f"seed {seed} is not pre-registered in adaptive_gpm.yaml ({sorted(seeds)})")
+    shared = {k: v for k, v in cfg.items() if k not in ("seeds", "replication")}
+    return {**shared, **seeds[seed], "seed": seed}
+
+
+def limits(resolved: dict) -> dict:
+    """Each check's threshold: the seed's per-task threshold at the check's task."""
+    thr = resolved["thresholds"]
+    return {
+        "min_improvement": resolved["retention"]["min_improvement"],
+        "premise": thr[resolved["premise"]["baseline_cell"][1]],
+        "durable": thr[resolved["retention"]["durable_cell"][1]],
+        "t3": thr[resolved["plasticity"]["t3_cell"][1]],
+        "t4": thr[resolved["plasticity"]["t4_cell"][1]],
+        "goal": thr[resolved["secondary"]["goal_cell"][1]],
+    }
+
+
 # ---- the verdict (pure) ----------------------------------------------------------
 
 
 def classify_adaptive(checks: dict) -> dict:
     """The pre-registered verdict from boolean check results.
 
-    ``checks``: ``identity``, ``energy``, ``interference``, ``t3_plasticity``,
-    ``transition_gain``, ``durable_retention``, ``t4_plasticity``.
+    ``checks``: ``identity``, ``energy``, ``premise`` (the baseline forgot), ``interference``,
+    ``t3_plasticity``, ``transition_gain``, ``durable_retention``, ``t4_plasticity``.
     """
+    def stop(verdict: str) -> dict:
+        return {"verdict": verdict, "text": VERDICTS[verdict], "retention_verdict": None,
+                "exploratory": False, "flags": []}
+
     if not checks["identity"]:
-        return {"verdict": "invalid_comparison", "text": VERDICTS["invalid_comparison"],
-                "retention_verdict": None, "exploratory": False, "flags": []}
+        return stop("invalid_comparison")
     if not checks["energy"]:
-        return {"verdict": "invalid_implementation", "text": VERDICTS["invalid_implementation"],
-                "retention_verdict": None, "exploratory": False, "flags": []}
+        return stop("invalid_implementation")
+    if not checks["premise"]:
+        return stop("not_applicable_baseline_retained")
 
     flags: list[str] = []
     t3, gain = checks["t3_plasticity"], checks["transition_gain"]
@@ -101,6 +145,33 @@ def classify_adaptive(checks: dict) -> dict:
         "exploratory": exploratory,
         "flags": flags,
     }
+
+
+SUPPORT = {"transition_support", "durable_support"}
+
+
+def classify_replication(verdicts_by_seed: dict) -> dict:
+    """Symmetric replication verdict over every seed's :func:`classify_adaptive` output.
+
+    No seed is assumed to support; rows are checked in order (see adaptive_gpm.yaml).
+    """
+    if len(verdicts_by_seed) < 2:
+        raise ValueError("replication needs at least two seeds")
+    verdicts = {str(s): v["verdict"] for s, v in verdicts_by_seed.items()}
+    values = set(verdicts.values())
+    if values & {"invalid_comparison", "invalid_implementation"}:
+        outcome = "inconclusive_invalid"
+    elif "not_applicable_baseline_retained" in values:
+        outcome = "not_applicable"
+    elif values & {"manipulation_weak", "trade_off", "inconclusive"}:
+        outcome = "inconclusive"
+    elif values <= SUPPORT:
+        outcome = "durably_replicated" if values == {"durable_support"} else "replicated"
+    elif values == {"not_supported"}:
+        outcome = "consistently_not_supported"
+    else:
+        outcome = "not_replicated"
+    return {"replication": outcome, "text": REPLICATION[outcome], "verdicts": verdicts}
 
 
 # ---- the checks --------------------------------------------------------------------
@@ -202,17 +273,22 @@ def _at_least(value: float, threshold: float) -> bool:
     return value >= threshold - 1e-9
 
 
-def rollout_checks(transition_paired: dict, t3: float, durable: float, t4: float,
-                   cfg: dict) -> dict:
-    """The rollout-based checks. Inclusive thresholds; the CI lower bound strictly > 0."""
+def rollout_checks(transition_paired: dict, baseline_transition: float, t3: float,
+                   durable: float, t4: float, lim: dict) -> dict:
+    """The rollout-based checks (``lim`` from :func:`limits`).
+
+    Inclusive thresholds, except: the CI lower bound must be strictly > 0, and the premise
+    requires the baseline strictly below the Object threshold (it forgot).
+    """
     return {
+        "premise": baseline_transition < lim["premise"] - 1e-9,
         "transition_gain": (
-            _at_least(transition_paired["diff"], cfg["retention"]["min_improvement"])
+            _at_least(transition_paired["diff"], lim["min_improvement"])
             and transition_paired["low"] > 0.0
         ),
-        "t3_plasticity": _at_least(t3, cfg["plasticity"]["t3_threshold"]),
-        "durable_retention": _at_least(durable, cfg["retention"]["durable_threshold"]),
-        "t4_plasticity": _at_least(t4, cfg["plasticity"]["t4_threshold"]),
+        "t3_plasticity": _at_least(t3, lim["t3"]),
+        "durable_retention": _at_least(durable, lim["durable"]),
+        "t4_plasticity": _at_least(t4, lim["t4"]),
     }
 
 
@@ -220,6 +296,7 @@ def rollout_checks(transition_paired: dict, t3: float, durable: float, t4: float
 
 
 def build_adaptive_report(cfg: dict, results_root: Path | None = None) -> dict:
+    """``cfg``: one seed's resolved rule (:func:`resolve_seed`)."""
     from flowcl.analysis.subspace import load_bases
     from flowcl.experiments.sequence_report import (
         capacity_by_stage,
@@ -239,21 +316,20 @@ def build_adaptive_report(cfg: dict, results_root: Path | None = None) -> dict:
         OmegaConf.load(repo_root() / "configs" / "eval" / "libero_eval.yaml"), resolve=True
     )["bootstrap"]
 
-    # The existing thresholds, asserted equal to this rule's copies.
+    # The seed's thresholds, derived from its own paired seq_ft reference (and asserted
+    # there against sequence_report.yaml), must equal this rule's copy.
     ref_diag = [runs["reference"].cell(j, j).estimate.value for j in range(n)]
-    thresholds = criteria_thresholds(ref_diag, load_report_config()["criteria"])
-    expected = {
-        "durable_threshold": thresholds[cfg["retention"]["durable_cell"][1]],
-        "t3_threshold": thresholds[cfg["plasticity"]["t3_cell"][1]],
-        "t4_threshold": thresholds[cfg["plasticity"]["t4_cell"][1]],
-    }
-    stated = {
-        "durable_threshold": cfg["retention"]["durable_threshold"],
-        "t3_threshold": cfg["plasticity"]["t3_threshold"],
-        "t4_threshold": cfg["plasticity"]["t4_threshold"],
-    }
-    if any(not math.isclose(expected[k], stated[k]) for k in expected):
-        raise ValueError(f"pre-registered thresholds {stated} differ from the criteria {expected}")
+    thresholds = criteria_thresholds(
+        ref_diag, load_report_config()["criteria"], dirs["reference"].name
+    )
+    if len(thresholds) != len(cfg["thresholds"]) or any(
+        not math.isclose(a, b) for a, b in zip(thresholds, cfg["thresholds"])
+    ):
+        raise ValueError(
+            f"seed {cfg.get('seed')}: pre-registered thresholds {cfg['thresholds']} differ "
+            f"from the criteria {thresholds}"
+        )
+    lim = limits(cfg)
 
     identity = identity_check(dirs["variant"], dirs["baseline"], cfg["identity_stages"])
     _, meta = load_bases(dirs["variant"] / "method" / f"memory_task{n - 1}.pt")
@@ -279,26 +355,32 @@ def build_adaptive_report(cfg: dict, results_root: Path | None = None) -> dict:
     t4 = cell(cfg["plasticity"]["t4_cell"])
     goal = cell(cfg["secondary"]["goal_cell"])
 
+    premise_cell = cfg["premise"]["baseline_cell"]
+    baseline_transition = runs["baseline"].cell(*premise_cell).estimate.value
     checks = {
         "identity": identity["passed"],
         "energy": energy["passed"],
         "interference": interference["passed"],
-        **rollout_checks(transition["paired"], t3["variant"], durable["variant"],
-                         t4["variant"], cfg),
+        **rollout_checks(transition["paired"], baseline_transition, t3["variant"],
+                         durable["variant"], t4["variant"], lim),
     }
     groups = registry_groups(dirs["variant"])
     _, baseline_meta = load_bases(dirs["baseline"] / "method" / f"memory_task{n - 1}.pt")
     estimates = {(i, j): runs["variant"].cell(i, j).estimate for i in range(n) for j in range(n)}
     return {
         "git_sha": git_sha(),
+        "seed": cfg.get("seed"),
         "config": cfg,
+        "limits": lim,
         "verdict": classify_adaptive(checks),
         "checks": checks,
+        "premise": {"baseline_cell": premise_cell, "baseline": baseline_transition,
+                    "threshold": lim["premise"]},
         "identity": identity,
         "energy": energy,
         "interference": interference,
         "cells": {"transition": transition, "durable": durable, "t3": t3, "t4": t4,
-                  "secondary_goal": {**goal, "threshold": cfg["secondary"]["goal_threshold"]}},
+                  "secondary_goal": {**goal, "threshold": lim["goal"]}},
         "sequence_outcome": classify_sequence(
             estimates, thresholds, load_report_config()["criteria"]["fallback_tasks"]
         ),
@@ -333,14 +415,58 @@ def print_adaptive_report(report: dict) -> None:
               f"exhausted {scopes['exhausted_layers']}")
 
 
-def run_adaptive_report(cfg: dict | None = None, out: Path | None = None,
+def run_adaptive_report(cfg: dict | None = None, seed: int = 0, out: Path | None = None,
                         results_root: Path | None = None) -> dict:
-    cfg = cfg or load_adaptive_config()
-    report = build_adaptive_report(cfg, results_root)
+    resolved = resolve_seed(cfg or load_adaptive_config(), seed)
+    report = build_adaptive_report(resolved, results_root)
     root = Path(results_root) if results_root else repo_root() / "results"
-    out = Path(out) if out else root / cfg["out"]
+    out = Path(out) if out else root / resolved["out"]
     out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(out, json.dumps(report, indent=2, default=str) + "\n")
     print_adaptive_report(report)
     print(f"[flowcl] wrote {out}", flush=True)
     return report
+
+
+def build_replication(cfg: dict, seeds: list[int], results_root: Path | None = None) -> dict:
+    """Read each seed's adaptive report (as written) and apply the replication rule."""
+    root = Path(results_root) if results_root else repo_root() / "results"
+    per_seed = {}
+    for seed in seeds:
+        resolved = resolve_seed(cfg, seed)
+        report = json.loads((root / resolved["out"]).read_text())
+        if report.get("config", {}).get("variant_run") != resolved["variant_run"]:
+            raise ValueError(f"seed {seed}: {resolved['out']} is not the report for "
+                             f"{resolved['variant_run']}")
+        cells = report["cells"]
+        per_seed[str(seed)] = {
+            "verdict": report["verdict"],
+            "checks": report["checks"],
+            "transition_gain": cells["transition"]["paired"],
+            "object_final": {k: cells["durable"][k] for k in ("variant", "baseline")},
+            "t3": cells["t3"]["variant"],
+            "t4": cells["t4"]["variant"],
+            "git_sha": report.get("git_sha"),
+        }
+    outcome = classify_replication({s: v["verdict"] for s, v in per_seed.items()})
+    return {"git_sha": git_sha(), "seeds": seeds, **outcome, "per_seed": per_seed}
+
+
+def run_replication(cfg: dict | None = None, seeds: list[int] | None = None,
+                    results_root: Path | None = None) -> dict:
+    cfg = cfg or load_adaptive_config()
+    summary = build_replication(cfg, seeds or [0, 1], results_root)
+    root = Path(results_root) if results_root else repo_root() / "results"
+    out = root / cfg["replication"]["out"]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(out, json.dumps(summary, indent=2, default=str) + "\n")
+    print(f"\n[flowcl] replication over seeds {summary['seeds']}: {summary['replication']} — "
+          f"{summary['text']}", flush=True)
+    for seed, row in summary["per_seed"].items():
+        g = row["transition_gain"]
+        print(f"  seed {seed}: {row['verdict']['verdict']}; Object transition gain "
+              f"{g['diff']:+.2f} [{g['low']:+.2f}, {g['high']:+.2f}]; Object final "
+              f"{row['object_final']['variant']:.2f} vs {row['object_final']['baseline']:.2f}; "
+              f"T3 {row['t3']:.2f}, T4 {row['t4']:.2f}", flush=True)
+    print(f"[flowcl] wrote {out}", flush=True)
+    return summary

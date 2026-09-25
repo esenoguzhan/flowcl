@@ -1,12 +1,17 @@
-# Pre-registered outcome rule for the adaptive-GPM run (gpm_projected_adam_ne90, seed 0):
-# the causal test after the forgetting diagnostics (docs/runs/2026-09-24_gpm_forgetting_
-# diagnostics.md §8). Committed before the run. Evaluated by scripts/adaptive_report.py.
+# Pre-registered outcome rule for the adaptive-GPM runs (gpm_projected_adam_ne90): the
+# causal test after the forgetting diagnostics (docs/runs/2026-09-24_gpm_forgetting_
+# diagnostics.md §8). Seed 0 was committed before its run (9701620); seed 1 and the
+# replication rule were added on 25 Sep 2026, before any seed-1 method result existed.
+# Evaluated by scripts/adaptive_report.py (--seed N; --replication 0 1).
 #
-# All thresholds are inclusive, except the CI lower bound, which must be strictly > 0.
+# All thresholds are inclusive, except the CI lower bound, which must be strictly > 0, and
+# the premise, which requires the baseline to be strictly below its threshold.
 #
 # Verdict, step 1 (gates, in order):
 #   identity fails                           -> invalid comparison (stop)
 #   per-layer energy check fails, (a) or (b) -> invalid implementation (stop)
+#   baseline R[2][Object] >= Object threshold -> not applicable: the baseline did not forget
+#                                               (added for replication; holds for seed 0)
 #   interference ratio > max_ratio in either half -> manipulation weak; steps 2-3 are
 #                                               computed and labelled exploratory
 # Step 2 (T3 plasticity x transition retention gain):
@@ -16,15 +21,6 @@
 #   pass, yes -> transition support -> step 3
 # Step 3: durable Object retention and T4 plasticity both met -> strong / durable support;
 #   otherwise transition support, flagged with the failed durable condition.
-
-variant_run: seq_hetero__gpm_projected_adam_ne90__seed0
-baseline_run: seq_hetero__gpm_projected_adam__seed0
-reference_run: seq_hetero__seq_ft__seed0
-
-# Forgetting-diagnostics reports (under results/), same pre-registered rule, one per run.
-diagnostics:
-  variant: forgetting_diag_ne90/report.json
-  baseline: forgetting_diag/report.json
 
 # Identity: stage-0/1 state dicts and the T1 memory equal the baseline's (p = 0 at T1).
 identity_stages: [0, 1]
@@ -44,27 +40,55 @@ energy:
 
 # Manipulation strength: variant / baseline median direct r of the target task (Object)
 # under the update that trains the next task (Goal), from the diagnostics' primary
-# comparison, in each half. The diagnostics predict ~0.45 (sqrt(0.01 / 0.05)).
+# comparison, in each half. The diagnostics predicted ~0.45 (sqrt(0.01 / 0.05)).
 interference:
   comparison: primary
   max_ratio: 0.70
 
-# Rollout cells [stage, task]. Thresholds are the existing ones (R_seqft[j][j] - 15 pp),
-# asserted against configs/analysis/sequence_report.yaml's criteria at report time.
+# Rollout cells [stage, task]. Each check's threshold is the seed's per-task threshold
+# (thresholds[task]) below, asserted equal to sequence_report.yaml's criteria for that
+# seed's paired seq_ft reference.
+premise:
+  baseline_cell: [2, 1]          # the baseline must have forgotten Object across Goal
 retention:
   transition_cell: [2, 1]        # Object after Goal (the transition the variant targets)
   min_improvement: 0.20          # paired variant - baseline, same episode seeds; CI low > 0
   durable_cell: [3, 1]           # Object at the final stage
-  durable_threshold: 0.63
 plasticity:
   t3_cell: [2, 2]
-  t3_threshold: 0.85
   t4_cell: [3, 3]
-  t4_threshold: 0.83
-
-# Reported, not decisive.
-secondary:
+secondary:                       # reported, not decisive
   goal_cell: [3, 2]
-  goal_threshold: 0.85
 
-out: adaptive_gpm/report.json
+# Per seed: runs (under results/), the diagnostics reports, the output, and the per-task
+# thresholds R_seqft[j][j] - 15 pp of that seed's own seq_ft reference.
+seeds:
+  0:
+    variant_run: seq_hetero__gpm_projected_adam_ne90__seed0
+    baseline_run: seq_hetero__gpm_projected_adam__seed0
+    reference_run: seq_hetero__seq_ft__seed0
+    diagnostics:
+      variant: forgetting_diag_ne90/report.json
+      baseline: forgetting_diag/report.json
+    thresholds: [0.75, 0.63, 0.85, 0.83]
+    out: adaptive_gpm/report.json
+  1:
+    variant_run: seq_hetero__gpm_projected_adam_ne90__seed1
+    baseline_run: seq_hetero__gpm_projected_adam__seed1
+    reference_run: seq_hetero__seq_ft__seed1
+    diagnostics:
+      variant: forgetting_diag_ne90_seed1/report.json
+      baseline: forgetting_diag_seed1/report.json
+    thresholds: [0.81, 0.75, 0.85, 0.83]
+    out: adaptive_gpm_seed1/report.json
+
+# Replication across seeds (symmetric; every seed's verdict is inspected), rows in order:
+#   any invalid_comparison / invalid_implementation          -> inconclusive (invalid run)
+#   any not_applicable_baseline_retained                     -> not applicable
+#   any manipulation_weak (exploratory), trade_off, inconclusive -> inconclusive
+#   all transition_support / durable_support                 -> replicated
+#                                   (durably replicated if all durable_support)
+#   all not_supported                                        -> consistently not supported
+#   a mix of support and not_supported                       -> not replicated
+replication:
+  out: adaptive_gpm/replication.json

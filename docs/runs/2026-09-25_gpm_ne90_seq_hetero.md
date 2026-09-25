@@ -197,14 +197,13 @@ It finished at 07:00 (`results/seq_hetero__seq_ft__seed1`).
 - **Checkpoints:** all four stage checkpoints exist, so it can serve as the pairing reference for
   any method's seed 1.
 
-**Decision needed before any seed-1 method run.** Seed 1's diagonal differs from seed 0's
-(Object 90% against 78%). The thresholds are `R_seqft[j][j] − 15 pp`, and
-`sequence_report.yaml` asserts seed 0's values (75 / 63 / 85 / 83). A seed-1 report would
-therefore raise `reference run changed`. There are two options:
-- keep the thresholds fixed at seed 0's values;
-- recompute them from each seed's own reference, which would give 81 / 75 / 85 / 83 for seed 1.
+**Decided (25 Sep, before any seed-1 method result existed): per-seed thresholds.** Each method
+run is judged against its own paired seq_ft run:
+- seed 1: 96 / 90 / 100 / 98 − 15 pp = **81 / 75 / 85 / 83**;
+- seed 0: unchanged at 75 / 63 / 85 / 83.
 
-This must be pre-registered before seed-1 results exist.
+Both are registered in `sequence_report.yaml` (`expected_thresholds_by_reference`) and in
+`adaptive_gpm.yaml` (`seeds`). An unregistered reference raises.
 
 ---
 
@@ -221,15 +220,52 @@ This must be pre-registered before seed-1 results exist.
 
 ---
 
-## 9. Next steps (decision needed)
+## 9. Next steps (decided 25 Sep)
 
-1. **Replicate the causal comparison on seed 1.**
-   - Run `gpm` seed 1 (the baseline) and `gpm_ne90` seed 1, each about 5 h, paired to seq_ft seed
-     1, which is done.
-   - It needs the threshold decision in §7, and seed-1 identity checks (the variant against the
-     plain GPM seed 1 at stages 0–1).
-   - Overnight, both fit in one queue (about 10 h).
-2. **Capacity-aware reporting** for the thesis: state ρ after every task next to retention.
-   Optionally, a fifth task to show the limit.
-3. **Optionally, a plain ε = 0.99 control** (about 5 h), to attribute the gain to the adaptive rule
-   rather than to more protection in general.
+**Now: replicate the causal comparison on seed 1** (`scripts/queue_2026-09-25_seed1.sh`, about 10 h).
+The queue runs, in order:
+1. plain `gpm` seed 1;
+2. its sequence report and diagnostics;
+3. `gpm_ne90` seed 1, identity-checked against plain GPM seed 1 at stages 0–1;
+4. its sequence report and diagnostics;
+5. the seed-1 adaptive report;
+6. the replication summary.
+
+The runs are sequential: two processes sharing the GPU could break the bitwise identity. Nothing
+else is queued after them.
+
+**Pre-registered for seed 1** (`adaptive_gpm.yaml`, committed before the queue):
+- **Per-seed thresholds** (§7).
+- **A premise gate.** The causal test applies only if the baseline actually forgets Object across
+  T3: baseline `R[2][Object]` must be below that seed's Object threshold. Otherwise the verdict is
+  *not applicable*, not *not supported*. Seed 0's premise holds (0.02 < 0.63), and its verdict,
+  re-evaluated under the new code, is unchanged: durable support, with identical checks and cells.
+- **A symmetric replication rule** over every seed's verdict. Rows are checked in order:
+
+  | Condition | Outcome |
+  |---|---|
+  | any seed invalid | inconclusive |
+  | any seed's baseline did not forget | not applicable |
+  | any seed exploratory, a trade-off or inconclusive | inconclusive |
+  | every seed shows support | **replicated** (durably, if every seed is `durable_support`) |
+  | every seed is `not_supported` | consistently not supported |
+  | a mix of support and `not_supported` | **not replicated** |
+
+- **The seed-1 diagnostics** apply the unchanged rule. Each case is computed independently and
+  compared with seed 0's case D.
+  - The pilot's probe-loss instrument check is **not applicable** for seed 1: the pilot exists only
+    for seed 0, which is where the diagnostic implementation was validated exactly.
+  - Seed 1's checkpoint and seed provenance are verified independently (T1 pairing, identity), but
+    that does not replace the probe-loss instrument check.
+
+**Afterwards:**
+- **If seed 1 replicates:**
+  1. seq_ft seed 2 and the seed-2 pair;
+  2. the required baselines and core ablations (build step 7, `gpm_grad_only`, SGP);
+  3. the high-protection control: ε = 0.95 for T1 and a fixed ε = 0.99 from T2 on. This keeps T1
+     and T2 identical and isolates the *adaptive* rule. A global ε = 0.99 would not;
+  4. the optional fifth-task capacity test and `seq_hetero_reverse`.
+
+  Capacity-aware reporting (ρ after every task, next to retention) continues throughout.
+- **If seed 1 does not replicate, or is inconclusive:** stop and review both seeds before more GPU
+  time.

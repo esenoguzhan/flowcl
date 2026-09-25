@@ -5,21 +5,28 @@ from __future__ import annotations
 import pytest
 
 from flowcl.experiments.adaptive_report import (
+    REPLICATION,
     VERDICTS,
     classify_adaptive,
+    classify_replication,
     energy_check,
     interference_check,
+    limits,
     load_adaptive_config,
+    resolve_seed,
     rollout_checks,
 )
 
 CFG = load_adaptive_config()
 ENERGY = CFG["energy"]
+LIM0 = limits(resolve_seed(CFG, 0))
+LIM1 = limits(resolve_seed(CFG, 1))
 
 
 def checks(**overrides):
-    base = {"identity": True, "energy": True, "interference": True, "t3_plasticity": True,
-            "transition_gain": True, "durable_retention": True, "t4_plasticity": True}
+    base = {"identity": True, "energy": True, "premise": True, "interference": True,
+            "t3_plasticity": True, "transition_gain": True, "durable_retention": True,
+            "t4_plasticity": True}
     return {**base, **overrides}
 
 
@@ -28,7 +35,9 @@ def checks(**overrides):
 
 def test_gates_come_first():
     assert classify_adaptive(checks(identity=False, energy=False))["verdict"] == "invalid_comparison"
-    assert classify_adaptive(checks(energy=False))["verdict"] == "invalid_implementation"
+    assert classify_adaptive(checks(energy=False, premise=False))["verdict"] == "invalid_implementation"
+    out = classify_adaptive(checks(premise=False, interference=False))
+    assert out["verdict"] == "not_applicable_baseline_retained" and out["retention_verdict"] is None
 
 
 @pytest.mark.parametrize("t3, gain, expected", [
@@ -116,14 +125,71 @@ def test_energy_check_tolerance_and_missing_extensions():
 
 
 def test_rollout_boundaries():
-    at = rollout_checks({"diff": 0.20, "low": 0.02}, 0.85, 0.63, 0.83, CFG)
+    at = rollout_checks({"diff": 0.20, "low": 0.02}, 0.0, 0.85, 0.63, 0.83, LIM0)
     assert all(at.values())  # every threshold inclusive
-    assert not rollout_checks({"diff": 0.20, "low": 0.0}, 0.85, 0.63, 0.83, CFG)["transition_gain"]
-    assert not rollout_checks({"diff": 0.18, "low": 0.02}, 0.85, 0.63, 0.83, CFG)["transition_gain"]
-    below = rollout_checks({"diff": 0.5, "low": 0.3}, 0.84, 0.62, 0.82, CFG)
+    assert not rollout_checks({"diff": 0.20, "low": 0.0}, 0.0, 0.85, 0.63, 0.83, LIM0)["transition_gain"]
+    assert not rollout_checks({"diff": 0.18, "low": 0.02}, 0.0, 0.85, 0.63, 0.83, LIM0)["transition_gain"]
+    below = rollout_checks({"diff": 0.5, "low": 0.3}, 0.0, 0.84, 0.62, 0.82, LIM0)
     assert not (below["t3_plasticity"] or below["durable_retention"] or below["t4_plasticity"])
     # Rates are k/50: a difference of 10/50 computed in floats still counts as +20 pp.
-    assert rollout_checks({"diff": 0.6 - 0.4, "low": 0.02}, 0.85, 0.63, 0.83, CFG)["transition_gain"]
+    assert rollout_checks({"diff": 0.6 - 0.4, "low": 0.02}, 0.0, 0.85, 0.63, 0.83, LIM0)["transition_gain"]
+
+
+def test_premise_needs_the_baseline_strictly_below_the_object_threshold():
+    ok = {"diff": 0.5, "low": 0.3}
+    assert rollout_checks(ok, 0.62, 0.9, 0.9, 0.9, LIM0)["premise"]
+    assert not rollout_checks(ok, 0.63, 0.9, 0.9, 0.9, LIM0)["premise"]      # at the threshold
+    assert rollout_checks(ok, 0.74, 0.9, 0.9, 0.9, LIM1)["premise"]
+    assert not rollout_checks(ok, 0.76, 0.9, 0.9, 0.9, LIM1)["premise"]
+
+
+def test_seed_resolution_and_per_seed_limits():
+    s0, s1 = resolve_seed(CFG, 0), resolve_seed(CFG, 1)
+    assert s0["variant_run"] == "seq_hetero__gpm_projected_adam_ne90__seed0"
+    assert s1["baseline_run"] == "seq_hetero__gpm_projected_adam__seed1"
+    assert s1["diagnostics"] == {"variant": "forgetting_diag_ne90_seed1/report.json",
+                                 "baseline": "forgetting_diag_seed1/report.json"}
+    assert s0["out"] != s1["out"]
+    # Seed 0 keeps exactly the thresholds its run was judged by.
+    assert LIM0 == {"min_improvement": 0.20, "premise": 0.63, "durable": 0.63, "t3": 0.85,
+                    "t4": 0.83, "goal": 0.85}
+    assert (LIM1["premise"], LIM1["durable"], LIM1["t3"], LIM1["t4"]) == (0.75, 0.75, 0.85, 0.83)
+    with pytest.raises(ValueError, match="not pre-registered"):
+        resolve_seed(CFG, 7)
+
+
+# ---- replication (symmetric) ------------------------------------------------------------
+
+
+def v(verdict):
+    return {"verdict": verdict}
+
+
+@pytest.mark.parametrize("verdicts, expected", [
+    ({0: v("durable_support"), 1: v("durable_support")}, "durably_replicated"),
+    ({0: v("durable_support"), 1: v("transition_support")}, "replicated"),
+    ({0: v("durable_support"), 1: v("not_supported")}, "not_replicated"),
+    ({0: v("not_supported"), 1: v("durable_support")}, "not_replicated"),       # symmetric
+    ({0: v("not_supported"), 1: v("not_supported")}, "consistently_not_supported"),
+    ({0: v("durable_support"), 1: v("manipulation_weak")}, "inconclusive"),
+    ({0: v("trade_off"), 1: v("durable_support")}, "inconclusive"),
+    ({0: v("durable_support"), 1: v("inconclusive")}, "inconclusive"),
+    ({0: v("durable_support"), 1: v("not_applicable_baseline_retained")}, "not_applicable"),
+    ({0: v("invalid_comparison"), 1: v("durable_support")}, "inconclusive_invalid"),
+    # precedence: invalid over not-applicable over inconclusive
+    ({0: v("invalid_implementation"), 1: v("not_applicable_baseline_retained")}, "inconclusive_invalid"),
+    ({0: v("not_applicable_baseline_retained"), 1: v("trade_off")}, "not_applicable"),
+    ({0: v("durable_support"), 1: v("durable_support"), 2: v("transition_support")}, "replicated"),
+    ({0: v("durable_support"), 1: v("durable_support"), 2: v("not_supported")}, "not_replicated"),
+])
+def test_replication_rule(verdicts, expected):
+    out = classify_replication(verdicts)
+    assert out["replication"] == expected and out["text"] == REPLICATION[expected]
+
+
+def test_replication_needs_two_seeds():
+    with pytest.raises(ValueError, match="two seeds"):
+        classify_replication({0: v("durable_support")})
 
 
 def diag(run, trunk, decoder):
@@ -140,8 +206,8 @@ def test_interference_ratio_is_inclusive_in_both_halves():
 
 
 def test_committed_rule_matches_the_plan():
-    assert CFG["variant_run"] == "seq_hetero__gpm_projected_adam_ne90__seed0"
     assert CFG["interference"]["max_ratio"] == 0.70
     assert CFG["retention"]["min_improvement"] == 0.20
-    assert (CFG["plasticity"]["t3_threshold"], CFG["plasticity"]["t4_threshold"]) == (0.85, 0.83)
-    assert CFG["retention"]["durable_threshold"] == 0.63
+    assert CFG["seeds"][0]["thresholds"] == [0.75, 0.63, 0.85, 0.83]
+    assert CFG["seeds"][1]["thresholds"] == [0.81, 0.75, 0.85, 0.83]
+    assert CFG["premise"]["baseline_cell"] == CFG["retention"]["transition_cell"] == [2, 1]
