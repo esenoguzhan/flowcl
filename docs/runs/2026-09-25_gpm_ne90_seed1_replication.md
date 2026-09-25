@@ -171,15 +171,45 @@ That is the same pattern as seed 0.
 
 ---
 
-## 6. Next decision
+## 6. Next steps (decided 25 Sep)
 
-The pre-registered branch for *replicated* was: seed 2, then the baselines and ablations, then the
-high-protection control. The T4 result argues for adding the capacity question before the controls.
-Options:
-1. **Seed 2 pair** (seq_ft seed 2, about 5.3 h, then the pair, about 9.5 h). It settles whether the
-   T4 plasticity loss is typical, one in two, or rarer. The loss-level evidence says it is systematic.
-2. **A capacity-aware variant.** For example, a smaller `f`, a per-layer occupancy cap, or protecting
-   new energy only while free capacity remains. This is a new method, and needs its own pre-registration.
-3. **The high-protection control** (ε = 0.95 at T1, 0.99 from T2). It would show whether the
-   adaptive rule costs more or less capacity than plain "more protection".
-4. **The build-step-7 baselines and ablations**, as planned.
+**The measured immediate mechanism of the T4 loss is capacity saturation.** The trunk is 94%
+occupied entering T4, and 99.5% of its T4 gradient lies in the protected subspace.
+
+**Sequence:**
+1. **The seed-2 set** (seq_ft, plain and adaptive GPM seed 2), as pre-registered. It shows how
+   consistently the T4 cost crosses the behavioural threshold.
+   - Seed 2's thresholds are derived by the pre-registered per-seed rule, `θ_j = R_seqft[j][j] − 0.15`.
+     This is an explicit, fail-closed entry in `sequence_report.yaml`.
+2. **SGP**, in its own plan and pre-registration.
+   - The step-8 SGP trigger (plasticity failure on T3/T4) fired for the **adaptive variant on seed
+     1**, not for plain GPM on either seed.
+   - SGP is also next in the spec's build order.
+3. **Gate 4** (the `s`-binned characterization over 3 seeds, no training), early. It decides whether
+   the thesis extension (`s`-binned SGP, README §7.5) is pursued.
+4. **The required baselines and core ablations:** `replay`, `lora`, `ewc`, then `consft`.
+5. **The high-protection control:** ε = 0.95 at T1, then a fixed 0.99 from T2 on. It keeps T1 and T2
+   identical, which a global ε = 0.99 would not, and separates the *adaptive* allocation rule from
+   stronger protection in general.
+6. **The rest of the Stage A matrix:** `seq_correlated` and `seq_hetero_reverse`, each with 3 seeds.
+   Both are required by README §5.
+
+**Not doing:**
+- an improvised occupancy cap or a smaller `f` (post-hoc method tuning);
+- a fifth-task stress test (the capacity limit is already visible at T4).
+
+**SGP naming, fixed now.** The SGP plan must say which of these it runs:
+
+| Name | Memory | Projection |
+|---|---|---|
+| **Paper SGP** (baseline) | standard GPM memory | `G' = G(I − M Λ Mᵀ)`, with basis-wise importance `λ_i = (α+1)σ_i / (α σ_i + max σ)`, accumulated across tasks and capped at 1 (Saha & Roy, AAAI 2023, Eq. 2–10) |
+| **Layerwise scaled projection** | — | README §6 item 7: `G' = G_⊥ + α_l G_∥`, one `α_l` per layer |
+| **Adaptive SGP** (thesis method) | adaptive ne90 memory | basis-wise or layerwise scaling; our hybrid extension, not the published method |
+
+Notes for the SGP plan:
+- **The paper's cross-task importance** uses surrogate singular values. In our Gram pipeline they are
+  `σ'_i² = m_iᵀ K m_i`.
+- **With Adam, the paper projects Adam's output** (Adam-GP, App. E). That matches our update
+  projection.
+- **α must be fixed a priori.** The paper used values from 1 to 25.
+- **Deviations from the spec's per-layer `α_l`** are documented.
