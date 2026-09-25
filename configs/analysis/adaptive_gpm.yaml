@@ -1,7 +1,8 @@
 # Pre-registered outcome rule for the adaptive-GPM runs (gpm_projected_adam_ne90): the
 # causal test after the forgetting diagnostics (docs/runs/2026-09-24_gpm_forgetting_
 # diagnostics.md §8). Seed 0 was committed before its run (9701620); seed 1 and the
-# replication rule were added on 25 Sep 2026, before any seed-1 method result existed.
+# replication rule were added on 25 Sep 2026, before any seed-1 method result existed;
+# seed 2 on 25 Sep 2026, before seq_ft seed 2 ran.
 # Evaluated by scripts/adaptive_report.py (--seed N; --replication 0 1).
 #
 # All thresholds are inclusive, except the CI lower bound, which must be strictly > 0, and
@@ -45,9 +46,11 @@ interference:
   comparison: primary
   max_ratio: 0.70
 
-# Rollout cells [stage, task]. Each check's threshold is the seed's per-task threshold
-# (thresholds[task]) below, asserted equal to sequence_report.yaml's criteria for that
-# seed's paired seq_ft reference.
+# Rollout cells [stage, task]. Each check's threshold is the seed's per-task threshold at
+# that task. Thresholds are NOT restated here: sequence_report.yaml is the single source,
+# and this report consumes the threshold blocks written into both runs' sequence reports,
+# asserting they agree (reference id and result.json hash, thresholds, margin, episode
+# namespace, task order across both blocks and all three result.json files).
 premise:
   baseline_cell: [2, 1]          # the baseline must have forgotten Object across Goal
 retention:
@@ -60,27 +63,42 @@ plasticity:
 secondary:                       # reported, not decisive
   goal_cell: [3, 2]
 
-# Per seed: runs (under results/), the diagnostics reports, the output, and the per-task
-# thresholds R_seqft[j][j] - 15 pp of that seed's own seq_ft reference.
+# Per seed: runs (under results/), their sequence reports (threshold source) and
+# diagnostics reports, and the output.
 seeds:
   0:
     variant_run: seq_hetero__gpm_projected_adam_ne90__seed0
     baseline_run: seq_hetero__gpm_projected_adam__seed0
     reference_run: seq_hetero__seq_ft__seed0
+    sequence_reports:
+      variant: gpm_seq_ne90/report.json
+      baseline: gpm_seq/report.json
     diagnostics:
       variant: forgetting_diag_ne90/report.json
       baseline: forgetting_diag/report.json
-    thresholds: [0.75, 0.63, 0.85, 0.83]
     out: adaptive_gpm/report.json
   1:
     variant_run: seq_hetero__gpm_projected_adam_ne90__seed1
     baseline_run: seq_hetero__gpm_projected_adam__seed1
     reference_run: seq_hetero__seq_ft__seed1
+    sequence_reports:
+      variant: gpm_seq_ne90_seed1/report.json
+      baseline: gpm_seq_seed1/report.json
     diagnostics:
       variant: forgetting_diag_ne90_seed1/report.json
       baseline: forgetting_diag_seed1/report.json
-    thresholds: [0.81, 0.75, 0.85, 0.83]
     out: adaptive_gpm_seed1/report.json
+  2:
+    variant_run: seq_hetero__gpm_projected_adam_ne90__seed2
+    baseline_run: seq_hetero__gpm_projected_adam__seed2
+    reference_run: seq_hetero__seq_ft__seed2
+    sequence_reports:
+      variant: gpm_seq_ne90_seed2/report.json
+      baseline: gpm_seq_seed2/report.json
+    diagnostics:
+      variant: forgetting_diag_ne90_seed2/report.json
+      baseline: forgetting_diag_seed2/report.json
+    out: adaptive_gpm_seed2/report.json
 
 # Replication across seeds (symmetric; every seed's verdict is inspected), rows in order:
 #   any invalid_comparison / invalid_implementation          -> inconclusive (invalid run)

@@ -14,10 +14,14 @@ QUEUE = repo_root() / "scripts" / "queue_2026-09-24_overnight.sh"
 SEED1 = repo_root() / "scripts" / "queue_2026-09-25_seed1.sh"
 
 
-def dry_run(tmp_path, fail_step="", queue=QUEUE):
+GENERIC = repo_root() / "scripts" / "queue_seed_pair.sh"
+
+
+def dry_run(tmp_path, fail_step="", queue=QUEUE, args=()):
     env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_FAIL_STEP": fail_step,
            "QUEUE_LOG_ROOT": str(tmp_path)}
-    done = subprocess.run(["bash", str(queue)], env=env, capture_output=True, text=True, timeout=60)
+    done = subprocess.run(["bash", str(queue), *args], env=env, capture_output=True, text=True,
+                          timeout=60)
     assert done.returncode == 0, done.stderr
     (logdir,) = list(tmp_path.glob("queue_*"))
     return (logdir / "queue.log").read_text()
@@ -28,8 +32,57 @@ def ran(log, step):
 
 
 def test_queue_syntax():
-    for queue in (QUEUE, SEED1):
+    for queue in (QUEUE, SEED1, GENERIC):
         assert subprocess.run(["bash", "-n", str(queue)]).returncode == 0
+
+
+GEN_STEPS = ["0_seqft_s2", "1_gpm_s2", "2_seqrep_gpm_s2", "3_diag_gpm_s2", "4_gpm_ne90_s2",
+             "5_seqrep_ne90_s2", "6_diag_ne90_s2", "7_adaptive_s2", "8_replication"]
+
+
+def test_generic_queue_runs_seed2_with_seq_ft_in_order(tmp_path):
+    log = dry_run(tmp_path, queue=GENERIC, args=("2", "--with-seq-ft"))
+    positions = [log.index(f"START {s}") for s in GEN_STEPS]
+    assert positions == sorted(positions) and "SKIP" not in log
+    assert log.rstrip().endswith("QUEUE DONE")
+    (logdir,) = list(tmp_path.glob("queue_*_seed2"))
+    read = lambda s: (logdir / f"{s}.log").read_text()  # noqa: E731
+    assert "--method seq_ft --seed 2 --amp" in read("0_seqft_s2")
+    assert "--method gpm --seed 2" in read("1_gpm_s2")
+    assert "--identity-reference-run results/seq_hetero__gpm_projected_adam__seed2" in read("4_gpm_ne90_s2")
+    assert "--reference-run seq_hetero__seq_ft__seed2" in read("6_diag_ne90_s2")
+    assert "--seed 2" in read("7_adaptive_s2")
+    assert read("8_replication").rstrip().endswith("--replication 0 1 2")
+
+
+def test_generic_queue_without_seq_ft_starts_at_the_gpm_run(tmp_path):
+    log = dry_run(tmp_path, queue=GENERIC, args=("2",))
+    assert not ran(log, "0_seqft_s2") and ran(log, "1_gpm_s2") and ran(log, "8_replication")
+
+
+@pytest.mark.parametrize("fail, ran_steps, skipped", [
+    ("0_seqft_s2", ["0_seqft_s2"], GEN_STEPS[1:]),
+    ("1_gpm_s2", GEN_STEPS[:2], GEN_STEPS[2:]),
+    ("4_gpm_ne90_s2", GEN_STEPS[:5], GEN_STEPS[5:]),
+    ("2_seqrep_gpm_s2", GEN_STEPS[:7], ["7_adaptive_s2", "8_replication"]),  # 7 needs both seqreps
+    ("5_seqrep_ne90_s2", GEN_STEPS[:7], ["7_adaptive_s2", "8_replication"]),
+    ("7_adaptive_s2", GEN_STEPS[:8], ["8_replication"]),
+])
+def test_generic_queue_skips_only_what_depends_on_a_failure(tmp_path, fail, ran_steps, skipped):
+    log = dry_run(tmp_path, fail, queue=GENERIC, args=("2", "--with-seq-ft"))
+    for step in ran_steps:
+        assert ran(log, step), step
+    for step in skipped:
+        assert not ran(log, step), step
+    assert "SKIP" in log and log.rstrip().endswith("QUEUE DONE")
+
+
+def test_generic_queue_rejects_a_bad_seed_and_skips_replication_for_seed0(tmp_path):
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_LOG_ROOT": str(tmp_path)}
+    bad = subprocess.run(["bash", str(GENERIC), "two"], env=env, capture_output=True, text=True)
+    assert bad.returncode == 2
+    log = dry_run(tmp_path / "s0", queue=GENERIC, args=("0",))
+    assert "SKIP 8_replication: replication needs at least two seeds" in log
 
 
 SEED1_STEPS = ["1_gpm_s1", "2_seqrep_gpm_s1", "3_diag_gpm_s1", "4_gpm_ne90_s1",

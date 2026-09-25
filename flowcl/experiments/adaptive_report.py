@@ -85,9 +85,13 @@ def resolve_seed(cfg: dict, seed: int) -> dict:
     return {**shared, **seeds[seed], "seed": seed}
 
 
-def limits(resolved: dict) -> dict:
-    """Each check's threshold: the seed's per-task threshold at the check's task."""
-    thr = resolved["thresholds"]
+def limits(resolved: dict, thresholds: list[float]) -> dict:
+    """Each check's threshold: the seed's per-task threshold at the check's task.
+
+    ``thresholds`` come from the sequence reports' threshold blocks
+    (:func:`consume_threshold_blocks`), the single authoritative implementation.
+    """
+    thr = thresholds
     return {
         "min_improvement": resolved["retention"]["min_improvement"],
         "premise": thr[resolved["premise"]["baseline_cell"][1]],
@@ -96,6 +100,53 @@ def limits(resolved: dict) -> dict:
         "t4": thr[resolved["plasticity"]["t4_cell"][1]],
         "goal": thr[resolved["secondary"]["goal_cell"][1]],
     }
+
+
+def consume_threshold_blocks(
+    blocks: dict[str, dict],
+    reference_run: str,
+    reference_sha256: str,
+    result_task_keys: dict[str, list[str]],
+) -> dict:
+    """Verify the variant's and baseline's sequence-report threshold blocks and return one.
+
+    ``blocks``: ``{"variant": ..., "baseline": ...}`` as written by
+    :func:`flowcl.experiments.sequence_report.threshold_block`. ``reference_sha256``: the
+    reference ``result.json`` hash *now*. ``result_task_keys``: the ``task_keys`` of the
+    variant, baseline and reference ``result.json``. Raises on any disagreement, so four
+    valid numbers can never be applied to another reference, a changed reference file, a
+    different episode namespace or a reordered curriculum.
+    """
+    from flowcl.experiments.sequence_report import THRESHOLD_ATOL
+
+    v, b = blocks["variant"], blocks["baseline"]
+    problems = []
+    for name, block in blocks.items():
+        if block["reference_run_id"] != reference_run:
+            problems.append(f"{name} block references {block['reference_run_id']!r}, "
+                            f"expected {reference_run!r}")
+        if block["reference_result_sha256"] != reference_sha256:
+            problems.append(f"{name} block's reference hash is stale (the reference "
+                            "result.json changed after the sequence report was written)")
+        if block["seed_namespace_run_id"] != reference_run:
+            problems.append(f"{name} block's episode namespace "
+                            f"{block['seed_namespace_run_id']!r} is not {reference_run!r}")
+    if v["mode"] != b["mode"]:
+        problems.append(f"modes differ: {v['mode']} vs {b['mode']}")
+    if not math.isclose(v["margin"], b["margin"], rel_tol=0.0, abs_tol=THRESHOLD_ATOL):
+        problems.append(f"margins differ: {v['margin']} vs {b['margin']}")
+    if len(v["thresholds"]) != len(b["thresholds"]) or not all(
+        math.isclose(x, y, rel_tol=0.0, abs_tol=THRESHOLD_ATOL)
+        for x, y in zip(v["thresholds"], b["thresholds"])
+    ):
+        problems.append(f"thresholds differ: {v['thresholds']} vs {b['thresholds']}")
+    orders = {"variant block": v["task_keys"], "baseline block": b["task_keys"],
+              **{f"{k} result.json": keys for k, keys in result_task_keys.items()}}
+    if len({tuple(keys) for keys in orders.values()}) != 1:
+        problems.append(f"task order differs: {orders}")
+    if problems:
+        raise ValueError("threshold blocks do not agree: " + "; ".join(problems))
+    return v
 
 
 # ---- the verdict (pure) ----------------------------------------------------------
@@ -301,12 +352,12 @@ def build_adaptive_report(cfg: dict, results_root: Path | None = None) -> dict:
     from flowcl.experiments.sequence_report import (
         capacity_by_stage,
         classify_sequence,
-        criteria_thresholds,
         load_report_config,
         load_run,
         paired_cells,
         registry_groups,
     )
+    from flowcl.utils.run import file_sha256
 
     root = Path(results_root) if results_root else repo_root() / "results"
     dirs = {k: root / cfg[f"{k}_run"] for k in ("variant", "baseline", "reference")}
@@ -316,20 +367,21 @@ def build_adaptive_report(cfg: dict, results_root: Path | None = None) -> dict:
         OmegaConf.load(repo_root() / "configs" / "eval" / "libero_eval.yaml"), resolve=True
     )["bootstrap"]
 
-    # The seed's thresholds, derived from its own paired seq_ft reference (and asserted
-    # there against sequence_report.yaml), must equal this rule's copy.
-    ref_diag = [runs["reference"].cell(j, j).estimate.value for j in range(n)]
-    thresholds = criteria_thresholds(
-        ref_diag, load_report_config()["criteria"], dirs["reference"].name
+    # Thresholds: consumed from the two sequence reports (the single implementation),
+    # cross-checked against each other, the reference file and the task order.
+    seq_reports = {k: json.loads((root / p).read_text()) for k, p in cfg["sequence_reports"].items()}
+    for role in ("variant", "baseline"):
+        if seq_reports[role]["method_run_id"] != dirs[role].name:
+            raise ValueError(f"{cfg['sequence_reports'][role]} is the sequence report for "
+                             f"{seq_reports[role]['method_run_id']!r}, not {dirs[role].name!r}")
+    block = consume_threshold_blocks(
+        {k: r["threshold_block"] for k, r in seq_reports.items()},
+        dirs["reference"].name,
+        file_sha256(dirs["reference"] / "result.json"),
+        {k: list(r.task_keys) for k, r in runs.items()},
     )
-    if len(thresholds) != len(cfg["thresholds"]) or any(
-        not math.isclose(a, b) for a, b in zip(thresholds, cfg["thresholds"])
-    ):
-        raise ValueError(
-            f"seed {cfg.get('seed')}: pre-registered thresholds {cfg['thresholds']} differ "
-            f"from the criteria {thresholds}"
-        )
-    lim = limits(cfg)
+    thresholds = block["thresholds"]
+    lim = limits(cfg, thresholds)
 
     identity = identity_check(dirs["variant"], dirs["baseline"], cfg["identity_stages"])
     _, meta = load_bases(dirs["variant"] / "method" / f"memory_task{n - 1}.pt")
@@ -371,6 +423,7 @@ def build_adaptive_report(cfg: dict, results_root: Path | None = None) -> dict:
         "git_sha": git_sha(),
         "seed": cfg.get("seed"),
         "config": cfg,
+        "threshold_block": block,
         "limits": lim,
         "verdict": classify_adaptive(checks),
         "checks": checks,

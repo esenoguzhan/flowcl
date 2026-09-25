@@ -37,21 +37,49 @@ def est(v, low=None, high=None):
     return Estimate(v, v if low is None else low, v if high is None else high, 50)
 
 
+def approx12(values):
+    return pytest.approx(values, rel=0.0, abs=1e-12)
+
+
 def test_thresholds_come_from_the_reference_diagonal():
     criteria = load_report_config()["criteria"]
-    assert criteria_thresholds(REF_DIAG, criteria, "seq_hetero__seq_ft__seed0") == [0.75, 0.63, 0.85, 0.83]
+    assert criteria_thresholds(REF_DIAG, criteria, "seq_hetero__seq_ft__seed0") == approx12(
+        [0.75, 0.63, 0.85, 0.83])
     with pytest.raises(ValueError, match="reference run changed"):
         criteria_thresholds([0.90, 0.80, 1.00, 0.98], criteria, "seq_hetero__seq_ft__seed0")
 
 
-def test_thresholds_are_per_paired_reference_and_must_be_preregistered():
+def test_registered_thresholds_are_per_paired_reference():
     criteria = load_report_config()["criteria"]
     seed1 = [0.96, 0.90, 1.00, 0.98]
-    assert criteria_thresholds(seed1, criteria, "seq_hetero__seq_ft__seed1") == [0.81, 0.75, 0.85, 0.83]
+    assert criteria_thresholds(seed1, criteria, "seq_hetero__seq_ft__seed1") == approx12(
+        [0.81, 0.75, 0.85, 0.83])
     with pytest.raises(ValueError, match="reference run changed"):
         criteria_thresholds(REF_DIAG, criteria, "seq_hetero__seq_ft__seed1")  # seed 0's diagonal
-    with pytest.raises(ValueError, match="pre-registered"):
-        criteria_thresholds(seed1, criteria, "seq_hetero__seq_ft__seed2")
+
+
+def test_derived_thresholds_are_the_rule_in_full_precision():
+    criteria = load_report_config()["criteria"]
+    diag = [0.94, 0.86, 0.98, 1.00]  # any diagonal: seed 2's is not known in advance
+    got = criteria_thresholds(diag, criteria, "seq_hetero__seq_ft__seed2")
+    assert got == approx12([r - 0.15 for r in diag])
+
+
+def test_unknown_or_misspelled_references_fail_closed():
+    criteria = load_report_config()["criteria"]
+    for name in ("seq_hetero__seq_ft__seed3", "seq_hetero__seq_ft_seed2", "ref"):
+        with pytest.raises(ValueError, match="pre-registered"):
+            criteria_thresholds(REF_DIAG, criteria, name)
+
+
+def test_derived_margin_must_match_the_rule():
+    criteria = load_report_config()["criteria"]
+    criteria["expected_thresholds_by_reference"]["seq_hetero__seq_ft__seed2"]["margin"] = 0.10
+    with pytest.raises(ValueError, match="derived margin"):
+        criteria_thresholds(REF_DIAG, criteria, "seq_hetero__seq_ft__seed2")
+    criteria["expected_thresholds_by_reference"]["x"] = {"mode": "guessed"}
+    with pytest.raises(ValueError, match="mode"):
+        criteria_thresholds(REF_DIAG, criteria, "x")
 
 
 def grid(diag, final_row):
@@ -314,8 +342,24 @@ def write_run(root, name, diag, final_row, with_memory):
 
 def config_for(reference_name):
     config = load_report_config()
-    config["criteria"]["expected_thresholds_by_reference"] = {reference_name: [0.75, 0.63, 0.85, 0.83]}
+    config["criteria"]["expected_thresholds_by_reference"] = {
+        reference_name: {"mode": "registered", "thresholds": [0.75, 0.63, 0.85, 0.83]}}
     return config
+
+
+def test_the_report_writes_a_complete_threshold_block(tmp_path):
+    from flowcl.utils.run import file_sha256
+
+    ref = write_run(tmp_path, "ref", REF_DIAG, [0.0, 0.0, 0.0, 0.98], with_memory=False)
+    gpm = write_run(tmp_path, "gpm", [0.9, 0.88, 0.5, 0.9], [0.8, 0.7, 0.5, 0.9], with_memory=False)
+    block = build_report(gpm, ref, pilot_json=None, config=config_for("ref"),
+                         verify_checkpoints=False)["threshold_block"]
+    assert block["mode"] == "registered" and block["margin"] == pytest.approx(0.15)
+    assert block["task_keys"] == KEYS
+    assert block["thresholds"] == approx12([0.75, 0.63, 0.85, 0.83])
+    assert block["reference_run_id"] == "ref"
+    assert block["reference_result_sha256"] == file_sha256(ref / "result.json")
+    assert block["seed_namespace_run_id"] == "ref"  # the method's episode namespace
 
 
 def test_pilot_comparison_is_skipped_for_another_seed_namespace(tmp_path):

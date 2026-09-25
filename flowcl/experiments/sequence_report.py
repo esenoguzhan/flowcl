@@ -79,28 +79,77 @@ def load_report_config(path: str | Path | None = None) -> dict:
 # ---- pre-registered criteria ---------------------------------------------------
 
 
-def criteria_thresholds(
-    reference_diagonal: list[float], criteria: dict, reference_run_id: str
-) -> list[float]:
-    """``R_ref[j][j] - margin`` per task, asserted against the values pre-registered for
-    this reference run (each method run is judged against its own seed's seq_ft run)."""
-    margin = criteria["margin_pp"] / 100.0
-    thresholds = [round(r - margin, 6) for r in reference_diagonal]
+THRESHOLD_ATOL = 1e-12
+
+
+def _close(a: float, b: float) -> bool:
+    return math.isclose(a, b, rel_tol=0.0, abs_tol=THRESHOLD_ATOL)
+
+
+def threshold_entry(criteria: dict, reference_run_id: str) -> dict:
+    """The explicit, pre-registered entry for a reference run (fail-closed: none -> raise)."""
     registered = criteria["expected_thresholds_by_reference"]
     if reference_run_id not in registered:
         raise ValueError(
             f"no thresholds pre-registered for reference run {reference_run_id!r} "
-            f"(have {sorted(registered)}); add them to sequence_report.yaml before judging"
+            f"(have {sorted(registered)}); add an explicit entry to sequence_report.yaml "
+            "before judging"
         )
-    expected = registered[reference_run_id]
+    entry = registered[reference_run_id]
+    if entry.get("mode") not in ("registered", "derived"):
+        raise ValueError(f"{reference_run_id}: threshold mode must be registered or derived, "
+                         f"got {entry.get('mode')!r}")
+    return entry
+
+
+def criteria_thresholds(
+    reference_diagonal: list[float], criteria: dict, reference_run_id: str
+) -> list[float]:
+    """``theta_j = R_ref[j][j] - margin`` per task, full precision (no clipping, no rounding).
+
+    Each method run is judged against its own seed's seq_ft run. ``registered`` entries fix
+    the values in advance and are asserted (``|diff| <= 1e-12``); ``derived`` entries
+    authorize this reference explicitly and take the values from its diagonal, with a
+    margin that must equal ``margin_pp / 100``.
+    """
+    margin = criteria["margin_pp"] / 100.0
+    thresholds = [r - margin for r in reference_diagonal]
+    entry = threshold_entry(criteria, reference_run_id)
+    if entry["mode"] == "derived":
+        if not _close(entry["margin"], margin):
+            raise ValueError(
+                f"{reference_run_id}: derived margin {entry['margin']} differs from "
+                f"margin_pp / 100 = {margin}"
+            )
+        return thresholds
+    expected = entry["thresholds"]
     if len(thresholds) != len(expected) or not all(
-        math.isclose(a, b) for a, b in zip(thresholds, expected)
+        _close(a, b) for a, b in zip(thresholds, expected)
     ):
         raise ValueError(
             f"thresholds from the reference diagonal {thresholds} differ from the "
             f"pre-registered {expected}; the reference run changed"
         )
     return thresholds
+
+
+def threshold_block(
+    criteria: dict, method: "RunView", reference: "RunView", thresholds: list[float]
+) -> dict:
+    """What an adaptive report must consume: the thresholds and everything they depend on.
+
+    ``seed_namespace_run_id`` is the method run's episode namespace (its rollouts' seeds).
+    """
+    entry = threshold_entry(criteria, reference.run_dir.name)
+    return {
+        "mode": entry["mode"],
+        "margin": criteria["margin_pp"] / 100.0,
+        "task_keys": list(reference.task_keys),
+        "thresholds": list(thresholds),
+        "reference_run_id": reference.run_dir.name,
+        "reference_result_sha256": file_sha256(reference.run_dir / "result.json"),
+        "seed_namespace_run_id": method.result.get("seed_namespace_run_id"),
+    }
 
 
 def _judge(est: Estimate, threshold: float) -> dict:
@@ -561,6 +610,7 @@ def build_report(
         "seed_namespace_run_id": method.result.get("seed_namespace_run_id"),
         "task_keys": method.task_keys,
         "criteria": {"thresholds": thresholds, "reference_diagonal": ref_diag, **config["criteria"]},
+        "threshold_block": threshold_block(config["criteria"], method, reference, thresholds),
         "outcome": classify_sequence(estimates, thresholds, config["criteria"]["fallback_tasks"]),
         "matrices": {"method": matrix(method), "reference": matrix(reference)},
         "paired_cells": paired_cells(method, reference, bootstrap),

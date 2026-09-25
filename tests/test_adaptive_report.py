@@ -9,6 +9,7 @@ from flowcl.experiments.adaptive_report import (
     VERDICTS,
     classify_adaptive,
     classify_replication,
+    consume_threshold_blocks,
     energy_check,
     interference_check,
     limits,
@@ -16,11 +17,15 @@ from flowcl.experiments.adaptive_report import (
     resolve_seed,
     rollout_checks,
 )
+from flowcl.experiments.sequence_report import load_report_config
 
 CFG = load_adaptive_config()
 ENERGY = CFG["energy"]
-LIM0 = limits(resolve_seed(CFG, 0))
-LIM1 = limits(resolve_seed(CFG, 1))
+CRITERIA = load_report_config()["criteria"]
+REG = CRITERIA["expected_thresholds_by_reference"]
+# The seed-0/1 limits come from sequence_report.yaml (the single threshold source).
+LIM0 = limits(resolve_seed(CFG, 0), REG["seq_hetero__seq_ft__seed0"]["thresholds"])
+LIM1 = limits(resolve_seed(CFG, 1), REG["seq_hetero__seq_ft__seed1"]["thresholds"])
 
 
 def checks(**overrides):
@@ -144,12 +149,17 @@ def test_premise_needs_the_baseline_strictly_below_the_object_threshold():
 
 
 def test_seed_resolution_and_per_seed_limits():
-    s0, s1 = resolve_seed(CFG, 0), resolve_seed(CFG, 1)
+    s0, s1, s2 = resolve_seed(CFG, 0), resolve_seed(CFG, 1), resolve_seed(CFG, 2)
     assert s0["variant_run"] == "seq_hetero__gpm_projected_adam_ne90__seed0"
     assert s1["baseline_run"] == "seq_hetero__gpm_projected_adam__seed1"
     assert s1["diagnostics"] == {"variant": "forgetting_diag_ne90_seed1/report.json",
                                  "baseline": "forgetting_diag_seed1/report.json"}
-    assert s0["out"] != s1["out"]
+    assert s0["sequence_reports"] == {"variant": "gpm_seq_ne90/report.json",
+                                      "baseline": "gpm_seq/report.json"}
+    assert s2["reference_run"] == "seq_hetero__seq_ft__seed2"
+    assert s2["sequence_reports"]["baseline"] == "gpm_seq_seed2/report.json"
+    assert len({s0["out"], s1["out"], s2["out"]}) == 3
+    assert "thresholds" not in s0  # sequence_report.yaml is the single source
     # Seed 0 keeps exactly the thresholds its run was judged by.
     assert LIM0 == {"min_improvement": 0.20, "premise": 0.63, "durable": 0.63, "t3": 0.85,
                     "t4": 0.83, "goal": 0.85}
@@ -208,6 +218,51 @@ def test_interference_ratio_is_inclusive_in_both_halves():
 def test_committed_rule_matches_the_plan():
     assert CFG["interference"]["max_ratio"] == 0.70
     assert CFG["retention"]["min_improvement"] == 0.20
-    assert CFG["seeds"][0]["thresholds"] == [0.75, 0.63, 0.85, 0.83]
-    assert CFG["seeds"][1]["thresholds"] == [0.81, 0.75, 0.85, 0.83]
+    assert REG["seq_hetero__seq_ft__seed0"] == {"mode": "registered",
+                                                "thresholds": [0.75, 0.63, 0.85, 0.83]}
+    assert REG["seq_hetero__seq_ft__seed1"] == {"mode": "registered",
+                                                "thresholds": [0.81, 0.75, 0.85, 0.83]}
+    assert REG["seq_hetero__seq_ft__seed2"] == {"mode": "derived", "margin": 0.15}
     assert CFG["premise"]["baseline_cell"] == CFG["retention"]["transition_cell"] == [2, 1]
+
+
+# ---- consuming the sequence reports' threshold blocks -----------------------------------
+
+TASKS = ["a/1", "b/2", "c/3", "d/4"]
+REF = "seq_hetero__seq_ft__seed1"
+
+
+def tblock(**overrides):
+    base = {"mode": "registered", "margin": 0.15, "task_keys": list(TASKS),
+            "thresholds": [0.81, 0.75, 0.85, 0.83], "reference_run_id": REF,
+            "reference_result_sha256": "h", "seed_namespace_run_id": REF}
+    return {**base, **overrides}
+
+
+def consume(variant=None, baseline=None, sha="h", orders=None):
+    keys = orders or {"variant": TASKS, "baseline": TASKS, "reference": TASKS}
+    return consume_threshold_blocks({"variant": variant or tblock(), "baseline": baseline or tblock()},
+                                    REF, sha, keys)
+
+
+def test_consistent_threshold_blocks_are_consumed():
+    assert consume()["thresholds"] == [0.81, 0.75, 0.85, 0.83]
+    # A derived entry's floats (e.g. 0.96 - 0.15) agree to within 1e-12, not bit for bit.
+    assert consume(variant=tblock(thresholds=[0.96 - 0.15, 0.75, 0.85, 0.83]))
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"baseline": tblock(reference_run_id="seq_hetero__seq_ft__seed0")}, "references"),
+    ({"sha": "changed"}, "stale"),
+    ({"variant": tblock(reference_result_sha256="other")}, "stale"),
+    ({"baseline": tblock(thresholds=[0.81, 0.75, 0.85, 0.84])}, "thresholds differ"),
+    ({"baseline": tblock(margin=0.10)}, "margins differ"),
+    ({"variant": tblock(seed_namespace_run_id="seq_hetero__seq_ft__seed0")}, "namespace"),
+    ({"variant": tblock(mode="derived")}, "modes differ"),
+    ({"baseline": tblock(task_keys=[TASKS[1], TASKS[0], TASKS[2], TASKS[3]])}, "task order"),
+    ({"orders": {"variant": TASKS, "baseline": TASKS, "reference": TASKS[::-1]}}, "task order"),
+    ({"orders": {"variant": TASKS[::-1], "baseline": TASKS, "reference": TASKS}}, "task order"),
+])
+def test_any_disagreement_between_threshold_blocks_raises(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        consume(**kwargs)

@@ -5,12 +5,22 @@
 # below are asserted against them, so a changed reference fails loudly.
 criteria:
   margin_pp: 15
-  # R_ref[j][j] - 15 pp for j = 0..3, per paired seq_ft reference run: each method run is
-  # judged against its own seed's reference (decided 25 Sep 2026, before any seed-1 method
-  # result existed). An unlisted reference raises: pre-register its thresholds first.
+  # theta_j = R_ref[j][j] - margin for j = 0..3, full precision (no clipping, no rounding),
+  # per paired seq_ft reference run: each method run is judged against its own seed's
+  # reference (decided 25 Sep 2026). Fail-closed: every reference must have an explicit entry.
+  #   registered: the values are fixed here and asserted (|diff| <= 1e-12);
+  #   derived:    the values are computed at report time from the reference's own diagonal
+  #               by the rule above, and recorded with the reference result.json SHA-256.
   expected_thresholds_by_reference:
-    seq_hetero__seq_ft__seed0: [0.75, 0.63, 0.85, 0.83]   # Gate 1: 90 / 78 / 100 / 98
-    seq_hetero__seq_ft__seed1: [0.81, 0.75, 0.85, 0.83]   # 96 / 90 / 100 / 98
+    seq_hetero__seq_ft__seed0:          # Gate 1: 90 / 78 / 100 / 98
+      mode: registered
+      thresholds: [0.75, 0.63, 0.85, 0.83]
+    seq_hetero__seq_ft__seed1:          # 96 / 90 / 100 / 98 (registered before seed-1 results)
+      mode: registered
+      thresholds: [0.81, 0.75, 0.85, 0.83]
+    seq_hetero__seq_ft__seed2:          # registered 25 Sep 2026, before seq_ft seed 2 ran
+      mode: derived
+      margin: 0.15
   # Plasticity OK for task j:        R[j][j] >= threshold_j
   # Final retention OK for task j<3: R[3][j] >= threshold_j
   # SGP fallback triggered if plasticity fails on any of these task indices (T3, T4).
