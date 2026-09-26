@@ -1,0 +1,77 @@
+# Gate 4 (README §9, §7.5): flow-time (s) characterization over three seeds, no training.
+#
+# PRE-REGISTERED 26 Sep 2026, committed before any Gate 4 number existed. Evaluated by
+# scripts/gate4.py (flowcl/experiments/gate4.py, rules in flowcl/analysis/flowtime.py).
+#
+# Question: is s-conditioning justified? Reproducible variation in rho_l(s), c_l(s) and
+# non-trivial principal angles across the four S_BINS, over >= 3 seeds. It decides whether
+# the thesis extension (s-binned SGP) is built.
+#
+# Failure does not establish that no layer contains flow-time-dependent geometry. It means
+# that broad, layerwise-reproducible evidence sufficient to justify a general s-binned
+# method was not obtained. Requiring half of the same layers across all three seeds is
+# intentionally strict.
+
+# The post-T1 checkpoint of each seed (bitwise equal to the GPM runs' stage 0).
+runs: [seq_hetero__seq_ft__seed0, seq_hetero__seq_ft__seed1, seq_hetero__seq_ft__seed2]
+stage: 0
+basis_task: 0       # curriculum index of the task whose activations give the bases (T1)
+gradient_task: 1    # curriculum index of the task whose gradients give c_l (T2)
+
+# Capture settings (tokens per sample, batch size, Gram tolerances, min samples per dim):
+# configs/analysis/<capture_config>.yaml. Gradient-pass settings (batch size, the three
+# generator streams keyed on the data task, bootstrap): configs/analysis/<interference_config>.yaml.
+capture_config: subspace
+interference_config: interference
+
+# Bins are flow_head.S_BINS (asserted). Each bin is captured with s ~ U(bin) over the FULL
+# task dataset (policy.s_sampler = BinnedSSampler(bin)), in two replicates that differ only
+# in their capture seed (s and A_0). Dataset order (no shuffle) and token-position
+# subsampling (subsample_seed) are shared by every capture; the negative control asserts it.
+bins: [0, 1, 2, 3]
+replicates: [A, B]
+seed_tags:
+  probe: "gate4::probe"       # derive_seed(seq_ft run id, "<tag>::<task>", 0), shared
+  capture: "gate4::capture"   # derive_seed(seq_ft run id, "<tag>::b<bin>::<rep>::<task>", 0)
+
+eps: 0.95
+# S_DEPENDENT_KINDS must resolve to exactly this many registry layers (asserted).
+expected_s_dependent_layers: 34
+# Layers with d_in below this are flagged (they stay in the denominator).
+small_d_in: 64
+
+rule:
+  # (i) rho_l(s) varies: range of the replicate-mean rho over bins >= max(min_delta,
+  #     noise_multiple * max_b |rho(b,A) - rho(b,B)|).
+  rho:
+    min_delta: 0.02
+    noise_multiple: 3.0
+  # (ii) non-trivial principal angles: mean overlap of the extreme bins over all four
+  #      replicate pairs <= mean within-bin A/B overlap of those bins - margin.
+  #      overlap(X, Y) = ||Mx^T My||_F^2 / min(kx, ky).
+  angles:
+    extreme_bins: [0, 3]
+    margin: 0.10
+  # (iii) c_l(s) varies: paired per-batch difference c(bin 3) - c(bin 0) (identical
+  #       batches, A_0 and base uniforms), |delta| >= min_delta and bootstrap CI excluding
+  #       0 — against BOTH basis replicates, with the same sign.
+  c:
+    extreme_bins: [0, 3]
+    min_delta: 0.05
+    confidence: 0.95
+    n_bootstrap: 10000
+    bootstrap_seed: 0
+  # A criterion passes when at least this fraction of the SAME s-dependent layers pass in
+  # every seed; Gate 4 passes when all three criteria pass. Boundaries are inclusive
+  # except that the CI must exclude 0.
+  min_layer_fraction: 0.5
+
+# Instrument check on the s-independent layers (trunk; decoder cross-attention K/V):
+# equal token count N, ||K1/N1 - K2/N2||_F / ||K1/N1||_F <= gram_rel_tol, and — unless the
+# Grams are bitwise equal — equal rho at every eps and overlap >= 1 - overlap_tol. Any
+# failure raises.
+negative_control:
+  gram_rel_tol: 1.0e-10
+  overlap_tol: 1.0e-9
+
+out: gate4/report.json   # under results/

@@ -149,11 +149,14 @@ class LayerInterference:
     parallel: dict[float, list[float]] = field(default_factory=dict)
     full_total: float = 0.0
     full_parallel: dict[float, float] = field(default_factory=dict)
+    # Per-batch parallel energies against further basis sets, measured in the same pass
+    # (label -> eps -> per batch). Empty unless ``extra_bases`` was given.
+    extra_parallel: dict[str, dict[float, list[float]]] = field(default_factory=dict)
 
-    def per_batch_c(self, eps: float) -> list[float]:
-        return [
-            c_from_energies(p, t, self.name) for p, t in zip(self.parallel[eps], self.total)
-        ]
+    def per_batch_c(self, eps: float, basis_set: str | None = None) -> list[float]:
+        """Per-batch ``c_l`` against the main bases, or the extra set ``basis_set``."""
+        parallel = self.parallel[eps] if basis_set is None else self.extra_parallel[basis_set][eps]
+        return [c_from_energies(p, t, self.name) for p, t in zip(parallel, self.total)]
 
     def mean_c(self, eps: float) -> float:
         return mean_ratio(self.parallel[eps], self.total, self.name)
@@ -350,14 +353,22 @@ def measure_gradient_interference(
     label: str = "",
     checkpoint_path: Path | None = None,
     keep_full_gradient: bool = False,
+    extra_bases: dict[str, dict[str, SubspaceBasis]] | None = None,
 ) -> GradientInterference:
     """Decompose one task's training gradients at ``loaded`` against ``bases``.
 
     No optimiser step. Every parameter's ``.grad`` is restored afterwards and the
     trainable weights are verified bit-identical.
+
+    ``extra_bases``: further basis sets (label -> layer -> basis) to project the *same*
+    per-batch gradients against, in the same pass; their per-batch parallel energies land
+    in ``LayerInterference.extra_parallel[label]``. ``None`` leaves everything else as it
+    was.
     """
     thresholds = cfg.energy_thresholds
     check_provenance(loaded, bases, meta, thresholds)
+    for extra in (extra_bases or {}).values():
+        check_provenance(loaded, extra, meta, thresholds)
     if len(dataset.task_ids) != 1:
         raise ValueError(f"expected a single-task dataset, got {dataset.task_ids}")
     data_task = dataset.task_ids[0]
@@ -382,7 +393,22 @@ def measure_gradient_interference(
             ranks={eps: basis.ranks[eps] for eps in thresholds},
             rhos={eps: basis.rhos[eps] for eps in thresholds},
             parallel={eps: [] for eps in thresholds},
+            extra_parallel={
+                set_label: {eps: [] for eps in thresholds} for set_label in (extra_bases or {})
+            },
         )
+
+    extra_vectors: dict[str, dict[str, torch.Tensor]] = {}
+    extra_ranks: dict[str, dict[str, list[int]]] = {}
+    for set_label, extra in (extra_bases or {}).items():
+        extra_vectors[set_label], extra_ranks[set_label] = {}, {}
+        for entry in entries:
+            basis = extra[entry.name]
+            layer_ranks = [basis.ranks[eps] for eps in thresholds]
+            V = basis.vectors[:, : max(layer_ranks)].to(device=device, dtype=torch.float64)
+            assert_orthonormal(V, entry.name)
+            extra_vectors[set_label][entry.name] = V
+            extra_ranks[set_label][entry.name] = layer_ranks
 
     params = dict(policy.named_parameters())
     saved_grads = {
@@ -443,6 +469,13 @@ def measure_gradient_interference(
                 layer.total.append(total)
                 for eps, p in zip(thresholds, parallel):
                     layer.parallel[eps].append(p)
+                for set_label in extra_vectors:
+                    _, extra_parallel = projected_energies(
+                        G, extra_vectors[set_label][entry.name],
+                        extra_ranks[set_label][entry.name], entry.name,
+                    )
+                    for eps, p in zip(thresholds, extra_parallel):
+                        layer.extra_parallel[set_label][eps].append(p)
                 # Loss-weighted: each batch's loss is a mean over its own n_b valid
                 # elements, so n_b * G_b is that batch's share of the summed loss.
                 full[entry.name].add_(G.to(torch.float64), alpha=n_b)

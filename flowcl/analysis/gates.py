@@ -496,6 +496,53 @@ def gate3(
     )
 
 
+GATE4_CRITERIA = ("rho", "angles", "c")
+
+
+def gate4(criteria: dict[str, dict], rule: dict, evidence: dict | None = None,
+          run_id: str | None = None) -> GateResult:
+    """Evaluate §9 Gate 4: is ``s``-conditioning justified?
+
+    Unlike Gates 2-3, the rule's thresholds are pre-registered in
+    ``configs/analysis/flowtime.yaml`` (committed before the run) and passed in as
+    ``rule``; :mod:`flowcl.analysis.flowtime` applies them per layer and per seed.
+
+    Args:
+        criteria: ``"rho" | "angles" | "c"`` -> :func:`flowcl.analysis.flowtime.reproducible`
+            output: the fraction of the *same* s-dependent layers passing in every seed.
+        rule: the pre-registered rule block, recorded verbatim.
+        evidence: everything else a reader needs (per-seed results, controls).
+    """
+    missing = [q for q in GATE4_CRITERIA if q not in criteria]
+    if missing:
+        raise ValueError(f"Gate 4 needs all three criteria; missing {missing}")
+    failed = [q for q in GATE4_CRITERIA if not criteria[q]["passed"]]
+    return GateResult(
+        gate=4,
+        question="Is s-conditioning justified?",
+        criterion=(
+            "Reproducible variation in rho_l(s), c_l(s) and non-trivial principal angles "
+            "across s-bins over >= 3 seeds: for each criterion, at least "
+            f"{rule['min_layer_fraction']:.0%} of the same s-dependent layers pass in every "
+            "seed; all three criteria must pass"
+        ),
+        passed=not failed,
+        evidence={
+            "criteria": {q: criteria[q] for q in GATE4_CRITERIA},
+            "failed_criteria": failed,
+            "rule": rule,
+            **(evidence or {}),
+        },
+        notes=(
+            "" if not failed else
+            "Failure does not establish that no layer contains flow-time-dependent geometry. "
+            "It means that broad, layerwise-reproducible evidence sufficient to justify a "
+            "general s-binned method was not obtained."
+        ),
+        run_id=run_id,
+    )
+
+
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     n = len(ordered)
