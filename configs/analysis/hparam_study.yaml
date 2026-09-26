@@ -1,0 +1,49 @@
+# Exploratory training-budget and learning-rate study (single seed). Everything reported,
+# including the budget rule for Part 3, is fixed here before anything runs. Nothing here
+# changes any registered comparison: every paired run stays at 30k steps and lr 1e-4, and
+# adopting a different recipe for future blocks needs its own plan (Gate 0/1 and the
+# references re-run, never retrofitted). Evaluated by scripts/hparam_study.py; queued by
+# scripts/queue_hparam_study.sh.
+
+seed: 0
+out: hparam_study        # under results/
+
+# Part 1: one Gate-0-recipe run per task (policy, train settings and seed read from the
+# task's Gate 0 run, results/single__<task>__seed0), with the last demos held out.
+# Checkpoints mid-run are mid-schedule (LR still high): a lower bound on what a dedicated
+# shorter recipe would reach.
+trajectory:
+  tasks:
+    - libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    - libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+  n_heldout: 5           # the last 5 of the 50 demos; stats are fitted on the other 45
+  checkpoint_steps: [1000, 2500, 5000, 10000, 15000, 20000, 30000]
+  # Fixed probe banks, built once before training and reused at every checkpoint: every
+  # held-out chunk, and an equal-size fixed random subset of training chunks, each with
+  # k_draws fixed (s, A_0) draws. Loss = element-weighted mean over chunks and draws.
+  bank:
+    k_draws: 8
+    batch_size: 64
+    seed_tags:
+      heldout: hparam_bank::heldout
+      train: hparam_bank::train
+      subset: hparam_bank::train_subset
+
+# Parts 2 and 3: from the reference seq_ft run's stage before task_index, train that task
+# seq_ft-style on its own warmup + cosine schedule, with seq_ft's stage data/s/A_0 stream
+# (derive_seed(seed_namespace, task_key, task_index)) and rollouts under seq_ft's seed
+# namespace, so every variant is paired episode-for-episode with seq_ft's own 30k stage.
+cl:
+  reference_run: seq_hetero__seq_ft__seed0
+  task_index: 1          # Object: the task trained
+  retained_index: 0      # Spatial: the task that may be forgotten
+  budgets: [2500, 5000, 10000, 15000, 20000]      # compared with seq_ft's 30k
+  learning_rates: [3.0e-5, 3.0e-4]                 # Part 3, compared with 1e-4
+  # B* = the smallest budget whose new-task success (point estimate) is within `tolerance`
+  # of seq_ft's 30k new-task success; `fallback` if none qualifies.
+  budget_rule:
+    tolerance: 0.10
+    fallback: 30000
+  # The forgetting diagnostics' fixed-batch probe (same tags as the pilot); its reference
+  # loss matrix is the seq_ft run's, so the probe losses pair with seq_ft's 30k values.
+  probe_from: forgetting_diag/report.json
