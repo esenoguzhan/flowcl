@@ -226,3 +226,142 @@ def test_every_step_accepts_its_flags(script, flags):
     assert done.returncode == 0, done.stderr
     for flag in flags:
         assert flag in done.stdout, (script, flag)
+
+
+# ---- the SGP queue ---------------------------------------------------------------------
+
+SGP_QUEUE = repo_root() / "scripts" / "queue_sgp_seed.sh"
+SGP_STEPS = ["0_sgp_s0", "1_seqrep_sgp_s0", "2_diag_sgp_s0", "3_sgp_ne90_s0",
+             "4_seqrep_sgp_ne90_s0", "5_diag_sgp_ne90_s0", "6_probe_cells_s0",
+             "7_sgp_report_s0", "8_sgp_replication"]
+SGP_INPUTS = {  # existing seed-0 inputs (seed 0's GPM analyses have no suffix)
+    "reference": "seq_hetero__seq_ft__seed0/result.json",
+    "plain_gpm": "seq_hetero__gpm_projected_adam__seed0/result.json",
+    "adaptive_gpm": "seq_hetero__gpm_projected_adam_ne90__seed0/result.json",
+    "seqrep_gpm": "gpm_seq/report.json",
+    "seqrep_gpm_ne90": "gpm_seq_ne90/report.json",
+    "diag_gpm": "forgetting_diag/report.json",
+    "diag_gpm_ne90": "forgetting_diag_ne90/report.json",
+}
+SGP_OUTPUTS = {
+    "0_sgp_s0": "seq_hetero__sgp_projected_adam__seed0/result.json",
+    "1_seqrep_sgp_s0": "sgp_seq_seed0/report.json",
+    "2_diag_sgp_s0": "forgetting_diag_sgp_seed0/report.json",
+    "3_sgp_ne90_s0": "seq_hetero__sgp_projected_adam_ne90__seed0/result.json",
+    "4_seqrep_sgp_ne90_s0": "sgp_seq_ne90_seed0/report.json",
+    "5_diag_sgp_ne90_s0": "forgetting_diag_sgp_ne90_seed0/report.json",
+    "6_probe_cells_s0": "sgp_probe_seed0/report.json",
+    "7_sgp_report_s0": "sgp_seed0/report.json",
+}
+
+
+def sgp_queue(tmp_path, present=(), args=("0",), fail="", drop_inputs=()):
+    results = tmp_path / "results"
+    paths = [p for k, p in SGP_INPUTS.items() if k not in drop_inputs] + list(present)
+    for rel in paths:
+        path = results / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_FAIL_STEP": fail,
+           "QUEUE_LOG_ROOT": str(tmp_path / "logs"), "QUEUE_RESULTS_ROOT": str(results)}
+    done = subprocess.run(["bash", str(SGP_QUEUE), *args], env=env, capture_output=True,
+                          text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    (logdir,) = list((tmp_path / "logs").glob("queue_*_sgp_seed*"))
+    return (logdir / "queue.log").read_text(), logdir
+
+
+def test_sgp_queue_syntax():
+    assert subprocess.run(["bash", "-n", str(SGP_QUEUE)]).returncode == 0
+
+
+def test_sgp_queue_runs_seed0_in_order_and_waits_for_the_other_seeds(tmp_path):
+    log, _ = sgp_queue(tmp_path)
+    positions = [log.index(f"START {s}") for s in SGP_STEPS[:-1]]
+    assert positions == sorted(positions)
+    assert "SKIP 8_sgp_replication: no SGP report yet for seed(s) 1 2" in log
+    assert all(f"INPUT {k} ok" in log for k in SGP_INPUTS)
+    assert log.rstrip().endswith("QUEUE DONE")
+
+
+def test_sgp_queue_commands(tmp_path):
+    _, logdir = sgp_queue(tmp_path)
+    read = lambda s: (logdir / f"{s}.log").read_text()  # noqa: E731
+    assert ("--method sgp --seed 0 --amp --identity-reference-run "
+            "results/seq_hetero__gpm_projected_adam__seed0 --identity-stages 0") in read("0_sgp_s0")
+    assert ("--method sgp_ne90 --seed 0 --amp --identity-reference-run "
+            "results/seq_hetero__sgp_projected_adam__seed0 --identity-stages 0 1") in read("3_sgp_ne90_s0")
+    assert "--out results/sgp_seq_seed0/report.json" in read("1_seqrep_sgp_s0")
+    assert "--method-run seq_hetero__sgp_projected_adam_ne90__seed0" in read("5_diag_sgp_ne90_s0")
+    assert "--out results/forgetting_diag_sgp_ne90_seed0/report.json" in read("5_diag_sgp_ne90_s0")
+    assert "scripts/probe_cells.py --seed 0" in read("6_probe_cells_s0")
+    assert "scripts/sgp_report.py --seed 0" in read("7_sgp_report_s0")
+
+
+def test_sgp_queue_runs_the_replication_once_every_seed_has_a_report(tmp_path):
+    log, logdir = sgp_queue(tmp_path, present=["sgp_seed1/report.json", "sgp_seed2/report.json"])
+    assert ran(log, "8_sgp_replication")
+    assert (logdir / "8_sgp_replication.log").read_text().rstrip().endswith("--replication")
+
+
+@pytest.mark.parametrize("fail, ran_steps, skipped", [
+    ("0_sgp_s0", SGP_STEPS[:1], SGP_STEPS[1:]),
+    ("3_sgp_ne90_s0", SGP_STEPS[:4], SGP_STEPS[4:]),
+    ("2_diag_sgp_s0", SGP_STEPS[:6], SGP_STEPS[6:]),   # the probe cells need both diagnostics
+    ("4_seqrep_sgp_ne90_s0", SGP_STEPS[:7], SGP_STEPS[7:]),  # the report needs both seqreps
+    ("6_probe_cells_s0", SGP_STEPS[:7], SGP_STEPS[7:]),
+])
+def test_sgp_queue_skips_only_what_depends_on_a_failure(tmp_path, fail, ran_steps, skipped):
+    log, _ = sgp_queue(tmp_path, fail=fail)
+    for step in ran_steps:
+        assert ran(log, step), step
+    for step in skipped:
+        assert not ran(log, step), step
+    assert "SKIP" in log and log.rstrip().endswith("QUEUE DONE")
+
+
+def test_sgp_queue_missing_inputs(tmp_path):
+    log, _ = sgp_queue(tmp_path / "a", drop_inputs=("plain_gpm",))
+    assert "INPUT plain_gpm missing" in log and not any(ran(log, s) for s in SGP_STEPS)
+    log, _ = sgp_queue(tmp_path / "b", drop_inputs=("diag_gpm_ne90",))
+    assert all(ran(log, s) for s in SGP_STEPS[:6])
+    assert not any(ran(log, s) for s in SGP_STEPS[6:])
+
+
+def test_sgp_queue_from_step_reuses_prior_outputs(tmp_path):
+    log, _ = sgp_queue(tmp_path, present=[SGP_OUTPUTS[s] for s in SGP_STEPS[:3]],
+                       args=("0", "--from-step", "3"))
+    for step in SGP_STEPS[:3]:
+        assert f"PRIOR {step} ok" in log and not ran(log, step), step
+    for step in SGP_STEPS[3:8]:
+        assert ran(log, step), step
+
+
+def test_sgp_queue_from_step_blocks_dependents_of_a_missing_prior_output(tmp_path):
+    log, _ = sgp_queue(tmp_path, present=[SGP_OUTPUTS[s] for s in SGP_STEPS[:2]],
+                       args=("0", "--from-step", "3"))
+    assert "PRIOR 2_diag_sgp_s0 missing" in log
+    assert all(ran(log, s) for s in SGP_STEPS[3:6])
+    assert not ran(log, "6_probe_cells_s0") and not ran(log, "7_sgp_report_s0")
+
+
+@pytest.mark.parametrize("args", [("3",), ("x",), ("0", "--from-step", "9"),
+                                  ("0", "--from-step"), ("0", "--with-seq-ft")])
+def test_sgp_queue_rejects_bad_arguments(tmp_path, args):
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_LOG_ROOT": str(tmp_path)}
+    done = subprocess.run(["bash", str(SGP_QUEUE), *args], env=env, capture_output=True, text=True)
+    assert done.returncode == 2
+    assert not list(tmp_path.glob("queue_*"))
+
+
+@pytest.mark.parametrize("script, flags", [
+    ("run_continual.py", ["--results-root", "--identity-reference-run", "--identity-stages"]),
+    ("sgp_report.py", ["--config", "--out", "--seed", "--replication"]),
+    ("probe_cells.py", ["--config", "--seed", "--device", "--out", "--allow-dirty"]),
+])
+def test_every_sgp_step_accepts_its_flags(script, flags):
+    done = subprocess.run([sys.executable, str(repo_root() / "scripts" / script), "--help"],
+                          capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    for flag in flags:
+        assert flag in done.stdout, (script, flag)

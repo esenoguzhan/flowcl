@@ -1,0 +1,24 @@
+# sgp_ne90: adaptive SGP — the candidate thesis method (display sgp_projected_adam_ne90).
+#
+# Identical to configs/method/sgp.yaml except new_energy_fraction: the memory follows
+# the adaptive target of configs/method/gpm_ne90.yaml,
+#
+#     c_target = max(eps, p + new_energy_fraction * (1 - p)),
+#
+# and the SGP baseline's basis-wise scaling (alpha 25) acts on it. At T1 (p = 0) the target
+# is exactly eps, so stages 0-1, T1's memory and T1's importance are bitwise identical to
+# the SGP baseline run (checked fail-fast by the runner's identity check). Our hybrid
+# extension, not a published method. Pre-registered outcome rule:
+# configs/analysis/sgp.yaml.
+name: sgp
+
+eps: 0.95
+projection: hard_gradient_scaled_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+alpha: 25
+
+new_energy_fraction: 0.90

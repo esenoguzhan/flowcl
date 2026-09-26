@@ -1,0 +1,167 @@
+# Pre-registered outcome rule for the SGP runs on seq_hetero, seeds 0-2. Committed with the
+# implementation on 26 Sep 2026, before any SGP run existed.
+# Evaluated by scripts/sgp_report.py (--seed N; --replication), after
+# scripts/probe_cells.py (--seed N) has written the per-batch probe losses.
+#
+# Runs, per seed (all share the seq_ft seed namespace, so rollout episodes are paired):
+#   P  the SGP baseline, AdamW adaptation (sgp_projected_adam; never "paper SGP")
+#   A  adaptive SGP, the candidate thesis method (sgp_projected_adam_ne90)
+#   G  plain GPM (gpm_projected_adam; existing)
+#   N  adaptive GPM (gpm_projected_adam_ne90; existing)
+# Thresholds theta are NOT restated here: sequence_report.yaml is the single source; this
+# report consumes the threshold blocks of all four sequence reports and asserts they agree.
+# Inclusive thresholds, except CI lower bounds (strictly > 0) and the premise (strictly
+# below its threshold).
+#
+# Seed verdict, gates in order:
+#   identity fails                  -> invalid_comparison
+#   implementation fails            -> invalid_implementation
+#   R_G[2][Object] >= theta_Object  -> not_applicable_baseline_retained
+#   L_N[3][3] - L_G[3][3] <= 0      -> not_applicable_no_plasticity_gap
+# then O1 x O2 -> both_objectives_met / retention_only / plasticity_only / neither.
+#
+# O1, retention preserved: R_A[2][1] - R_G[2][1] >= min_improvement, paired 95% CI low > 0
+#     (the criterion adaptive GPM met). Durable flag: R_A[3][1] >= theta_Object.
+# O2, recover at least half of the T4 probe-loss gap while keeping T3/T4 task performance
+#     acceptable: g = (L_N - L_A) / (L_N - L_G) >= min_gap_recovery at the diagnostics'
+#     fixed-batch probe loss L[3][3], AND R_A[3][3] >= theta_LIBERO10, AND
+#     R_A[2][2] >= theta_Goal. O2 is NOT "rollout plasticity recovered".
+#
+# Attribution (secondary, per seed; only if identity and implementation pass):
+#   adaptive memory, paired A - P at memory_cell: strong (CI low > 0) / directional
+#     (diff > 0, CI includes 0) / none (diff <= 0)
+#   scaled projection, A - N: loss_level (g >= min_gap_recovery) / directional (0 < g < it)
+#     / none (g <= 0) / not_applicable (no gap); additionally "rollout" iff the paired
+#     A - N CI at scaling_rollout_cell has low > 0 — the only condition under which
+#     "rollout plasticity recovered" is claimed.
+#
+# Replication over seeds 0, 1, 2 (all required; symmetric):
+#   any invalid seed -> inconclusive_invalid; else any not-applicable seed -> not_applicable;
+#   else per objective: met in all seeds -> replicated; in none -> consistently_not_met;
+#   otherwise not_replicated.
+#   Attributions: replicated_strong (memory), replicated_loss_level / replicated_rollout
+#   (scaling) only if they hold in every seed; otherwise the per-seed pattern is reported.
+# Claim levels:
+#   1 "adaptive SGP meets both practical objectives": O1 and O2 replicated;
+#   2 "the improvement is causally attributable to contributions from both adaptive memory
+#     allocation and scaled projection": level 1, memory replicated_strong, and scaling
+#     at least replicated_loss_level (stated at the level reached: loss, or loss and
+#     rollout). "Requires both" is not a registered claim.
+#
+# Reported, not decisive: every contrast at every cell with paired CIs; the interaction
+# (A - P) - (N - G) at R[2][1] (bootstrap over matched rollout episodes) and at L[3][3]
+# (bootstrap over the 16 fixed, matched probe batches); a batch-bootstrap CI for g; g for P;
+# the T4 last-50 training loss; F_1; lambda summaries; update_c.
+
+alpha: 25
+
+identity:
+  baseline_vs_gpm_stages: [0]         # P vs G (T1 trains unconstrained in both)
+  adaptive_vs_baseline_stages: [0, 1]  # A vs P (p = 0 at T1: same memory, same lambda)
+  importance_atol: 1.0e-12            # P's T1 lambda vs Eq. 2 of G's memory_task0 spectrum
+
+implementation:
+  importance_atol: 1.0e-12  # Eq. 2 and Eq. 10 recomputed from the stored sigma', sigma-hat
+
+# Adaptive SGP's memory, checked exactly as adaptive GPM's (adaptive_report.energy_check).
+energy:
+  eps: 0.95
+  new_energy_fraction: 0.90
+  tasks: [1, 2, 3]
+  tol: 1.0e-6
+  applicability_atol: 1.0e-12
+  target_match_atol: 1.0e-12
+
+# Cells are [stage, task]; tasks: 0 Spatial, 1 Object, 2 Goal, 3 LIBERO-10.
+premise:
+  baseline_cell: [2, 1]      # plain GPM must have forgotten Object across Goal
+retention:                   # O1
+  transition_cell: [2, 1]
+  min_improvement: 0.20
+  durable_cell: [3, 1]
+plasticity:                  # O2
+  loss_cell: [3, 3]          # diagnostics loss_matrix["method"]
+  min_gap_recovery: 0.5
+  t4_cell: [3, 3]
+  t3_cell: [2, 2]
+attribution:
+  memory_cell: [2, 1]            # A - P, rollouts
+  scaling_rollout_cell: [3, 3]   # A - N, rollouts
+interaction:
+  rollout_cell: [2, 1]
+  loss_cell: [3, 3]
+
+# Per-batch probe losses (scripts/probe_cells.py): recomputed with each run's diagnostics
+# probe; every weighted mean must reproduce the diagnostics' loss_matrix value.
+probe_cells:
+  cells: [[3, 3], [2, 1]]
+  rel_tol: 1.0e-6
+
+# Batch-level bootstrap (the rollout contrasts use configs/eval/libero_eval.yaml's).
+batch_bootstrap:
+  n_resamples: 10000
+  seed: 0
+  confidence: 0.95
+
+seeds:
+  0:
+    runs:
+      P: seq_hetero__sgp_projected_adam__seed0
+      A: seq_hetero__sgp_projected_adam_ne90__seed0
+      G: seq_hetero__gpm_projected_adam__seed0
+      N: seq_hetero__gpm_projected_adam_ne90__seed0
+    reference_run: seq_hetero__seq_ft__seed0
+    sequence_reports:
+      P: sgp_seq_seed0/report.json
+      A: sgp_seq_ne90_seed0/report.json
+      G: gpm_seq/report.json
+      N: gpm_seq_ne90/report.json
+    diagnostics:
+      P: forgetting_diag_sgp_seed0/report.json
+      A: forgetting_diag_sgp_ne90_seed0/report.json
+      G: forgetting_diag/report.json
+      N: forgetting_diag_ne90/report.json
+    probe_report: sgp_probe_seed0/report.json
+    out: sgp_seed0/report.json
+  1:
+    runs:
+      P: seq_hetero__sgp_projected_adam__seed1
+      A: seq_hetero__sgp_projected_adam_ne90__seed1
+      G: seq_hetero__gpm_projected_adam__seed1
+      N: seq_hetero__gpm_projected_adam_ne90__seed1
+    reference_run: seq_hetero__seq_ft__seed1
+    sequence_reports:
+      P: sgp_seq_seed1/report.json
+      A: sgp_seq_ne90_seed1/report.json
+      G: gpm_seq_seed1/report.json
+      N: gpm_seq_ne90_seed1/report.json
+    diagnostics:
+      P: forgetting_diag_sgp_seed1/report.json
+      A: forgetting_diag_sgp_ne90_seed1/report.json
+      G: forgetting_diag_seed1/report.json
+      N: forgetting_diag_ne90_seed1/report.json
+    probe_report: sgp_probe_seed1/report.json
+    out: sgp_seed1/report.json
+  2:
+    runs:
+      P: seq_hetero__sgp_projected_adam__seed2
+      A: seq_hetero__sgp_projected_adam_ne90__seed2
+      G: seq_hetero__gpm_projected_adam__seed2
+      N: seq_hetero__gpm_projected_adam_ne90__seed2
+    reference_run: seq_hetero__seq_ft__seed2
+    sequence_reports:
+      P: sgp_seq_seed2/report.json
+      A: sgp_seq_ne90_seed2/report.json
+      G: gpm_seq_seed2/report.json
+      N: gpm_seq_ne90_seed2/report.json
+    diagnostics:
+      P: forgetting_diag_sgp_seed2/report.json
+      A: forgetting_diag_sgp_ne90_seed2/report.json
+      G: forgetting_diag_seed2/report.json
+      N: forgetting_diag_ne90_seed2/report.json
+    probe_report: sgp_probe_seed2/report.json
+    out: sgp_seed2/report.json
+
+replication:
+  seeds: [0, 1, 2]
+  out: sgp/replication.json

@@ -113,9 +113,22 @@ def assert_allowlist(policy) -> None:
 
 
 class _ProjectedLayer:
-    """Per-layer runtime state: projector, basis, reference weights, tolerances."""
+    """Per-layer runtime state: projectors, basis, reference weights, tolerances.
 
-    def __init__(self, name: str, weight: torch.nn.Parameter, M: torch.Tensor, weight_atol: float):
+    ``lam = None`` (GPM): one projector ``P = I − M Mᵀ`` for the gradient and the update.
+    ``lam`` given (SGP, :mod:`flowcl.methods.sgp`): the gradient projector removes only the
+    hard bases (``λ == 1``), the update projector is ``P_Λ = I − M diag(λ) Mᵀ``, and
+    ``keep = 1 − λ`` is the factor each basis component of the update must retain.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        weight: torch.nn.Parameter,
+        M: torch.Tensor,
+        weight_atol: float,
+        lam: torch.Tensor | None = None,
+    ):
         d_in = weight.shape[1]
         if M.shape[0] != d_in:
             raise ValueError(f"{name}: memory d_in {M.shape[0]} != weight d_in {d_in}")
@@ -125,13 +138,18 @@ class _ProjectedLayer:
         self.weight = weight
         self.k = k
         self.full_rank = k == d_in
-        if self.full_rank:
-            # Exactly zero, not a numerically built near-zero matrix: nothing may move.
-            self.P = torch.zeros(d_in, d_in, dtype=torch.float32, device=device)
+        self.keep: torch.Tensor | None = None
+        self._P_grad: torch.Tensor | None = None
+        if lam is None:
+            if self.full_rank:
+                # Exactly zero, not a numerically built near-zero matrix: nothing may move.
+                self.P = torch.zeros(d_in, d_in, dtype=torch.float32, device=device)
+            else:
+                M64 = M.to(torch.float64)
+                eye = torch.eye(d_in, dtype=torch.float64)
+                self.P = (eye - M64 @ M64.T).to(device=device, dtype=torch.float32)
         else:
-            M64 = M.to(torch.float64)
-            eye = torch.eye(d_in, dtype=torch.float64)
-            self.P = (eye - M64 @ M64.T).to(device=device, dtype=torch.float32)
+            self._build_scaled(M, lam, device)
         self.M = M.to(device=device, dtype=torch.float32)
         self.W_ref = weight.detach().clone()
         self.atol = weight_atol * float(self.W_ref.norm())
@@ -139,12 +157,50 @@ class _ProjectedLayer:
         self.max_residual_ratio = 0.0  # ||D M|| / (atol + rtol ||D||); must stay <= 1
         self.displacement = torch.zeros_like(self.W_ref)  # cumulative, for reporting
 
+    @property
+    def P_update(self) -> torch.Tensor:
+        """Applied to the realised step: ``P`` (``I − M Mᵀ``, or ``I − M Λ Mᵀ`` if scaled)."""
+        return self.P
+
+    @property
+    def P_grad(self) -> torch.Tensor | None:
+        """Applied to the gradient: ``P`` for GPM; the hard bases only if scaled (``None``:
+        no hard basis, the gradient passes unchanged)."""
+        return self.P if self.keep is None else self._P_grad
+
+    def _build_scaled(self, M: torch.Tensor, lam: torch.Tensor, device) -> None:
+        d_in, k = M.shape
+        lam64 = lam.to(torch.float64).cpu()
+        if lam64.shape != (k,):
+            raise ValueError(f"{self.name}: {lam64.numel()} importances for {k} basis vectors")
+        if not bool(((lam64 > 0.0) & (lam64 <= 1.0)).all()):
+            raise ValueError(f"{self.name}: importances must lie in (0, 1]")
+        hard = lam64 == 1.0
+        n_hard = int(hard.sum())
+        M64 = M.to(torch.float64)
+        eye = torch.eye(d_in, dtype=torch.float64)
+        if n_hard == d_in:
+            self._P_grad = torch.zeros(d_in, d_in, dtype=torch.float32, device=device)
+        elif n_hard == 0:
+            self._P_grad = None  # nothing is fully protected: the gradient passes unchanged
+        else:
+            M_h = M64 if n_hard == k else M64[:, hard]
+            self._P_grad = (eye - M_h @ M_h.T).to(device=device, dtype=torch.float32)
+        if n_hard == k:
+            # Λ = I: exactly GPM's projector, so the update projector is the same tensor.
+            self.P = self._P_grad
+        else:
+            self.P = (eye - (M64 * lam64) @ M64.T).to(device=device, dtype=torch.float32)
+        self.n_hard = n_hard
+        self.keep = (1.0 - lam64).to(device=device, dtype=torch.float32)
+
 
 @register_method
 class GPM(BaseMethod):
     """Hard projection against an accumulated input-subspace memory; see the module docstring."""
 
     name = "gpm"
+    projection_names = PROJECTION_NAMES
 
     def __init__(
         self,
@@ -164,10 +220,10 @@ class GPM(BaseMethod):
         a distinct display name (``..._ne90`` for ``f = 0.9``). ``None`` is plain eps.
         """
         super().__init__()
-        if projection not in PROJECTION_NAMES:
+        if projection not in self.projection_names:
             raise ValueError(
                 f"projection {projection!r} not implemented; available "
-                f"{sorted(PROJECTION_NAMES)}"
+                f"{sorted(self.projection_names)}"
             )
         if not 0.0 < eps <= 1.0:
             raise ValueError(f"eps must lie in (0, 1], got {eps}")
@@ -205,7 +261,7 @@ class GPM(BaseMethod):
 
     @property
     def display_name(self) -> str:
-        name = PROJECTION_NAMES[self.projection]
+        name = self.projection_names[self.projection]
         if self.new_energy_fraction is not None:
             name += f"_ne{round(100 * self.new_energy_fraction)}"
         return name
@@ -266,8 +322,9 @@ class GPM(BaseMethod):
             name = entry.name
             acc = capture.accumulators[name]
             view = capture.primary_view(name)
+            M_old = self._memory.get(name)
             M_new, info = extend_basis(
-                self._memory.get(name),
+                M_old,
                 acc.gram[view],
                 self.eps,
                 name,
@@ -275,13 +332,28 @@ class GPM(BaseMethod):
                 rank_tol=cfg.rank_tol,
                 new_energy_fraction=self.new_energy_fraction,
             )
+            spectrum = info.pop("residual_spectrum")
+            self._after_extend(name, M_old, acc.gram[view], M_new, info, spectrum)
             self._memory[name] = M_new
             self._memory_samples[name] = self._memory_samples.get(name, 0) + acc.n[view]
-            self._memory_spectra[name] = info.pop("residual_spectrum")
+            self._memory_spectra[name] = spectrum
             history[name] = {**info, "n_samples": acc.n[view], "view": view}
             acc.gram.clear()
         self.memory_history[task_idx] = history
         self.memory_extended[task_idx] = True
+
+    # ---- subclass hooks (no-ops for GPM; SGP adds basis importance) ---------------
+
+    def _after_extend(self, name, M_old, gram, M_new, info: dict, spectrum) -> None:
+        """Called once per layer after each memory extension; may add JSON scalars to ``info``."""
+
+    def _layer_scales(self, name: str) -> torch.Tensor | None:
+        """Per-basis importance for the projector; ``None`` is GPM's hard projection."""
+        return None
+
+    def _basis_meta(self, name: str) -> dict:
+        """Extra per-layer entries for the memory artifact."""
+        return {}
 
     def restore_memory(
         self,
@@ -343,7 +415,8 @@ class GPM(BaseMethod):
                 f"{sorted(set(self._memory) - set(names))}"
             )
         self._layers = [
-            _ProjectedLayer(e.name, e.module.weight, self._memory[e.name], self.residual_weight_atol)
+            _ProjectedLayer(e.name, e.module.weight, self._memory[e.name],
+                            self.residual_weight_atol, lam=self._layer_scales(e.name))
             for e in registry
         ]
         self._active = True
@@ -361,7 +434,8 @@ class GPM(BaseMethod):
                     raise RuntimeError(f"{layer.name}: no gradient at step {step}")
                 if record:
                     logged[layer.name] = _ratio(G, layer.M)
-                G.copy_(G @ layer.P)
+                if layer.P_grad is not None:
+                    G.copy_(G @ layer.P_grad)
         if record:
             self.task_logs[self._task]["gradient_c"][step] = logged
 
@@ -378,9 +452,14 @@ class GPM(BaseMethod):
                 delta = W - layer.W_ref
                 if record:
                     logged[layer.name] = _ratio(delta, layer.M)
-                W.copy_(torch.addmm(layer.W_ref, delta, layer.P))
+                if layer.keep is not None:
+                    target = (delta @ layer.M) * layer.keep  # each component keeps 1 - λ
+                W.copy_(torch.addmm(layer.W_ref, delta, layer.P_update))
                 applied = W - layer.W_ref
-                residuals.append((applied @ layer.M).norm())
+                if layer.keep is None:
+                    residuals.append((applied @ layer.M).norm())
+                else:
+                    residuals.append((applied @ layer.M - target).norm())
                 norms.append(applied.norm())
                 finite.append(torch.isfinite(W).all())
                 layer.displacement.add_(applied)
@@ -394,10 +473,15 @@ class GPM(BaseMethod):
                 raise RuntimeError(f"{layer.name}: non-finite weights at step {step}")
             bound = layer.atol + self.residual_rtol * norm
             if residual > bound:
+                what, lhs = (
+                    ("not orthogonal to the memory", "||D M||") if layer.keep is None
+                    else ("not scaled by 1 - lambda along the memory",
+                          "||D M - (D_raw M) diag(1 - lambda)||")
+                )
                 raise RuntimeError(
-                    f"{layer.name}: applied update not orthogonal to the memory at step "
-                    f"{step}: ||D M|| = {residual:.3e} > {bound:.3e} (atol {layer.atol:.3e} "
-                    f"+ rtol {self.residual_rtol} * ||D|| {norm:.3e})"
+                    f"{layer.name}: applied update {what} at step {step}: {lhs} = "
+                    f"{residual:.3e} > {bound:.3e} (atol {layer.atol:.3e} + rtol "
+                    f"{self.residual_rtol} * ||D|| {norm:.3e})"
                 )
             layer.max_residual = max(layer.max_residual, residual)
             if bound > 0:
@@ -456,6 +540,7 @@ class GPM(BaseMethod):
                         "history": {
                             str(t): h[name] for t, h in self.memory_history.items() if name in h
                         },
+                        **self._basis_meta(name),
                     },
                 )
             meta = {

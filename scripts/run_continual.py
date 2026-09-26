@@ -103,6 +103,12 @@ def main() -> None:
         help="Run whose checkpoints this run must equal bitwise at --identity-stages.",
     )
     parser.add_argument("--identity-stages", type=int, nargs="*", default=[])
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        default=None,
+        help="Write the run under this directory instead of results/ (smoke runs only).",
+    )
     parser.add_argument("--t1-pairing-max-rel-diff", type=float, default=None)
     args = parser.parse_args()
 
@@ -180,6 +186,7 @@ def main() -> None:
         ),
         identity_reference_run=args.identity_reference_run,
         identity_stages=tuple(args.identity_stages),
+        results_root=args.results_root,
     )
 
 

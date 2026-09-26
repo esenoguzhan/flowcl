@@ -1,0 +1,27 @@
+# sgp: the SGP baseline adapted to AdamW — display name sgp_projected_adam, never "paper
+# SGP". Saha & Roy, "Continual Learning with Scaled Gradient Projection", AAAI 2023
+# (arXiv:2302.01386). Pre-registered outcome rule: configs/analysis/sgp.yaml.
+#
+# Paper-faithful: GPM's memory rule (Eq. 8-9), basis importance
+# lambda = (alpha+1) sigma / (alpha sigma + max sigma) (Eq. 2), the old bases' surrogate
+# sigma'^2 = m^T K m (Eq. 6-8), accumulation min(1, lambda + lambda_task) (Eq. 10), and the
+# scaled projection G (I - M Lambda M^T). Our adaptation: the gradient loses only the hard
+# (lambda = 1) bases before AdamW; AdamW's realised step, weight decay included, is then
+# scaled by I - M Lambda M^T. At Lambda = I this is exactly gpm_projected_adam. Details and
+# deviations: flowcl/methods/sgp.py.
+#
+# Identical to configs/method/gpm.yaml except name, projection and alpha, so the memory
+# stays paired with plain GPM (stage 0 and memory_task0 are bitwise equal; checked).
+name: sgp
+
+eps: 0.95
+projection: hard_gradient_scaled_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+# Fixed a priori, before any SGP run: the paper's setting for its Adam-trained (RL)
+# experiments, the regime closest to ours. Not tuned.
+alpha: 25

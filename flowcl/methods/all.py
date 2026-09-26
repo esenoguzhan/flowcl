@@ -10,5 +10,6 @@ slot for the Gate 3 feasibility pilot only.
 
 from flowcl.methods.gpm import GPM
 from flowcl.methods.seq_ft import SeqFT
+from flowcl.methods.sgp import SGP
 
-__all__ = ["SeqFT", "GPM"]
+__all__ = ["SeqFT", "GPM", "SGP"]

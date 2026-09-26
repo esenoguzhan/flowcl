@@ -25,11 +25,12 @@ def _generators(seed_tags: dict, task_key: str) -> dict[str, torch.Generator]:
 
 
 @torch.no_grad()
-def probe_loss(policy, dataset, probe: dict, device) -> float:
-    """Masked flow-matching loss over fixed batches, weighted by valid elements.
+def probe_batch_losses(policy, dataset, probe: dict, device) -> list[tuple[float, float]]:
+    """Per fixed batch: ``(masked flow-matching loss, number of valid elements)``.
 
     Identical batches, ``s`` and ``A_0`` for every checkpoint (streams keyed on the probe
-    tags and the data task), fp32, eval mode — a like-for-like stability/plasticity read.
+    tags and the data task), fp32, eval mode. The batches are the resampling unit of a
+    paired, batch-level bootstrap across checkpoints.
     """
     if len(dataset.task_ids) != 1:
         raise ValueError(f"probe needs a single-task dataset, got {dataset.task_ids}")
@@ -40,7 +41,7 @@ def probe_loss(policy, dataset, probe: dict, device) -> float:
         generator=gens["shuffle"],
     )
     policy.eval()
-    total, weight = 0.0, 0.0
+    batches = []
     for idx, batch in enumerate(loader):
         if idx >= probe["n_batches"]:
             break
@@ -53,9 +54,25 @@ def probe_loss(policy, dataset, probe: dict, device) -> float:
         )
         with torch.autocast(device_type=device.type, enabled=False):
             loss = float(policy(batch, s=s, noise=noise)["loss"])
-        n_b = float(valid_element_count(batch["action_mask"], policy.d_action))
+        batches.append((loss, float(valid_element_count(batch["action_mask"], policy.d_action))))
+    return batches
+
+
+def weighted_mean(batches: list[tuple[float, float]]) -> float:
+    """The probe loss: batch losses weighted by valid elements, accumulated in batch order."""
+    total, weight = 0.0, 0.0
+    for loss, n_b in batches:
         total += loss * n_b
         weight += n_b
     if weight == 0:
         raise ValueError("probe saw no valid elements")
     return total / weight
+
+
+def probe_loss(policy, dataset, probe: dict, device) -> float:
+    """Masked flow-matching loss over fixed batches, weighted by valid elements.
+
+    Identical batches, ``s`` and ``A_0`` for every checkpoint (streams keyed on the probe
+    tags and the data task), fp32, eval mode — a like-for-like stability/plasticity read.
+    """
+    return weighted_mean(probe_batch_losses(policy, dataset, probe, device))
