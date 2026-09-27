@@ -1,0 +1,77 @@
+# Low-update continual fine-tuning: held-out validation and a gated four-task chain.
+# Committed before any low-update run. Evaluated by scripts/low_update.py; queued by
+# scripts/queue_low_update.sh.
+#
+# Name: T1 is the standard recipe (the shared seq_ft stage0.pt); only T2-T4 are trained
+# with the frozen low-update configuration below. It never implies that every task uses it.
+#
+# The configuration was SELECTED on seed 0 (docs/runs/2026-09-27_hparam_study.md: Object
+# 76% vs 78%, Spatial 50% vs 0%). It is frozen here and not tuned further. The claim is
+# "validated on both held-out seeds" (1 and 2), never a three-seed replication; seed 0 is
+# evaluated with the same rule and reported, but it is not evidence.
+#
+# Pairing: stage k trains on seq_ft's stream seed derive_seed(namespace_s, task_k, k) and
+# rolls out under seq_ft seed s's namespace, so every cell is paired episode-for-episode
+# with seq_ft, plain GPM and adaptive GPM of the same seed.
+#
+# Validation, per seed (stage 1, Spatial -> Object); a seed passes only if both hold:
+#   plasticity: R_lu[1][Object] >= R_seqft[1][Object] - validation.object_tolerance
+#               (point estimate, inclusive);
+#   retention:  paired R_lu[1][Spatial] - R_seqft[1][Spatial], 95% CI lower bound > 0.
+# Verdict: validated_on_held_out_seeds iff every held-out seed passes, else not_validated.
+# Gate: the chain runs only on validated_on_held_out_seeds.
+#
+# Chain, per seed: stages 2 (Goal) and 3 (LIBERO-10) from that seed's stage-1 checkpoint,
+# each evaluating every task trained so far (stage 3: all four -> final row, F_1).
+# Classification, in order:
+#   underlearns  any seed's R_lu[k][k] < R_seqft[k][k] - chain.plasticity_tolerance, k in 2,3
+#   cumulative   every earlier task's final-row paired gain vs seq_ft has CI low > 0, all seeds
+#   delay_only   no earlier task's final-row paired gain has CI low > 0 in any seed
+#   partial      otherwise
+# Contrasts against plain and adaptive GPM are reported, not classified.
+# Pilot gate (configs/analysis/projection_pilot.yaml): validated AND chain not underlearns.
+
+out: low_update                  # under results/
+
+frozen:
+  steps: 5000
+  lr: 3.0e-5                     # everything else: the reference run's own train settings
+
+validation:
+  held_out_seeds: [1, 2]
+  selection_seed: 0
+  object_tolerance: 0.10
+
+chain:
+  stages: [2, 3]
+  plasticity_tolerance: 0.10
+
+# Per seed: the paired runs (under results/), their diagnostics (fixed probe and loss
+# matrices: forgetting_diag* has seq_ft as reference and plain GPM as method; the _ne90
+# report has adaptive GPM as method), and seed 0's stage-1 source (the selection run,
+# produced at 8e6785a; verified against `frozen`, never retrained).
+seeds:
+  0:
+    reference_run: seq_hetero__seq_ft__seed0
+    gpm_run: seq_hetero__gpm_projected_adam__seed0
+    adaptive_gpm_run: seq_hetero__gpm_projected_adam_ne90__seed0
+    diagnostics:
+      gpm: forgetting_diag/report.json
+      adaptive_gpm: forgetting_diag_ne90/report.json
+    stage1_source: hparam_study/cl_lr/cl__libero_object__b5000__lr3e-05__seed0
+  1:
+    reference_run: seq_hetero__seq_ft__seed1
+    gpm_run: seq_hetero__gpm_projected_adam__seed1
+    adaptive_gpm_run: seq_hetero__gpm_projected_adam_ne90__seed1
+    diagnostics:
+      gpm: forgetting_diag_seed1/report.json
+      adaptive_gpm: forgetting_diag_ne90_seed1/report.json
+    stage1_source: null
+  2:
+    reference_run: seq_hetero__seq_ft__seed2
+    gpm_run: seq_hetero__gpm_projected_adam__seed2
+    adaptive_gpm_run: seq_hetero__gpm_projected_adam_ne90__seed2
+    diagnostics:
+      gpm: forgetting_diag_seed2/report.json
+      adaptive_gpm: forgetting_diag_ne90_seed2/report.json
+    stage1_source: null

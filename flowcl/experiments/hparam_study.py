@@ -365,11 +365,29 @@ class _Reference:
     probe_reference: dict
 
 
+def reference_namespace(run_dir: Path, config: dict, result: dict, curriculum,
+                        eval_reports: dict) -> str:
+    """A reference run's seed namespace, by the runner's rule, cross-checked.
+
+    The rule (``seed_namespace_run_id``), not a recorded field: Gate 1's seq_ft
+    ``result.json`` predates ``seed_namespace_run_id``. It must agree with that field (when
+    present) and with the namespace every given evaluation's rollouts were seeded under
+    (``eval_reports``: label -> :class:`~flowcl.envs.evaluation.EvaluationReport`).
+    """
+    from flowcl.train.continual import seed_namespace_run_id
+
+    namespace = seed_namespace_run_id(curriculum.name, int(config["seed"]))
+    recorded = {"result.json": result.get("seed_namespace_run_id", namespace),
+                **{label: report.run_id for label, report in eval_reports.items()}}
+    if any(v != namespace for v in recorded.values()):
+        raise ValueError(f"{run_dir.name}: seed namespace {namespace!r} (runner rule) disagrees "
+                         f"with {recorded}")
+    return namespace
+
+
 def _reference(cfg: dict, root: Path) -> _Reference:
     from flowcl.data.curriculum import load_curriculum
     from flowcl.envs.evaluation import EvaluationReport
-
-    from flowcl.train.continual import seed_namespace_run_id
 
     c = cfg["cl"]
     run_dir = root / c["reference_run"]
@@ -379,16 +397,9 @@ def _reference(cfg: dict, root: Path) -> _Reference:
     ti, ri = c["task_index"], c["retained_index"]
     if not 0 <= ri < ti < len(curriculum.stages):
         raise ValueError(f"need 0 <= retained_index < task_index, got {ri}, {ti}")
-    # The runner's rule, not a recorded field: Gate 1's seq_ft result.json predates
-    # ``seed_namespace_run_id``. Cross-checked against the field (when present) and the
-    # namespace the reference stage's rollouts were seeded under.
-    namespace = seed_namespace_run_id(curriculum.name, int(config["seed"]))
     report = EvaluationReport.load(run_dir / "eval" / f"stage{ti}.json")
-    recorded = {"result.json": result.get("seed_namespace_run_id", namespace),
-                f"eval/stage{ti}.json": report.run_id}
-    if any(v != namespace for v in recorded.values()):
-        raise ValueError(f"{run_dir.name}: seed namespace {namespace!r} (runner rule) disagrees "
-                         f"with {recorded}")
+    namespace = reference_namespace(run_dir, config, result, curriculum,
+                                    {f"eval/stage{ti}.json": report})
     evals = report.by_task()
     diag = json.loads((root / c["probe_from"]).read_text())
     if diag["reference_run_id"] != run_dir.name:

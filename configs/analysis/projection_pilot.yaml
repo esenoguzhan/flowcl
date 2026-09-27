@@ -1,0 +1,58 @@
+# Exploratory projection pilot on the low-update backbone (seed 0, T1 -> T2 only).
+# Committed before any run. Runs only if the pilot gate is open: the low-update validation
+# passed on both held-out seeds AND the four-task chain is not `underlearns`
+# (configs/analysis/low_update.yaml). Evaluated by scripts/projection_pilot.py.
+#
+# Object is trained after Spatial from seq_ft seed 0's stage0.pt for `steps`, paired exactly
+# as in low_update.yaml (seq_ft's stage-1 stream seed and rollout namespace). The T1 memory
+# and its spectrum come from `memory_source` (bitwise the SGP runs' own T1 memory); SGP's
+# importance is Eq. 2 of that spectrum at each alpha (SGP.set_memory), exactly what an SGP
+# run computes at T1. No memory update after T2. Adaptive SGP is not in the pilot: at
+# T1 -> T2 it is identical to the SGP baseline by construction.
+#
+# eta (1 - lambda) is recorded only as a NOMINAL protected-gradient scale; the realised
+# protection is read from the measured parallel/perpendicular split of Delta W (against the
+# T1 memory at eps).
+#
+# Selection (exploratory, not a weighted average): among ELIGIBLE runs only, qualifying if
+# Object >= the low-update fine-tuning reference's Object - object_tolerance (inclusive);
+# the best Spatial retention (point estimate) wins, the lower Spatial probe loss breaks ties.
+# Controls (freeze-only, hard GPM, alpha 5) are never selected; the best overall projected
+# run is reported separately. The selection is only recorded: freezing it, validating it on
+# seeds 1-2 and any four-task SGP are later, separately planned steps.
+
+seed: 0
+steps: 5000
+eps: 0.95
+memory_source: seq_hetero__gpm_projected_adam__seed0/method/memory_task0.pt
+out: projection_pilot            # under results/
+
+grid:
+  - {family: freeze_only, lr: 3.0e-5}
+  - {family: freeze_only, lr: 1.0e-4}
+  - {family: gpm, lr: 3.0e-5}
+  - {family: gpm, lr: 1.0e-4}
+  - {family: sgp, alpha: 25, lr: 3.0e-5}
+  - {family: sgp, alpha: 100, lr: 3.0e-5}
+  - {family: sgp, alpha: 400, lr: 3.0e-5}
+  - {family: sgp, alpha: 1600, lr: 3.0e-5}
+  - {family: sgp, alpha: 25, lr: 1.0e-4}
+  - {family: sgp, alpha: 100, lr: 1.0e-4}
+  - {family: sgp, alpha: 400, lr: 1.0e-4}
+  - {family: sgp, alpha: 1600, lr: 1.0e-4}
+  - {family: sgp, alpha: 5, lr: 3.0e-5}          # negative control
+
+eligible:
+  family: sgp
+  alphas: [25, 100, 400, 1600]
+  lrs: [3.0e-5, 1.0e-4]
+
+# All-parameter fine-tuning references at the same budget: the hparam study's own seed-0
+# runs (8e6785a), reused, not rerun.
+ft_references:
+  - {lr: 3.0e-5, run: hparam_study/cl_lr/cl__libero_object__b5000__lr3e-05__seed0}
+  - {lr: 1.0e-4, run: hparam_study/cl_budget/cl__libero_object__b5000__lr0.0001__seed0}
+
+selection:
+  object_reference_lr: 3.0e-5    # the low-update fine-tuning reference (Object 76%)
+  object_tolerance: 0.10
