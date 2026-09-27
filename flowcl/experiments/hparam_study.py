@@ -369,6 +369,8 @@ def _reference(cfg: dict, root: Path) -> _Reference:
     from flowcl.data.curriculum import load_curriculum
     from flowcl.envs.evaluation import EvaluationReport
 
+    from flowcl.train.continual import seed_namespace_run_id
+
     c = cfg["cl"]
     run_dir = root / c["reference_run"]
     config = OmegaConf.to_container(OmegaConf.load(run_dir / "config.yaml"), resolve=True)
@@ -377,7 +379,17 @@ def _reference(cfg: dict, root: Path) -> _Reference:
     ti, ri = c["task_index"], c["retained_index"]
     if not 0 <= ri < ti < len(curriculum.stages):
         raise ValueError(f"need 0 <= retained_index < task_index, got {ri}, {ti}")
-    evals = EvaluationReport.load(run_dir / "eval" / f"stage{ti}.json").by_task()
+    # The runner's rule, not a recorded field: Gate 1's seq_ft result.json predates
+    # ``seed_namespace_run_id``. Cross-checked against the field (when present) and the
+    # namespace the reference stage's rollouts were seeded under.
+    namespace = seed_namespace_run_id(curriculum.name, int(config["seed"]))
+    report = EvaluationReport.load(run_dir / "eval" / f"stage{ti}.json")
+    recorded = {"result.json": result.get("seed_namespace_run_id", namespace),
+                f"eval/stage{ti}.json": report.run_id}
+    if any(v != namespace for v in recorded.values()):
+        raise ValueError(f"{run_dir.name}: seed namespace {namespace!r} (runner rule) disagrees "
+                         f"with {recorded}")
+    evals = report.by_task()
     diag = json.loads((root / c["probe_from"]).read_text())
     if diag["reference_run_id"] != run_dir.name:
         raise ValueError(f"{c['probe_from']} pairs with {diag['reference_run_id']!r}, "
@@ -385,7 +397,7 @@ def _reference(cfg: dict, root: Path) -> _Reference:
     L = diag["loss_matrix"]["reference"]
     return _Reference(
         run_dir=run_dir, config=config, curriculum=curriculum,
-        seed_namespace=result["seed_namespace_run_id"],
+        seed_namespace=namespace,
         new_eval=evals[curriculum.stages[ti].task_key],
         retained_eval=evals[curriculum.stages[ri].task_key],
         probe=diag["config"]["probe"],

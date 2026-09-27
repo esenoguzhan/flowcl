@@ -248,9 +248,10 @@ def write_reference(root, spec):
                     task_key=SPATIAL)
     curriculum = {"name": "seq_hetero", "tasks": [{"task_key": SPATIAL, "n_demos": 5},
                                                   {"task_key": OBJECT, "n_demos": 5}]}
-    OmegaConf.save(OmegaConf.create({"run_id": run_id, "curriculum": curriculum,
+    OmegaConf.save(OmegaConf.create({"run_id": run_id, "seed": 0, "curriculum": curriculum,
                                      "train": TINY_TRAIN}), run_dir / "config.yaml")
-    (run_dir / "result.json").write_text(json.dumps({"seed_namespace_run_id": run_id}))
+    # As Gate 1 wrote it: no seed_namespace_run_id field (it predates the field).
+    (run_dir / "result.json").write_text(json.dumps({"run_id": run_id}))
     refs = [Ref(SPATIAL), Ref(OBJECT)]
     stub_evaluator()(None, refs, spec, None, run_id, 1).save(run_dir / "eval" / "stage1.json")
     diag = root / "forgetting_diag" / "report.json"
@@ -289,6 +290,21 @@ def test_cl_parts_end_to_end(spec, tmp_path):
     assert lr["base_lr_row"]["budget"] == 2
     with pytest.raises(ValueError, match="unknown CL part"):
         run_cl_part(study_config(), "trajectory", **common)
+
+
+def test_reference_namespace_follows_the_runner_rule_and_must_agree(spec, tmp_path):
+    from flowcl.experiments.hparam_study import _reference
+
+    run_dir = write_reference(tmp_path, spec)
+    assert _reference(study_config(), tmp_path).seed_namespace == "seq_hetero__seq_ft__seed0"
+    (run_dir / "result.json").write_text(json.dumps({"seed_namespace_run_id": "other__seed0"}))
+    with pytest.raises(ValueError, match="disagrees"):
+        _reference(study_config(), tmp_path)
+    (run_dir / "result.json").write_text(json.dumps({"run_id": run_dir.name}))
+    stub_evaluator()(None, [Ref(SPATIAL), Ref(OBJECT)], spec, None, "elsewhere", 1).save(
+        run_dir / "eval" / "stage1.json")
+    with pytest.raises(ValueError, match="disagrees"):
+        _reference(study_config(), tmp_path)
 
 
 # ---- config and queue ---------------------------------------------------------------------------
