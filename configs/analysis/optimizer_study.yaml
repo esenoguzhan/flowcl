@@ -1,0 +1,74 @@
+# Broader optimizer study: map the fine-tuning stability-plasticity trade-off on T1 -> T2
+# (Spatial -> Object), seeds 0-2. Exploratory; committed before any run. Nothing is selected
+# or adopted, and the registered 30k / lr 1e-4 comparisons are untouched.
+#
+# Every run starts from the seed's seq_ft stage0.pt and is paired exactly as in
+# configs/analysis/low_update.yaml (seq_ft's stage-1 stream seed and rollout namespace; the
+# seed contexts come from that file). Evaluated by scripts/optimizer_study.py.
+#
+# Reported, per the rule (never a selection):
+#  1. Frontiers: per seed, the Pareto-optimal CORE settings in (Object, Spatial) success
+#     (maximise both) and in (Object, Spatial) probe loss (minimise both); a cross-seed robust
+#     frontier on the worst seed (min success, max loss). Standard-recipe and GPM points marked.
+#  2. Existence: a setting "achieves both" only if it is a CORE setting and passes the
+#     low-update rule on ALL `seeds`: Object >= seq_ft's Object - existence.object_tolerance
+#     and a paired Spatial gain vs seq_ft with 95% CI low > 0. Variants are never eligible.
+#     Seven core settings are tested: a passing setting stays exploratory until confirmed on
+#     fresh seeds.
+#  3. One-factor effects (variants vs the anchor, `variant_seeds`): paired differences in both
+#     successes (bootstrap over matched episodes) and both probe losses (matched-batch
+#     bootstrap over the 16 registered probe batches: stability over those units, not
+#     population-level intervals). One label per knob and metric, in order:
+#       supported_both_seeds      same sign on both seeds, both intervals exclude 0
+#       supported_one_seed        same sign, exactly one interval excludes 0
+#       directionally_consistent  same sign, neither interval excludes 0 (not evidence)
+#       inconclusive              signs disagree (or a difference is exactly 0)
+# Probe losses are recomputed per batch from every run's checkpoint and must reproduce the
+# stored aggregate (rtol 1e-5, atol 1e-8). Update size is measured against stage0.pt over the
+# trainable parameters (registry trunk / decoder, non-registry); frozen encoders must not move.
+
+seeds: [0, 1, 2]
+variant_seeds: [0, 1]            # the anchor is mid-trade-off on these (Spatial 50 / 28 %)
+out: optimizer_study             # under results/
+
+# The standard recipe's other settings (every core setting uses them).
+base:
+  batch_size: 64
+  weight_decay: 1.0e-4
+  schedule: cosine
+
+core:
+  - {lr: 1.0e-5, steps: 5000}
+  - {lr: 1.0e-5, steps: 15000}
+  - {lr: 3.0e-5, steps: 5000}
+  - {lr: 3.0e-5, steps: 15000}
+  - {lr: 1.0e-4, steps: 5000}
+  - {lr: 1.0e-4, steps: 15000}
+  - {lr: 1.0e-4, steps: 30000}   # the standard recipe: the seq_ft run's own stage 1
+
+# Is this core setting the reference run itself (stage1.pt, eval/stage1.json)?
+standard: {lr: 1.0e-4, steps: 30000}
+
+anchor: {lr: 3.0e-5, steps: 5000}
+variants:                        # each changes the anchor (with `base`) in the fields given
+  - {name: constant_same_peak, schedule: constant}   # also more cumulative LR exposure
+  - {name: wd0, weight_decay: 0.0}
+  - {name: wd1e-2, weight_decay: 1.0e-2}
+  - {name: batch32, batch_size: 32, steps: 10000}     # 320k examples seen, lr not rescaled
+  - {name: batch128, batch_size: 128, steps: 2500}    # 320k examples seen, lr not rescaled
+
+# Existing runs of core settings, verified against their config.yaml (schedule normalised to
+# cosine where the field predates it) and converted, never rerun.
+reused:
+  - {seed: 0, lr: 3.0e-5, steps: 5000, run: hparam_study/cl_lr/cl__libero_object__b5000__lr3e-05__seed0}
+  - {seed: 0, lr: 1.0e-4, steps: 5000, run: hparam_study/cl_budget/cl__libero_object__b5000__lr0.0001__seed0}
+  - {seed: 0, lr: 1.0e-4, steps: 15000, run: hparam_study/cl_budget/cl__libero_object__b15000__lr0.0001__seed0}
+  - {seed: 1, lr: 3.0e-5, steps: 5000, run: low_update/seed1/stage1}
+  - {seed: 2, lr: 3.0e-5, steps: 5000, run: low_update/seed2/stage1}
+
+existence:
+  object_tolerance: 0.10
+
+probe_tolerance: {rtol: 1.0e-5, atol: 1.0e-8}
+
+batch_bootstrap: {n_resamples: 10000, seed: 0, confidence: 0.95}

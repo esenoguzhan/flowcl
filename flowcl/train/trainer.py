@@ -41,6 +41,9 @@ class TrainConfig:
     # Gradient accumulation; §7.5 uses this to absorb the 4x backward cost.
     accumulation_steps: int = 1
     amp: bool = False
+    # After the linear warmup: "cosine" decays to 0 over the remaining steps (the recipe of
+    # every registered run); "constant" holds the peak learning rate (optimizer study).
+    schedule: str = "cosine"
 
 
 @dataclass
@@ -116,13 +119,16 @@ def build_optimizer(
 def build_scheduler(
     optimizer: torch.optim.Optimizer, cfg: TrainConfig
 ) -> torch.optim.lr_scheduler.LRScheduler:
-    """Linear warmup then cosine decay."""
+    """Linear warmup, then cosine decay (``schedule="cosine"``) or the peak held constant."""
     import math
+
+    if cfg.schedule not in ("cosine", "constant"):
+        raise ValueError(f"unknown learning-rate schedule {cfg.schedule!r}")
 
     def lr_lambda(step: int) -> float:
         if cfg.warmup_steps > 0 and step < cfg.warmup_steps:
             return (step + 1) / cfg.warmup_steps
-        if cfg.steps <= cfg.warmup_steps:
+        if cfg.steps <= cfg.warmup_steps or cfg.schedule == "constant":
             return 1.0
         progress = (step - cfg.warmup_steps) / (cfg.steps - cfg.warmup_steps)
         return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))

@@ -198,6 +198,7 @@ def train_stage(
     run_id: str,
     *,
     method_spec: dict | None = None,
+    train_overrides: dict | None = None,
     setup_method: Callable | None = None,
     extra_row: Callable | None = None,
     evaluator=None,
@@ -208,6 +209,8 @@ def train_stage(
 ) -> dict:
     """Train task ``stage`` from ``start_checkpoint``; evaluate tasks ``0..stage``; publish.
 
+    ``train_overrides`` (optional) replaces further ``TrainConfig`` fields (batch size, weight
+    decay, schedule) and becomes part of the recipe a published run must match;
     ``setup_method(policy) -> method`` (optional) runs before training (freezing or projection);
     ``extra_row(policy, method, start_state) -> dict`` adds fields before ``row.json``.
     """
@@ -220,6 +223,8 @@ def train_stage(
 
     expect = {"run_id": run_id, "seed": ctx.seed, "stage": stage, "namespace": ctx.namespace,
               "steps": int(steps), "lr": float(lr), "method": method_spec}
+    if train_overrides is not None:
+        expect["train_overrides"] = dict(train_overrides)
     published = load_published(out_dir, expect)
     if published is not None:
         print(f"[flowcl] {run_id}: published and valid, reused", flush=True)
@@ -234,8 +239,8 @@ def train_stage(
     make = build_datasets or (lambda st: build_dataset([st.ref], spec, stats, n_demos=st.n_demos,
                                                        dataset_dir=dataset_dir))
     datasets = {j: make(stages[j]) for j in range(stage + 1)}
-    train_cfg = TrainConfig(**{**ctx.ref_config["train"], "steps": int(steps), "lr": float(lr),
-                               "device": device})
+    train_cfg = TrainConfig(**{**ctx.ref_config["train"], **(train_overrides or {}),
+                               "steps": int(steps), "lr": float(lr), "device": device})
     run = create_run(
         run_id=run_id,
         cfg=OmegaConf.create({
