@@ -1,0 +1,72 @@
+# SGP sensitivity on the standard recipe (30k steps, lr 1e-4): bracket SGP strength on seed 0
+# (T1 -> T2), freeze the selection, validate it on seeds 1-2 (held out from SGP alpha
+# selection). Committed before any run. Evaluated by scripts/sgp_sensitivity.py; queued by
+# scripts/queue_sgp_sensitivity.sh. Seed contexts (pairing, references, probes) come from
+# configs/analysis/low_update.yaml.
+#
+# Every run trains Object after Spatial from the seed's seq_ft stage0.pt, paired with seq_ft's
+# stage 1 (stream seed and rollout namespace). The T1 memory and spectrum are plain GPM's
+# memory_task0.pt (bitwise the SGP runs' own); SGP's importance is Eq. 2 at each alpha
+# (SGP.set_memory). Every new run asserts that its start weights equal plain GPM's stage0
+# bitwise (the model the memory was captured from).
+#
+# Selection (step 3), among ELIGIBLE alphas only (controls never): qualifying if, on the
+# point estimates, Object >= fine-tuning's Object - selection.object_tolerance AND Spatial >=
+# hard GPM's Spatial - selection.spatial_tolerance. The SMALLEST qualifying alpha is selected
+# (the softest strength with near-GPM protection: SGP exists to leave plasticity headroom for
+# later tasks, and "best retention" would pick the hardest alpha, i.e. GPM). None qualifying:
+# `no_qualifying_alpha`; validation is skipped, the summary still runs.
+#
+# Freeze (step 4): selection.json + selection.done.json (its SHA-256) are written into an
+# attempt directory and published by one atomic rename to <out>/selection/; the canonical
+# bundle is never rewritten, validation reads only it and verifies the hash.
+#
+# Validation (step 5), seeds `validation_seeds`, held out from SGP alpha selection (used by
+# other studies, but no SGP outcome at the selected alpha observed): a seed passes if Object
+# >= fine-tuning's Object (that seed) - object_tolerance AND Spatial >= hard GPM's Spatial
+# (that seed) - spatial_tolerance, point estimates. `validated` only if every validation seed
+# passes. NO RESCUE TUNING: if the frozen alpha fails on either seed, fixed-alpha SGP is not
+# validated; no other alpha is selected with seeds 1-2 (any rescue sweep is exploratory and
+# needs new validation seeds).
+#
+# Reported for every arm: success paired vs hard GPM and vs fine-tuning; per-batch probe
+# losses (recomputed from every checkpoint; matched-batch intervals); the NOMINAL attenuation
+# (energy-weighted 1 - lambda and eta (1 - lambda) over T1 bases, never read as realised); the
+# REALISED update split against the T1 memory (parallel fraction, parallel / perpendicular
+# norms per half) and the full trainable update; projection residuals.
+
+bracket_seed: 0
+validation_seeds: [1, 2]
+out: sgp_sensitivity                 # under results/
+eps: 0.95
+recipe: {steps: 30000, lr: 1.0e-4}   # the standard recipe (reference runs' own)
+eligible_alphas: [25, 100, 400, 1600]
+
+# Plain GPM run per seed ({seed} is substituted): its stage0 must equal seq_ft's stage0
+# bitwise, and its memory_task0.pt is the T1 memory for every projected arm.
+gpm_run: seq_hetero__gpm_projected_adam__seed{seed}
+
+arms:                                 # seed-0 bracket
+  - {name: sgp_a25, family: sgp, alpha: 25, source: reused,
+     run: seq_hetero__sgp_projected_adam__seed0,
+     diagnostics: forgetting_diag_sgp_seed0/report.json}
+  - {name: sgp_a100, family: sgp, alpha: 100, source: new}
+  - {name: sgp_a400, family: sgp, alpha: 400, source: new}
+  - {name: sgp_a1600, family: sgp, alpha: 1600, source: new}
+  - {name: gpm, family: gpm, source: reused}           # plain GPM's stage 1
+  - {name: fine_tuning, family: ft, source: reused}    # seq_ft's stage 1
+  - {name: freeze_only, family: freeze_only, source: new}
+
+selection:
+  object_tolerance: 0.10
+  spatial_tolerance: 0.10
+
+validation:
+  object_tolerance: 0.10
+  spatial_tolerance: 0.10
+
+probe_tolerance: {rtol: 1.0e-4, atol: 1.0e-7}   # as established by the optimizer study
+batch_bootstrap: {n_resamples: 10000, seed: 0, confidence: 0.95}
+
+# Reported only (consistency): the GPM pilot's freeze-only arm, produced from a dirty tree.
+consistency_reference: seq_hetero__freeze_only_pilot__seed0
