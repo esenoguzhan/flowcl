@@ -24,7 +24,7 @@
 #       directionally_consistent  same sign, neither interval excludes 0 (not evidence)
 #       inconclusive              signs disagree (or a difference is exactly 0)
 # Probe losses are recomputed per batch from every run's checkpoint and must reproduce the
-# stored aggregate (rtol 1e-5, atol 1e-8). Update size is measured against stage0.pt over the
+# stored aggregate (tolerance below; amended, see there). Update size is measured against stage0.pt over the
 # trainable parameters (registry trunk / decoder, non-registry); frozen encoders must not move.
 
 seeds: [0, 1, 2]
@@ -69,6 +69,14 @@ reused:
 existence:
   object_tolerance: 0.10
 
-probe_tolerance: {rtol: 1.0e-5, atol: 1.0e-8}
+# AMENDED 29 Sep 2026, after every training run and before any official summary (a
+# disclosed deviation). Registered value: {rtol: 1.0e-5, atol: 1.0e-8}. The summary failed
+# on it (relative difference 1.4e-5). A diagnostic over all 62 recomputations (31
+# checkpoints x 2 tasks; run from scratch, nothing written to results/) found 34 exact
+# matches, max relative difference 2.1e-5, none above 1e-4; the nonzero ones are values
+# stored inside a training process and recomputed in a fresh one (GPU kernel noise). A wrong
+# probe or checkpoint differs by ~1e-2 or more. The check only confirms the same probe; the
+# amended tolerance is ~5x the observed maximum and ~100x below a real mismatch.
+probe_tolerance: {rtol: 1.0e-4, atol: 1.0e-7}
 
 batch_bootstrap: {n_resamples: 10000, seed: 0, confidence: 0.95}
