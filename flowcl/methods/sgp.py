@@ -60,6 +60,9 @@ from flowcl.methods.base import register_method
 from flowcl.methods.gpm import GPM
 
 SGP_PROJECTION_NAMES = {"hard_gradient_scaled_update": "sgp_projected_adam"}
+# The registered alpha (configs/method/sgp.yaml). Other values are named ``..._a<alpha>``, so the
+# registered runs keep their ids.
+DEFAULT_ALPHA = 25.0
 IMPORTANCE_KEYS = ("sigma_old", "sigma_new", "lambda_task", "lambda_prev", "lambda")
 
 
@@ -86,6 +89,15 @@ class SGP(GPM):
         # Layer -> the latest extension's record (IMPORTANCE_KEYS), and its task index.
         self._importance_updates: dict[str, dict[str, torch.Tensor]] = {}
         self._importance_task: int | None = None
+
+    @property
+    def display_name(self) -> str:
+        name = self.projection_names[self.projection]
+        if self.alpha != DEFAULT_ALPHA:
+            name += f"_a{self.alpha:g}"
+        if self.new_energy_fraction is not None:
+            name += f"_ne{round(100 * self.new_energy_fraction)}"
+        return name
 
     def config(self) -> dict:
         return {**super().config(), "alpha": self.alpha}

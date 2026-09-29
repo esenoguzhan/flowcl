@@ -365,3 +365,56 @@ def test_every_sgp_step_accepts_its_flags(script, flags):
     assert done.returncode == 0, done.stderr
     for flag in flags:
         assert flag in done.stdout, (script, flag)
+
+
+# ---- the exploratory alpha queue ---------------------------------------------------------
+
+ALPHA_QUEUE = repo_root() / "scripts" / "queue_sgp_alpha.sh"
+A_STEPS = ["0_sgp_s0", "1_seqrep_sgp_s0", "2_diag_sgp_s0", "3_sgp_ne90_s0",
+           "4_seqrep_sgp_ne90_s0", "5_diag_sgp_ne90_s0", "6_probe_cells_s0", "7_sgp_report_s0"]
+
+
+def alpha_queue(tmp_path, args=("0", "800"), fail="", present=()):
+    results = tmp_path / "results"
+    for rel in [*SGP_INPUTS.values(), *present]:
+        path = results / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_FAIL_STEP": fail,
+           "QUEUE_LOG_ROOT": str(tmp_path / "logs"), "QUEUE_RESULTS_ROOT": str(results)}
+    done = subprocess.run(["bash", str(ALPHA_QUEUE), *args], env=env, capture_output=True,
+                          text=True, timeout=60)
+    return done, tmp_path / "logs"
+
+
+def test_alpha_queue_runs_the_four_task_pair_with_its_own_names_and_rule(tmp_path):
+    done, logs = alpha_queue(tmp_path)
+    assert done.returncode == 0, done.stderr
+    (logdir,) = list(logs.glob("queue_*_sgp_a800_seed0"))
+    log = (logdir / "queue.log").read_text()
+    positions = [log.index(f"START {s}:") for s in A_STEPS]
+    assert positions == sorted(positions) and "replication" not in log
+    read = lambda s: (logdir / f"{s}.log").read_text()  # noqa: E731
+    assert ("--method sgp_a800 --seed 0 --amp --identity-reference-run "
+            "results/seq_hetero__gpm_projected_adam__seed0 --identity-stages 0") in read("0_sgp_s0")
+    assert ("--method sgp_a800_ne90 --seed 0 --amp --identity-reference-run "
+            "results/seq_hetero__sgp_projected_adam_a800__seed0 --identity-stages 0 1") in read("3_sgp_ne90_s0")
+    assert "--out results/sgp_a800_seq_seed0/report.json" in read("1_seqrep_sgp_s0")
+    assert "--out results/forgetting_diag_sgp_a800_ne90_seed0/report.json" in read("5_diag_sgp_ne90_s0")
+    assert "--config configs/analysis/sgp_a800.yaml --seed 0" in read("6_probe_cells_s0")
+    assert "--config configs/analysis/sgp_a800.yaml --seed 0" in read("7_sgp_report_s0")
+
+
+def test_alpha_queue_resume_and_refusals(tmp_path):
+    done, logs = alpha_queue(tmp_path / "a", args=("0", "800", "--from-step", "3"),
+                             present=["seq_hetero__sgp_projected_adam_a800__seed0/result.json",
+                                      "sgp_a800_seq_seed0/report.json",
+                                      "forgetting_diag_sgp_a800_seed0/report.json"])
+    assert done.returncode == 0, done.stderr
+    log = (next(logs.glob("queue_*")) / "queue.log").read_text()
+    assert "PRIOR 0_sgp_s0 ok" in log and "START 3_sgp_ne90_s0:" in log and "START 0_sgp_s0:" not in log
+    missing, logs_b = alpha_queue(tmp_path / "b", args=("0", "700"))
+    assert missing.returncode == 2 and "alpha 700 is not configured" in missing.stderr
+    assert not list(logs_b.glob("queue_*")) if logs_b.exists() else True
+    for bad in (("0",), ("0", "x"), ("0", "800", "--from-step", "8"), ("0", "800", "--bogus")):
+        assert subprocess.run(["bash", str(ALPHA_QUEUE), *bad], capture_output=True).returncode == 2

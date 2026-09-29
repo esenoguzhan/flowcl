@@ -367,3 +367,28 @@ def test_committed_rule_matches_the_plan():
             "min_improvement": 0.20, "min_gap_recovery": 0.5}
     with pytest.raises(ValueError, match="not pre-registered"):
         resolve_seed(cfg, 3)
+
+
+def test_exploratory_alpha_rule_matches_the_registered_rule_and_the_run_names():
+    from flowcl.data.config import load_method_config
+    from flowcl.methods.base import build_method
+    from flowcl.train.continual import continual_run_id
+    from flowcl.utils.libero_paths import repo_root
+
+    base = load_sgp_config()
+    cfg = load_sgp_config(repo_root() / "configs" / "analysis" / "sgp_a800.yaml")
+    assert cfg["alpha"] == 800
+    assert {k: v for k, v in cfg.items() if k not in ("alpha", "seeds", "replication")} == \
+        {k: v for k, v in base.items() if k not in ("alpha", "seeds", "replication")}
+    r, b = resolve_seed(cfg, 0), resolve_seed(base, 0)
+    for role, method in (("P", "sgp_a800"), ("A", "sgp_a800_ne90")):
+        display = build_method("sgp", **load_method_config(method)[1]).display_name
+        assert r["runs"][role] == continual_run_id(display, "seq_hetero", 0)
+    for role in ("G", "N"):
+        assert r["runs"][role] == b["runs"][role]
+        assert r["sequence_reports"][role] == b["sequence_reports"][role]
+        assert r["diagnostics"][role] == b["diagnostics"][role]
+    assert r["reference_run"] == b["reference_run"]
+    assert r["probe_report"] == "sgp_a800_probe_seed0/report.json" and r["out"] == "sgp_a800_seed0/report.json"
+    with pytest.raises(ValueError, match="not pre-registered"):
+        resolve_seed(cfg, 1)

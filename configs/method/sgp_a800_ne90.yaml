@@ -1,0 +1,16 @@
+# sgp_a800_ne90: adaptive SGP at alpha 800 — EXPLORATORY (display sgp_projected_adam_a800_ne90).
+# Identical to configs/method/sgp_ne90.yaml except alpha; see configs/method/sgp_a800.yaml
+# for the framing. At T1 (p = 0) the ne90 target equals eps, so stages 0-1, T1's memory and
+# importance are bitwise those of the sgp_a800 run (checked by the runner's identity check).
+name: sgp
+
+eps: 0.95
+projection: hard_gradient_scaled_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+alpha: 800
+
+new_energy_fraction: 0.90

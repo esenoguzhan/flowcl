@@ -407,3 +407,25 @@ def test_sgp_runs_end_to_end_paired_with_gpm(dataset_dir, tmp_path):
         for name in ("seed_namespace", "occupancy_non_decreasing", "residuals_within_bound",
                      "artifact_hashes_match", "frozen_from_stage1", "memory_chained"):
             assert checks[name]["passed"], (run_dir.name, name, checks[name])
+
+
+def test_non_registered_alpha_is_named_and_configured_separately():
+    from flowcl.data.config import load_method_config
+    from flowcl.methods.base import build_method
+    from flowcl.train.continual import continual_run_id
+
+    # The registered alpha keeps its names (and so every existing run id).
+    assert SGP(alpha=25).display_name == "sgp_projected_adam"
+    assert SGP(alpha=25, new_energy_fraction=0.9).display_name == "sgp_projected_adam_ne90"
+    assert SGP(alpha=800).display_name == "sgp_projected_adam_a800"
+    assert SGP(alpha=800, new_energy_fraction=0.9).display_name == "sgp_projected_adam_a800_ne90"
+    for name, registered in (("sgp_a800", "sgp"), ("sgp_a800_ne90", "sgp_ne90")):
+        n, kwargs = load_method_config(name)
+        _, base = load_method_config(registered)
+        assert n == "sgp" and kwargs["alpha"] == 800
+        assert {k: v for k, v in kwargs.items() if k != "alpha"} == {
+            k: v for k, v in base.items() if k != "alpha"}
+    assert continual_run_id(build_method("sgp", **load_method_config("sgp_a800")[1]).display_name,
+                            "seq_hetero", 0) == "seq_hetero__sgp_projected_adam_a800__seed0"
+    assert continual_run_id(build_method("sgp", **load_method_config("sgp_a800_ne90")[1]).display_name,
+                            "seq_hetero", 0) == "seq_hetero__sgp_projected_adam_a800_ne90__seed0"

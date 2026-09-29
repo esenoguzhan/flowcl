@@ -1,0 +1,106 @@
+# EXPLORATORY four-task SGP at alpha 800 (seed 0). Derived programmatically from the registered
+# rule configs/analysis/sgp.yaml: every gate, objective and attribution setting is identical;
+# only `alpha`, the seed-0 run / report names of P and A, and the outputs differ.
+#
+# NOT a registered test and no claim level: alpha 800 lies outside the registered bracket of
+# configs/analysis/sgp_sensitivity.yaml ({25, 100, 400, 1600}), and no alpha passed held-out
+# validation there (docs/runs/2026-09-29_sgp_sensitivity.md). The report's verdict, O1/O2
+# and attribution labels are DESCRIPTIVE here. No replication is run (seed 0 only); any claim
+# for an alpha needs a new registered validation on fresh seeds.
+#
+# P = sgp_projected_adam_a800 (configs/method/sgp_a800.yaml), A = sgp_projected_adam_a800_ne90
+# (configs/method/sgp_a800_ne90.yaml); G and N are the existing plain and adaptive GPM seed-0
+# runs, reports and diagnostics. Queued by scripts/queue_sgp_alpha.sh 0 800.
+
+alpha: 800
+identity:
+  baseline_vs_gpm_stages:
+  - 0
+  adaptive_vs_baseline_stages:
+  - 0
+  - 1
+  importance_atol: 1.0e-12
+implementation:
+  importance_atol: 1.0e-12
+energy:
+  eps: 0.95
+  new_energy_fraction: 0.9
+  tasks:
+  - 1
+  - 2
+  - 3
+  tol: 1.0e-06
+  applicability_atol: 1.0e-12
+  target_match_atol: 1.0e-12
+premise:
+  baseline_cell:
+  - 2
+  - 1
+retention:
+  transition_cell:
+  - 2
+  - 1
+  min_improvement: 0.2
+  durable_cell:
+  - 3
+  - 1
+plasticity:
+  loss_cell:
+  - 3
+  - 3
+  min_gap_recovery: 0.5
+  t4_cell:
+  - 3
+  - 3
+  t3_cell:
+  - 2
+  - 2
+attribution:
+  memory_cell:
+  - 2
+  - 1
+  scaling_rollout_cell:
+  - 3
+  - 3
+interaction:
+  rollout_cell:
+  - 2
+  - 1
+  loss_cell:
+  - 3
+  - 3
+probe_cells:
+  cells:
+  - - 3
+    - 3
+  - - 2
+    - 1
+  rel_tol: 1.0e-06
+batch_bootstrap:
+  n_resamples: 10000
+  seed: 0
+  confidence: 0.95
+seeds:
+  0:
+    runs:
+      P: seq_hetero__sgp_projected_adam_a800__seed0
+      A: seq_hetero__sgp_projected_adam_a800_ne90__seed0
+      G: seq_hetero__gpm_projected_adam__seed0
+      'N': seq_hetero__gpm_projected_adam_ne90__seed0
+    reference_run: seq_hetero__seq_ft__seed0
+    sequence_reports:
+      P: sgp_a800_seq_seed0/report.json
+      A: sgp_a800_seq_ne90_seed0/report.json
+      G: gpm_seq/report.json
+      'N': gpm_seq_ne90/report.json
+    diagnostics:
+      P: forgetting_diag_sgp_a800_seed0/report.json
+      A: forgetting_diag_sgp_a800_ne90_seed0/report.json
+      G: forgetting_diag/report.json
+      'N': forgetting_diag_ne90/report.json
+    probe_report: sgp_a800_probe_seed0/report.json
+    out: sgp_a800_seed0/report.json
+replication:
+  seeds:
+  - 0
+  out: sgp_a800/replication_unused.json

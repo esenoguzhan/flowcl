@@ -1,0 +1,19 @@
+# sgp_a800: the SGP baseline (AdamW adaptation) at alpha 800 — EXPLORATORY
+# (display sgp_projected_adam_a800). Identical to configs/method/sgp.yaml except alpha.
+#
+# alpha 800 was not in the registered bracket of configs/analysis/sgp_sensitivity.yaml
+# ({25, 100, 400, 1600}); no alpha passed held-out validation there
+# (docs/runs/2026-09-29_sgp_sensitivity.md). These runs are an exploratory four-task look at
+# whether stronger SGP scaling changes plasticity when the memory saturates; they carry no
+# claim level. Rule (descriptive labels only): configs/analysis/sgp_a800.yaml.
+name: sgp
+
+eps: 0.95
+projection: hard_gradient_scaled_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+alpha: 800
