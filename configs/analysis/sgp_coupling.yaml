@@ -1,0 +1,130 @@
+# SGP update-rule coupling test at T4 (alpha 800, seed 0). EXPLORATORY: one seed, no claim
+# level. Committed before any run. Evaluated by scripts/sgp_coupling.py; queued by
+# scripts/queue_sgp_coupling.sh. The seed context (seq_ft namespace, the paired references and
+# the fixed probe) comes from configs/analysis/low_update.yaml.
+#
+# Question. Adaptive SGP at alpha 800 (A800, docs/runs/2026-09-30_sgp_a800_seed0.md) fitted T4
+# worse than adaptive GPM. Is that a cost of how our AdamW adaptation couples with the scaled
+# projection? Under vanilla SGD (no momentum, no weight decay, NO clipping) the adaptation's
+# "remove the hard directions from the gradient, then scale the realised step" is exactly the
+# paper's scaled projection dW = -eta G (I - M Lambda M^T). The SGD arms change two things at
+# once (AdamW -> SGD, and clipping -> none: clipping the hard-projected gradient would rescale
+# every step by a norm that includes the soft components), so this is an OPTIMIZER /
+# UPDATE-RULE coupling test. The strongest reading allowed is "the exact SGD update rule removes
+# the cost observed under our AdamW adaptation", never "AdamW alone is responsible".
+#
+# Every arm trains T4 only: from A800's stage2.pt, with A800's T3 memory and its lambda
+# (memory_task2.pt, SHA-checked against the run's stage-2 artifacts), on seq_ft's stream for
+# stage 3, 30k steps (warmup 100 + cosine), a fresh optimiser, the §7.4 freeze (registry weights
+# only, in every arm). Each evaluates all four tasks (50 paired episodes: the episode seeds are
+# the same at every stage, so every arm pairs with A800's stage-2 and stage-3 evaluations) and
+# the diagnostics' 16 fixed probe batches.
+#
+# Steps (the queue's numbering):
+#  0   aw_soft (AdamW, scaled, A800's lambda) = the REPRODUCTION GATE (1). It passes only if
+#      (a) every state-dict tensor equals A800's stage3.pt bitwise, (b) all four probe losses
+#      reproduce A800's diagnostics L[3][j] within probe_tolerance, (c) the final and the
+#      mean-last-50 training losses equal A800's (result.json) exactly, every per-100-step
+#      gradient_c / update_c of every layer equals A800's gpm_logs_task3.json exactly, and the
+#      601 logged losses (every 50 steps, as printed) equal A800's T4 step log. Failed: every
+#      later training step is skipped and the verdict is invalid_reproduction.
+#  2-3 AdamW pilots aw_free, aw_hard: the first pilot.steps steps of the 30k schedule, recording
+#      at every step t in calibration.window: ||G_t|| (AMP-unscaled, after the arm's hard
+#      gradient projection, before clipping, over the trainable registry tensors), ||dW_t|| (the
+#      realised step, after the method's post-step projection) and the schedule factor f_t.
+#      The matched SGD rate is eta = median_t ||dW_t|| / (f_t ||G_t||), AMP-skipped steps
+#      excluded: eta_free from aw_free, eta_proj from aw_hard. The per-layer implied rates are
+#      reported only (one global SGD rate is used).
+#  4-9 SGD pilots, loss only (nothing about the old tasks is built or recorded): sgd_free at
+#      pilot.scales x eta_free, sgd_hard at pilot.scales x eta_proj. Per scale: `diverged` (a
+#      non-finite training loss, or the T4 probe at the pilot's end >= at its start), `slow` (the
+#      T4 probe > pilot.slow_factor x the AdamW counterpart pilot's), else `viable`. Selected: 1x
+#      if viable, else the viable scale nearest to 1x on a log scale (ties -> the smaller); none
+#      -> that rate is not_viable and its arms are skipped. sgd_hard and sgd_soft SHARE eta_proj
+#      (matching them separately would remove the effect under test); sgd_free has its own
+#      rate because SGD does not renormalise the projected gradient.
+#  10  select: the rates frozen in an immutable bundle (selection.json + selection.done.json).
+#  11-17 arms aw_hard, aw_free, sgd_free, sgd_hard, sgd_soft (13, 15: the rate gates).
+#  18  summary, always.
+#
+# Quantities: the T4 probe loss L after 30k over the 16 matched probe batches; log ratios with
+# a joint matched-batch bootstrap (batch_bootstrap):
+#   gap_AW = ln(L_aw_hard / L_aw_free)   premise: hard projection costs T4 plasticity (CI > 0)
+#   c_AW   = ln(L_aw_soft / L_aw_hard)   `cost` (CI > 0) / `benefit` (CI < 0) / `none`
+#   c_SGD  = ln(L_sgd_soft / L_sgd_hard) `gain` (CI < 0) / `cost` (CI > 0) / `none`
+#   Delta  = c_SGD - c_AW
+# SGD viable: both rates selected and sgd_free's T4 success >= verdict.sgd_t4_threshold (the
+# seed's registered T4 threshold, checked against A800's sequence report). Retention guard:
+# sgd_soft's Spatial, Object and Goal after T4 each >= sgd_hard's - verdict.retention_tolerance
+# (point estimates), else the flag gain_with_forgetting.
+#
+# Verdict, first match:
+#   invalid_reproduction  the gate failed: no contrast is interpreted;
+#   no_projection_cost    gap_AW's CI is not above 0: no local plasticity gap to recover;
+#   no_t4_coupling_cost   c_AW is none or benefit: under AdamW the scaled projection costs
+#                         nothing against hard projection at T4, so A800's deficit against
+#                         adaptive GPM lies in its earlier stages;
+#   inconclusive_sgd      SGD is not viable;
+#   coupling_supported    Delta's CI is below 0 and the guard passes: the exact SGD update rule
+#                         removes the cost seen under our AdamW adaptation;
+#   mixed                 otherwise.
+# A quantity the verdict needs whose arms are missing (a crashed run, not a not-viable rate)
+# gives `incomplete` at that point of the order, never a finding.
+# The Q2 label (c_SGD) is reported separately: SGD viable and `none` means the scaled projection
+# at alpha 800 adds no T4 plasticity even under the exact update rule.
+#
+# Reported only: each arm's old-task change from the common stage-2 scores (paired episodes);
+# paired rollouts against A800 and adaptive GPM at stage 3; sgd_soft against A800 directly; the
+# realised T4 update split into the hard / scaled / free directions of A800's T3 memory;
+# gradient_c / update_c and residuals; the recorded step norms and per-layer implied rates.
+# Follow-up (not automatic): coupling_supported with Q2 `gain` -> plan the four-task SGD pair.
+
+seed: 0
+out: sgp_coupling                    # under results/
+
+source:                              # A800: adaptive SGP, alpha 800, seed 0 (code 383ee8b)
+  run: seq_hetero__sgp_projected_adam_a800_ne90__seed0
+  stage: 3                           # T4 is trained: start = stage2.pt, memory = memory_task2.pt
+  alpha: 800
+  eps: 0.95
+  new_energy_fraction: 0.9
+  diagnostics: forgetting_diag_sgp_a800_ne90_seed0/report.json
+  sequence_report: sgp_a800_seq_ne90_seed0/report.json
+  step_log: logs/queue_20260929_235100_sgp_a800_seed0/3_sgp_ne90_s0.log
+  sha256:                            # every reference, as it was when this rule was committed
+    start: fe0ff39ad95d762d8dd17a1a749acdfe54a1be62a2ae7ddbef13eecc9488b9ec
+    memory: c29dfbe82a168c1330062798a56d72252a70d489aaa193ba6853903e2ace323e
+    end: f38831e1668147523cf89b26635cfd4e0b9e94f153837bdaf9e52164e21ccbd3
+    gpm_logs: e6e8ec606769e08db62ceb3ad903680a616f8639a887b665f6827450e12bbb0b
+    result: 2e7d3923621cf8be782014996607587f98c70bc1e0db781bb84a453adcc2313a
+    diagnostics: 972f921956488d591bfb5be639b329dbb7d74153f65d081d0e7a8718bbc3a954
+    sequence_report: cf37c52df8fa8c7074851bd13dc2def8a3908d014d66bc3be50f581018f5f77d
+    step_log: 40f3b4e75ab1be16842e5d2aa26027a2f9487197b8ebc316d361ce39e32ed2f1
+
+recipe: {steps: 30000, lr: 1.0e-4}   # A800's own (= seq_ft's) recipe for the AdamW arms
+sgd_overrides: {optimizer: sgd, weight_decay: 0.0, grad_clip: null}   # vanilla SGD, unclipped
+
+arms:
+  aw_soft: {rule: adamw, projection: scaled}
+  aw_hard: {rule: adamw, projection: hard}
+  aw_free: {rule: adamw, projection: none}
+  sgd_free: {rule: sgd, projection: none, rate: free}
+  sgd_hard: {rule: sgd, projection: hard, rate: proj}
+  sgd_soft: {rule: sgd, projection: scaled, rate: proj}
+
+calibration:
+  window: [100, 1000]                # steps t with 100 <= t < 1000 (after the warmup)
+  rates: {free: aw_free, proj: aw_hard}   # SGD rate -> the AdamW pilot it is matched on
+
+pilot:
+  steps: 3000                        # the first 3,000 steps of the 30k schedule
+  scales: [0.5, 1.0, 2.0]
+  slow_factor: 2.0
+  sgd_arms: {free: sgd_free, proj: sgd_hard}
+
+verdict:
+  sgd_t4_threshold: 0.83             # seed 0's registered T4 threshold (threshold block)
+  retention_tolerance: 0.10
+
+probe_tolerance: {rtol: 1.0e-4, atol: 1.0e-7}   # as established by the optimizer study
+batch_bootstrap: {n_resamples: 10000, seed: 0, confidence: 0.95}

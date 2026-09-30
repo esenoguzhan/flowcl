@@ -44,6 +44,12 @@ class TrainConfig:
     # After the linear warmup: "cosine" decays to 0 over the remaining steps (the recipe of
     # every registered run); "constant" holds the peak learning rate (optimizer study).
     schedule: str = "cosine"
+    # "adamw" (every registered run) or "sgd": vanilla SGD, no momentum and no weight decay
+    # (the SGP update-rule coupling test). Clipping is still ``grad_clip``'s to set.
+    optimizer: str = "adamw"
+    # Train only the first ``stop_after`` steps of the ``steps``-step schedule (a pilot is
+    # then the exact prefix of the full run). ``None`` trains all ``steps``.
+    stop_after: int | None = None
 
 
 @dataclass
@@ -100,7 +106,19 @@ def build_optimizer(
 
     Decaying LayerNorm gains, biases and positional embeddings is a well-known way to
     quietly hurt a transformer, so they go in a separate group.
+
+    ``cfg.optimizer == "sgd"`` is vanilla SGD (``ΔW = −lr·G``): no momentum and no weight
+    decay, so a nonzero ``weight_decay`` is refused rather than silently dropped.
     """
+    if cfg.optimizer == "sgd":
+        if cfg.weight_decay != 0:
+            raise ValueError(
+                f"optimizer 'sgd' is vanilla SGD: weight_decay must be 0, got {cfg.weight_decay}"
+            )
+        params = [p for _, p in policy.named_parameters() if p.requires_grad]
+        return torch.optim.SGD(params, lr=cfg.lr, momentum=0.0, weight_decay=0.0)
+    if cfg.optimizer != "adamw":
+        raise ValueError(f"unknown optimizer {cfg.optimizer!r}")
     decay, no_decay = [], []
     for name, param in policy.named_parameters():
         if not param.requires_grad:
@@ -116,24 +134,25 @@ def build_optimizer(
     )
 
 
+def schedule_factor(cfg: TrainConfig, step: int) -> float:
+    """The multiplier of ``cfg.lr`` at optimiser step ``step`` (0-based)."""
+    import math
+
+    if cfg.warmup_steps > 0 and step < cfg.warmup_steps:
+        return (step + 1) / cfg.warmup_steps
+    if cfg.steps <= cfg.warmup_steps or cfg.schedule == "constant":
+        return 1.0
+    progress = (step - cfg.warmup_steps) / (cfg.steps - cfg.warmup_steps)
+    return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+
 def build_scheduler(
     optimizer: torch.optim.Optimizer, cfg: TrainConfig
 ) -> torch.optim.lr_scheduler.LRScheduler:
     """Linear warmup, then cosine decay (``schedule="cosine"``) or the peak held constant."""
-    import math
-
     if cfg.schedule not in ("cosine", "constant"):
         raise ValueError(f"unknown learning-rate schedule {cfg.schedule!r}")
-
-    def lr_lambda(step: int) -> float:
-        if cfg.warmup_steps > 0 and step < cfg.warmup_steps:
-            return (step + 1) / cfg.warmup_steps
-        if cfg.steps <= cfg.warmup_steps or cfg.schedule == "constant":
-            return 1.0
-        progress = (step - cfg.warmup_steps) / (cfg.steps - cfg.warmup_steps)
-        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: schedule_factor(cfg, step))
 
 
 def move_batch(batch: dict, device: torch.device) -> dict:
@@ -155,7 +174,8 @@ def train_one_task(
     on_step: Callable[[int, dict], None] | None = None,
     context=None,
 ) -> TrainLog:
-    """Train ``policy`` on one task's ``dataset`` for ``cfg.steps`` optimiser steps.
+    """Train ``policy`` on one task's ``dataset`` for ``cfg.steps`` optimiser steps (only the
+    first ``cfg.stop_after`` of them, if set).
 
     Args:
         policy: The policy to train, already on the target device.
@@ -180,6 +200,9 @@ def train_one_task(
 
     if method is None:
         method = SeqFT()
+    n_steps = cfg.steps if cfg.stop_after is None else int(cfg.stop_after)
+    if not 1 <= n_steps <= cfg.steps:
+        raise ValueError(f"stop_after must lie in [1, steps={cfg.steps}], got {cfg.stop_after}")
 
     device = torch.device(cfg.device)
     policy.to(device)
@@ -212,7 +235,7 @@ def train_one_task(
     log = TrainLog()
     started = time.perf_counter()
 
-    for step in range(cfg.steps):
+    for step in range(n_steps):
         optimizer.zero_grad(set_to_none=True)
         accumulated = 0.0
 
@@ -272,7 +295,7 @@ def train_one_task(
 
         if on_step is not None:
             on_step(step, outputs)
-        if cfg.log_every and (step % cfg.log_every == 0 or step == cfg.steps - 1):
+        if cfg.log_every and (step % cfg.log_every == 0 or step == n_steps - 1):
             print(
                 f"[flowcl] step {step + 1}/{cfg.steps} loss {mean_loss:.6f} "
                 f"lr {scheduler.get_last_lr()[0]:.2e}",

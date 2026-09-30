@@ -16,7 +16,8 @@ and adaptive GPM of the same seed.
 Reliability: every stage is written into a sibling attempt directory and published by one
 atomic rename once complete (``row.json`` last); a published stage is re-validated before
 reuse (configuration and checkpoint SHA-256) and never overwritten; abandoned attempts are
-ignored and listed. :func:`train_stage` is shared with :mod:`flowcl.experiments.projection_pilot`.
+ignored and listed. :func:`train_stage` is shared with :mod:`flowcl.experiments.projection_pilot`;
+:func:`pilot_stage` (loss only, no rollouts) with :mod:`flowcl.experiments.sgp_coupling`.
 """
 
 from __future__ import annotations
@@ -179,6 +180,8 @@ def load_published(out_dir: Path, expect: dict) -> dict | None:
     bad = {k: (row.get(k), v) for k, v in expect.items() if row.get(k) != v}
     if bad:
         raise ValueError(f"{out_dir}: published run is incompatible with this configuration: {bad}")
+    if row["checkpoint"] is None:  # a loss-only pilot keeps no checkpoint
+        return row
     ckpt = out_dir / row["checkpoint"]
     if file_sha256(ckpt) != row["checkpoint_sha256"]:
         raise ValueError(f"{ckpt}: SHA-256 differs from the one recorded at publication")
@@ -186,6 +189,56 @@ def load_published(out_dir: Path, expect: dict) -> dict | None:
 
 
 # ---- one stage ----------------------------------------------------------------------------------
+
+
+@dataclass
+class StageSetup:
+    start: object         # the loaded start checkpoint (its policy and frozen stats)
+    parent_sha: str
+    datasets: dict        # task index -> dataset
+    train_cfg: object
+    run: object           # the attempt run directory
+    context: object
+    generator: torch.Generator
+
+
+def stage_setup(ctx: SeedContext, stage: int, steps: int, lr: float, start_checkpoint: Path,
+                out_dir: Path, run_id: str, expect: dict, *, tasks, train_overrides: dict | None,
+                device: str, dataset_dir: Path | None, build_datasets: Callable | None) -> StageSetup:
+    """What every stage run shares: the start checkpoint (with its frozen stats), the datasets
+    of ``tasks``, the ``TrainConfig`` (the reference's recipe plus ``train_overrides``), the
+    attempt run directory, the method context, and seq_ft's stream generator for ``stage``."""
+    from flowcl.methods.base import TaskContext
+    from flowcl.train.checkpoint import load_checkpoint
+    from flowcl.train.pipeline import build_dataset
+    from flowcl.train.trainer import TrainConfig
+    from flowcl.utils.run import create_run
+
+    parent_sha = file_sha256(start_checkpoint)
+    start = load_checkpoint(start_checkpoint, device=device)
+    spec, stats = start.spec, start.stats  # the checkpoint's frozen stats
+    stages = ctx.curriculum.stages
+    make = build_datasets or (lambda st: build_dataset([st.ref], spec, stats, n_demos=st.n_demos,
+                                                       dataset_dir=dataset_dir))
+    datasets = {j: make(stages[j]) for j in tasks}
+    train_cfg = TrainConfig(**{**ctx.ref_config["train"], **(train_overrides or {}),
+                               "steps": int(steps), "lr": float(lr), "device": device})
+    run = create_run(
+        run_id=run_id,
+        cfg=OmegaConf.create({
+            **expect, "task_key": stages[stage].task_key, "reference_run": ctx.ref_dir.name,
+            "parent": {"path": str(start_checkpoint), "sha256": parent_sha},
+            "train": dataclasses.asdict(train_cfg),
+            "stream_seed": {"namespace": ctx.namespace, "stage": stage},
+        }),
+        seed=ctx.seed, results_root=attempt_parent(out_dir),
+    )
+    context = TaskContext(task_key=stages[stage].task_key, dataset=datasets[stage], device=device,
+                          seed_namespace_run_id=ctx.namespace, method_run_id=run_id)
+    generator = torch.Generator(device="cpu").manual_seed(
+        stage_seed(ctx.namespace, stages[stage].task_key, stage))
+    return StageSetup(start=start, parent_sha=parent_sha, datasets=datasets, train_cfg=train_cfg,
+                      run=run, context=context, generator=generator)
 
 
 def train_stage(
@@ -215,11 +268,8 @@ def train_stage(
     ``extra_row(policy, method, start_state) -> dict`` adds fields before ``row.json``.
     """
     from flowcl.analysis.probes import probe_loss
-    from flowcl.methods.base import TaskContext
-    from flowcl.train.checkpoint import load_checkpoint, save_checkpoint
-    from flowcl.train.pipeline import build_dataset
-    from flowcl.train.trainer import TrainConfig, train_one_task
-    from flowcl.utils.run import create_run
+    from flowcl.train.checkpoint import save_checkpoint
+    from flowcl.train.trainer import train_one_task
 
     expect = {"run_id": run_id, "seed": ctx.seed, "stage": stage, "namespace": ctx.namespace,
               "steps": int(steps), "lr": float(lr), "method": method_spec}
@@ -232,39 +282,21 @@ def train_stage(
     if evaluator is None:
         evaluator, bootstrap = default_evaluator()
 
-    parent_sha = file_sha256(start_checkpoint)
-    start = load_checkpoint(start_checkpoint, device=device)
-    policy, spec, stats = start.policy, start.spec, start.stats  # the checkpoint's frozen stats
+    st = stage_setup(ctx, stage, steps, lr, start_checkpoint, out_dir, run_id, expect,
+                     tasks=range(stage + 1), train_overrides=train_overrides, device=device,
+                     dataset_dir=dataset_dir, build_datasets=build_datasets)
+    policy, spec, stats, datasets, run = st.start.policy, st.start.spec, st.start.stats, st.datasets, st.run
     stages = ctx.curriculum.stages
-    make = build_datasets or (lambda st: build_dataset([st.ref], spec, stats, n_demos=st.n_demos,
-                                                       dataset_dir=dataset_dir))
-    datasets = {j: make(stages[j]) for j in range(stage + 1)}
-    train_cfg = TrainConfig(**{**ctx.ref_config["train"], **(train_overrides or {}),
-                               "steps": int(steps), "lr": float(lr), "device": device})
-    run = create_run(
-        run_id=run_id,
-        cfg=OmegaConf.create({
-            **expect, "task_key": stages[stage].task_key, "reference_run": ctx.ref_dir.name,
-            "parent": {"path": str(start_checkpoint), "sha256": parent_sha},
-            "train": dataclasses.asdict(train_cfg),
-            "stream_seed": {"namespace": ctx.namespace, "stage": stage},
-        }),
-        seed=ctx.seed, results_root=attempt_parent(out_dir),
-    )
     method = setup_method(policy) if setup_method else None
     start_state = ({k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
                    if extra_row else None)
-    context = TaskContext(task_key=stages[stage].task_key, dataset=datasets[stage], device=device,
-                          seed_namespace_run_id=ctx.namespace, method_run_id=run_id)
-    generator = torch.Generator(device="cpu").manual_seed(
-        stage_seed(ctx.namespace, stages[stage].task_key, stage))
     started = time.perf_counter()
-    log = train_one_task(policy, datasets[stage], train_cfg, method=method, task_idx=stage,
-                         generator=generator, context=context)
+    log = train_one_task(policy, datasets[stage], st.train_cfg, method=method, task_idx=stage,
+                         generator=st.generator, context=st.context)
     wall = time.perf_counter() - started
     atomic_write_text(run.artifact("losses.json"), json.dumps(log.losses) + "\n")
     ckpt = save_checkpoint(run.subdir("checkpoints") / "final.pt", policy=policy,
-                           policy_config=start.payload["policy_config"], spec=spec, stats=stats,
+                           policy_config=st.start.payload["policy_config"], spec=spec, stats=stats,
                            run_id=run_id, stage=stage, task_key=stages[stage].task_key,
                            extra={"steps": int(steps), "lr": float(lr), "method": method_spec})
     extra = extra_row(policy, method, start_state) if extra_row else {}
@@ -273,7 +305,8 @@ def train_stage(
     report = evaluator(policy, [stages[j].ref for j in range(stage + 1)], spec, stats,
                        run_id=ctx.namespace, stage=stage)
     report.save(run.artifact("eval.json"))
-    del policy, start
+    parent_sha = st.parent_sha
+    del policy, st
     _free(device)
     cells = stage_cells(ctx, stage, report, probes, bootstrap)
     row = {
@@ -291,6 +324,76 @@ def train_stage(
     publish(run.path, out_dir)
     print(f"[flowcl] {run_id}: " + ", ".join(
         f"{c['task_key'].split('/')[0]} {c['success']:.2f}" for c in cells.values()), flush=True)
+    return row
+
+
+def pilot_stage(
+    ctx: SeedContext,
+    stage: int,
+    steps: int,
+    lr: float,
+    start_checkpoint: Path,
+    out_dir: Path,
+    run_id: str,
+    *,
+    stop_after: int,
+    method_spec: dict | None = None,
+    train_overrides: dict | None = None,
+    setup_method: Callable | None = None,
+    extra_row: Callable | None = None,
+    device: str = "cuda",
+    dataset_dir: Path | None = None,
+    build_datasets: Callable | None = None,
+) -> dict:
+    """Loss only: the first ``stop_after`` steps of task ``stage``'s ``steps``-step schedule.
+
+    Same setup, recipe and stream as :func:`train_stage` (so a pilot is the prefix of the full
+    run), but no rollouts and no checkpoint, and only task ``stage``'s data is built: the row
+    holds the training losses and that task's probe loss before and after, nothing about any
+    other task. ``extra_row(policy, method, None) -> dict`` adds fields. Published atomically.
+    """
+    from flowcl.analysis.probes import probe_loss
+    from flowcl.train.trainer import train_one_task
+
+    overrides = {**(train_overrides or {}), "stop_after": int(stop_after)}
+    expect = {"run_id": run_id, "kind": "pilot", "seed": ctx.seed, "stage": stage,
+              "namespace": ctx.namespace, "steps": int(steps), "lr": float(lr),
+              "method": method_spec, "train_overrides": overrides}
+    published = load_published(out_dir, expect)
+    if published is not None:
+        print(f"[flowcl] {run_id}: published and valid, reused", flush=True)
+        return published
+
+    st = stage_setup(ctx, stage, steps, lr, start_checkpoint, out_dir, run_id, expect,
+                     tasks=[stage], train_overrides=overrides, device=device,
+                     dataset_dir=dataset_dir, build_datasets=build_datasets)
+    policy, dataset = st.start.policy, st.datasets[stage]
+    method = setup_method(policy) if setup_method else None
+    start_probe = probe_loss(policy, dataset, ctx.probe, device)
+    started = time.perf_counter()
+    log = train_one_task(policy, dataset, st.train_cfg, method=method, task_idx=stage,
+                         generator=st.generator, context=st.context)
+    wall = time.perf_counter() - started
+    atomic_write_text(st.run.artifact("losses.json"), json.dumps(log.losses) + "\n")
+    extra = extra_row(policy, method, None) if extra_row else {}
+    end_probe = probe_loss(policy, dataset, ctx.probe, device)
+    row = {
+        **expect, "task_key": ctx.curriculum.stages[stage].task_key, "git_sha": git_sha(),
+        "parent": {"path": str(start_checkpoint), "sha256": st.parent_sha},
+        "checkpoint": None,
+        "losses_finite": all(math.isfinite(x) for x in log.losses),
+        "probe": {"start": start_probe, "end": end_probe},
+        "training": {"steps": log.steps, "final_loss": log.final_loss,
+                     "mean_last_50_loss": log.mean_last(50), "wall_clock_s": wall},
+        **extra,
+    }
+    run_path = st.run.path
+    atomic_write_text(st.run.artifact("row.json"), json.dumps(row, indent=2) + "\n")
+    del policy, st, dataset
+    _free(device)
+    publish(run_path, out_dir)
+    print(f"[flowcl] {run_id}: probe {start_probe:.4f} -> {end_probe:.4f} after {log.steps} steps",
+          flush=True)
     return row
 
 

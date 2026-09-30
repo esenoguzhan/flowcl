@@ -249,6 +249,55 @@ def test_adamw_steps_keep_exactly_one_minus_lambda_along_each_basis():
     assert moved[0] < 1e-5 and moved[1] > 1e-4 and moved[2] > 1e-4
 
 
+def one_step(model, method, opt, clip=None, seed=1):
+    """One trainer-ordered step (gradient hook, clip, optimizer, post-step hook): the raw
+    gradient and the applied update."""
+    g = torch.Generator().manual_seed(seed)
+    x, y = torch.randn(32, 6, generator=g), torch.randn(32, 4, generator=g)
+    opt.zero_grad()
+    ((model.a(x) - y) ** 2).mean().backward()
+    raw = model.a.weight.grad.detach().clone().double()
+    method.modify_gradients(model, {"step": 0, "task_idx": 1})
+    if clip is not None:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+    before = model.a.weight.detach().clone()
+    opt.step()
+    method.after_step(model, {"step": 0, "task_idx": 1})
+    return raw, (model.a.weight.detach() - before).double()
+
+
+def test_under_vanilla_sgd_the_adaptation_is_exactly_the_scaled_projection():
+    """The coupling test's premise: hard removal before the step plus scaling after it equals
+    ``-eta G (I - M Lambda M^T)`` for vanilla SGD, unclipped. Clipping (on the hard-projected
+    gradient) rescales by a norm that includes the soft components; AdamW is not a scaled step."""
+    basis, _ = basis_for(6, 3)
+    lam = [1.0, 0.6, 0.1]
+    M = basis.basis(0.95).to(torch.float64)
+    P = torch.eye(6, dtype=torch.float64) - M @ torch.diag(torch.tensor(lam, dtype=torch.float64)) @ M.T
+    P_grad = torch.eye(6, dtype=torch.float64) - M[:, :1] @ M[:, :1].T
+    lr = 0.05
+
+    model = Toy()
+    raw, applied = one_step(model, sgp_for(model, basis, lam=lam),
+                            torch.optim.SGD(model.parameters(), lr=lr, momentum=0.0))
+    torch.testing.assert_close(applied, -lr * raw @ P, atol=1e-6, rtol=0)
+
+    model = Toy()
+    raw, applied = one_step(model, sgp_for(model, basis, lam=lam),
+                            torch.optim.SGD(model.parameters(), lr=lr, momentum=0.0), clip=1e-3)
+    clipped_by = 1e-3 / float((raw @ P_grad).norm())   # the norm the trainer's clip sees
+    exact = 1e-3 / float((raw @ P).norm())              # the scaled gradient's own norm
+    torch.testing.assert_close(applied, -lr * clipped_by * raw @ P, atol=1e-7, rtol=1e-4)
+    assert clipped_by < 0.9 * exact
+
+    model = Toy()
+    raw, applied = one_step(model, sgp_for(model, basis, lam=lam),
+                            torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0))
+    target = -lr * raw @ P
+    scale = float((applied * target).sum() / (target * target).sum())
+    assert float((applied - scale * target).norm()) > 0.1 * float(applied.norm())
+
+
 def test_residual_check_catches_an_unscaled_update():
     basis, _ = basis_for(6, 2)
     model = Toy()
