@@ -307,6 +307,30 @@ def test_selection_run_must_match_the_frozen_configuration(spec, tmp_path):
                                evaluator=stub_evaluator, bootstrap=BOOT)
 
 
+def test_warm_cache_trains_from_the_runners_text_cache_state(spec, tmp_path):
+    """The runner has encoded a task's instruction (fp32 rollouts) before the task trains; the
+    opt-in warm-up recreates that before the method is set up, and is part of the recipe."""
+    cfg, build = fake_world(tmp_path, spec, seeds=(0,))
+    ctx = lu.seed_context(cfg, 0, tmp_path)
+    start = tmp_path / "seq_hetero__seq_ft__seed0" / "checkpoints" / "stage0.pt"
+    seen = {}
+
+    def record(name):
+        def setup(policy):
+            seen[name] = sorted(policy.text_encoder._cache)
+        return setup
+
+    common = dict(evaluator=stub_evaluator, bootstrap=BOOT, device="cpu", build_datasets=build)
+    warm = lu.train_stage(ctx, 1, 2, 3e-5, start, tmp_path / "w", "w", setup_method=record("warm"),
+                          warm_cache=True, **common)
+    lu.train_stage(ctx, 1, 2, 3e-5, start, tmp_path / "c", "c", setup_method=record("cold"), **common)
+    assert seen == {"warm": [f"do {KEYS[1]}"], "cold": []}
+    assert warm["warm_text_cache"] is True
+    with pytest.raises(ValueError, match="incompatible"):  # a cold run is never reused as warm
+        lu.train_stage(ctx, 1, 2, 3e-5, start, tmp_path / "c", "c", warm_cache=True, **common)
+    assert lu.warm_text_cache(tiny_policy(spec), build(ctx.curriculum.stages[2]), "cpu") == [f"do {KEYS[2]}"]
+
+
 # ---- the projection pilot ---------------------------------------------------------------------
 
 

@@ -281,7 +281,7 @@ def world(tmp_path, spec):
     row = lu.train_stage(ctx, 3, 6, 1e-3, paths["start"], boot, "standin", method_spec={"standin": 1},
                          setup_method=sc.make_arm_method(cfg["arms"]["aw_soft"], cfg, paths),
                          extra_row=extra, evaluator=stub_evaluator, bootstrap=BOOT, device="cpu",
-                         build_datasets=build)
+                         build_datasets=build, warm_cache=True)  # the runner's text-cache state
     shutil.copy(boot / "checkpoints" / "final.pt", paths["end"])
     paths["gpm_logs"].write_text(json.dumps({key: {str(s): v for s, v in captured[key].items()}
                                              for key in ("gradient_c", "update_c")}))
@@ -351,6 +351,7 @@ def test_gate_pilots_selection_arms_and_summary_end_to_end(spec, tmp_path, monke
         assert p["lr"] == pytest.approx(cal[p["method"]["rate"]]["eta"] * p["method"]["scale"])
         assert "cells" not in p and set(p["probe"]) == {"start", "end"}  # T4 only
         assert p["training"]["steps"] == 3 and p["train_overrides"]["grad_clip"] is None
+        assert p["warm_text_cache"] is True
     sel = sc.run_select(cfg, results_root=tmp_path)
     assert all(r["selected_scale"] == 1.0 and r["status"] == "selected" for r in sel["rates"].values())
     _, sha = sc.load_selection(tmp_path / "sgp_coupling")
@@ -362,6 +363,7 @@ def test_gate_pilots_selection_arms_and_summary_end_to_end(spec, tmp_path, monke
         assert m["selection_sha256"] == sha and done[a]["train_overrides"] == cfg["sgd_overrides"]
         assert m["lr"] == sel["rates"][m["rate"]]["lr"]
     assert done["sgd_hard"]["lr"] == done["sgd_soft"]["lr"]
+    assert all(r["warm_text_cache"] is True for r in done.values())
     assert done["aw_hard"]["update_split"]["trunk"]["memory"] < 1e-2 * done["aw_hard"]["update_split"]["trunk"]["total"]
     assert done["sgd_soft"]["update_split"]["trunk"]["hard"] < 1e-2 * done["sgd_soft"]["update_split"]["trunk"]["total"]
     assert done["aw_free"]["update_split"]["trunk"]["memory"] > 0 and "projection_logs" not in done["aw_free"]

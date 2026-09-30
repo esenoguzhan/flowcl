@@ -202,12 +202,30 @@ class StageSetup:
     generator: torch.Generator
 
 
+def warm_text_cache(policy, dataset, device: str) -> list[str]:
+    """Encode ``dataset``'s instructions once, in fp32 and one string per call, before training.
+
+    That is the state the continual runner trains a stage in: it evaluates every task after
+    every stage, so a task's instruction is first encoded (and cached, see
+    :class:`flowcl.models.encoders.CachedTextEncoder`) by fp32 rollouts before the task trains.
+    A fresh process would first encode it inside an AMP training step instead, and the cached
+    embedding would differ in its last bits, enough for the trajectory to drift from step 0.
+    """
+    texts = sorted({episode.language for episode in dataset.episodes})
+    with torch.no_grad(), torch.autocast(device_type=torch.device(device).type, enabled=False):
+        for text in texts:
+            policy.text_encoder([text])
+    return texts
+
+
 def stage_setup(ctx: SeedContext, stage: int, steps: int, lr: float, start_checkpoint: Path,
                 out_dir: Path, run_id: str, expect: dict, *, tasks, train_overrides: dict | None,
-                device: str, dataset_dir: Path | None, build_datasets: Callable | None) -> StageSetup:
+                device: str, dataset_dir: Path | None, build_datasets: Callable | None,
+                warm_cache: bool = False) -> StageSetup:
     """What every stage run shares: the start checkpoint (with its frozen stats), the datasets
     of ``tasks``, the ``TrainConfig`` (the reference's recipe plus ``train_overrides``), the
-    attempt run directory, the method context, and seq_ft's stream generator for ``stage``."""
+    attempt run directory, the method context, and seq_ft's stream generator for ``stage``.
+    ``warm_cache`` runs :func:`warm_text_cache` on the stage's dataset (the runner's state)."""
     from flowcl.methods.base import TaskContext
     from flowcl.train.checkpoint import load_checkpoint
     from flowcl.train.pipeline import build_dataset
@@ -237,6 +255,8 @@ def stage_setup(ctx: SeedContext, stage: int, steps: int, lr: float, start_check
                           seed_namespace_run_id=ctx.namespace, method_run_id=run_id)
     generator = torch.Generator(device="cpu").manual_seed(
         stage_seed(ctx.namespace, stages[stage].task_key, stage))
+    if warm_cache:
+        warm_text_cache(start.policy, datasets[stage], device)
     return StageSetup(start=start, parent_sha=parent_sha, datasets=datasets, train_cfg=train_cfg,
                       run=run, context=context, generator=generator)
 
@@ -259,13 +279,15 @@ def train_stage(
     device: str = "cuda",
     dataset_dir: Path | None = None,
     build_datasets: Callable | None = None,
+    warm_cache: bool = False,
 ) -> dict:
     """Train task ``stage`` from ``start_checkpoint``; evaluate tasks ``0..stage``; publish.
 
     ``train_overrides`` (optional) replaces further ``TrainConfig`` fields (batch size, weight
     decay, schedule) and becomes part of the recipe a published run must match;
     ``setup_method(policy) -> method`` (optional) runs before training (freezing or projection);
-    ``extra_row(policy, method, start_state) -> dict`` adds fields before ``row.json``.
+    ``extra_row(policy, method, start_state) -> dict`` adds fields before ``row.json``;
+    ``warm_cache`` (recorded) trains from the runner's text-cache state (:func:`warm_text_cache`).
     """
     from flowcl.analysis.probes import probe_loss
     from flowcl.train.checkpoint import save_checkpoint
@@ -275,6 +297,8 @@ def train_stage(
               "steps": int(steps), "lr": float(lr), "method": method_spec}
     if train_overrides is not None:
         expect["train_overrides"] = dict(train_overrides)
+    if warm_cache:
+        expect["warm_text_cache"] = True
     published = load_published(out_dir, expect)
     if published is not None:
         print(f"[flowcl] {run_id}: published and valid, reused", flush=True)
@@ -284,7 +308,7 @@ def train_stage(
 
     st = stage_setup(ctx, stage, steps, lr, start_checkpoint, out_dir, run_id, expect,
                      tasks=range(stage + 1), train_overrides=train_overrides, device=device,
-                     dataset_dir=dataset_dir, build_datasets=build_datasets)
+                     dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache=warm_cache)
     policy, spec, stats, datasets, run = st.start.policy, st.start.spec, st.start.stats, st.datasets, st.run
     stages = ctx.curriculum.stages
     method = setup_method(policy) if setup_method else None
@@ -344,13 +368,15 @@ def pilot_stage(
     device: str = "cuda",
     dataset_dir: Path | None = None,
     build_datasets: Callable | None = None,
+    warm_cache: bool = False,
 ) -> dict:
     """Loss only: the first ``stop_after`` steps of task ``stage``'s ``steps``-step schedule.
 
     Same setup, recipe and stream as :func:`train_stage` (so a pilot is the prefix of the full
     run), but no rollouts and no checkpoint, and only task ``stage``'s data is built: the row
     holds the training losses and that task's probe loss before and after, nothing about any
-    other task. ``extra_row(policy, method, None) -> dict`` adds fields. Published atomically.
+    other task. ``extra_row(policy, method, None) -> dict`` adds fields; ``warm_cache`` as for
+    :func:`train_stage`. Published atomically.
     """
     from flowcl.analysis.probes import probe_loss
     from flowcl.train.trainer import train_one_task
@@ -359,6 +385,8 @@ def pilot_stage(
     expect = {"run_id": run_id, "kind": "pilot", "seed": ctx.seed, "stage": stage,
               "namespace": ctx.namespace, "steps": int(steps), "lr": float(lr),
               "method": method_spec, "train_overrides": overrides}
+    if warm_cache:
+        expect["warm_text_cache"] = True
     published = load_published(out_dir, expect)
     if published is not None:
         print(f"[flowcl] {run_id}: published and valid, reused", flush=True)
@@ -366,7 +394,7 @@ def pilot_stage(
 
     st = stage_setup(ctx, stage, steps, lr, start_checkpoint, out_dir, run_id, expect,
                      tasks=[stage], train_overrides=overrides, device=device,
-                     dataset_dir=dataset_dir, build_datasets=build_datasets)
+                     dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache=warm_cache)
     policy, dataset = st.start.policy, st.datasets[stage]
     method = setup_method(policy) if setup_method else None
     start_probe = probe_loss(policy, dataset, ctx.probe, device)

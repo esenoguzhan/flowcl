@@ -15,6 +15,11 @@ also drop clipping, so this is an update-rule coupling test, not a test of AdamW
 4. :func:`run_arm` for the other five arms (published through
    :func:`flowcl.experiments.low_update.train_stage`);
 5. :func:`run_summary`, always: :func:`log_ratio_ci`, :func:`classify`, :func:`importance_split`.
+
+Every arm and pilot trains from the runner's text-cache state
+(:func:`flowcl.experiments.low_update.warm_text_cache`): the runner's stage-2 evaluation encoded
+T4's instruction in fp32 before T4 trained. Without it, the first attempt's gate failed (the
+first loss differed in its 6th digit); with it, A800's first 101 steps reproduce bitwise.
 """
 
 from __future__ import annotations
@@ -591,7 +596,7 @@ def run_arm(cfg: dict, name: str, results_root=None, device="cuda", allow_dirty=
                              "lr": lr, **spec},
         train_overrides=overrides, setup_method=make_arm_method(arm, cfg, paths),
         extra_row=arm_extra(cfg, paths, reference_logs), evaluator=evaluator, bootstrap=bootstrap,
-        device=device, dataset_dir=dataset_dir, build_datasets=build_datasets,
+        device=device, dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache=True,
     )
     if name == GATE_ARM:
         gate = reproduction_gate(cfg, root, row, out_dir)
@@ -638,7 +643,7 @@ def run_pilot(cfg: dict, name: str, scale: float | None = None, results_root=Non
         pilot_run_id(name, cfg["seed"], scale), stop_after=stop,
         method_spec={"arm": name, "rule": arm["rule"], "projection": arm["projection"], "lr": lr, **spec},
         train_overrides=overrides, setup_method=setup, extra_row=extra, device=device,
-        dataset_dir=dataset_dir, build_datasets=build_datasets,
+        dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache=True,
     )
 
 
