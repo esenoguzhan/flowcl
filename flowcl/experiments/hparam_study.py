@@ -183,13 +183,19 @@ class ProbeBank:
 Evaluator = Callable  # (policy, refs, spec, stats, run_id, stage) -> EvaluationReport
 
 
-def default_evaluator() -> tuple[Evaluator, dict]:
-    """§8.1 rollouts with the registered eval config, and its bootstrap settings."""
+def default_evaluator(n_episodes: int | None = None) -> tuple[Evaluator, dict]:
+    """§8.1 rollouts with the registered eval config, and its bootstrap settings.
+
+    ``n_episodes`` overrides the rollout count (smoke runs only)."""
+    import dataclasses
+
     from flowcl.envs.evaluation import eval_config_from_dict, evaluate_tasks
 
     payload = OmegaConf.to_container(
         OmegaConf.load(repo_root() / "configs" / "eval" / "libero_eval.yaml"), resolve=True)
     eval_cfg = eval_config_from_dict(payload)
+    if n_episodes is not None:
+        eval_cfg = dataclasses.replace(eval_cfg, n_episodes=int(n_episodes))
     bootstrap = payload["bootstrap"]
 
     def evaluate(policy, refs, spec, stats, run_id, stage):

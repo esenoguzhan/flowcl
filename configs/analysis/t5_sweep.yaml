@@ -1,0 +1,136 @@
+# T5 saturation stress test: an SGP alpha sweep from adaptive GPM's post-T4 state (seed 0).
+# EXPLORATORY: one seed, one new task, no claim level. Committed before any sweep run.
+# Evaluated by scripts/t5_sweep.py; queued by scripts/queue_t5_sweep.sh. The seed context (seq_ft
+# namespace, references, fixed probe) comes from configs/analysis/low_update.yaml, extended by
+# configs/curriculum/seq_hetero_t5.yaml (seq_hetero's four stages, then T5).
+#
+# Question: once the hard-projection memory is nearly full (adaptive GPM after T4: trunk
+# occupancy about 0.99), does switching to SGP (our AdamW adaptation) at some alpha learn a new
+# task better than hard projection while keeping T1-T4? Every arm starts from the SAME weights
+# (adaptive GPM's stage3.pt) and the SAME memory, so this tests a LOCAL, saturation-triggered
+# GPM -> SGP switch, not an SGP sequence run from T1. A full method claim would need an
+# eight-task SGP-from-T1 run or a pre-registered capacity-triggered switch.
+#
+# Prediction (from docs/runs/2026-10-01_sgp_coupling.md, stated before any run): under AdamW,
+# high alpha (800, 1600) fits T5 WORSE than hard projection (the scaled directions take Adam's
+# step budget); alpha 25 fits better but forgets more.
+#
+# Step 0, REPLAY (a gate): adaptive GPM's memory is rebuilt with SGP's update rule, stage by
+# stage, from its own stage checkpoints, capture seeds and text-cache state (T1's instruction
+# encoded under AMP, as in T1's training; later ones in fp32, as by the runner's evaluations).
+# Reported: the memory equals adaptive GPM's memory_task{t}.pt bitwise. GATE, per task and layer:
+# identical dimensions, ranks and k_added; residual spectra within replay.spectrum_rtol; the
+# projector M M^T within replay.projector_rtol; the smallest principal-angle cosine >=
+# 1 - replay.cosine_atol; and the protected operator Q = M Lambda M^T, for lambda = 1 and every
+# sweep alpha, with ||Q_replay - Q_N|| / max(||Q_N||, replay.operator_floor) <= replay.operator_rtol,
+# Q_N carrying the replay's lambdas over by a one-to-one column assignment
+# (scipy linear_sum_assignment on |cos|). Recomputing lambda at the replay's own alpha must give
+# the replay's lambda exactly. Failed -> replay_invalid; no arm trains; the summary still runs.
+# Every arm uses the REPLAYED memory (hard included). lambda(alpha) for each arm is Eq. 2/10
+# recomputed from the replay's per-task sigma' (they do not depend on alpha).
+# Also recorded (a design input, reported only): T5's input Gram at the start state, giving T5's
+# free-energy fraction and each alpha's nominal scaled pass-through sum((1 - lambda) m^T K m) / tr K.
+#
+# Arms (AdamW recipe, 30k steps, stream seed derive_seed(namespace, T5, 4), the §7.4 freeze; all
+# five tasks evaluated, 50 episodes paired under the seq_ft namespace, T1-T4 pairing with
+# adaptive GPM's stage-3 evaluation; the 16 fixed probe batches): free (no projection), hard (GPM,
+# lambda = 1), sgp_a{25,100,400,800,1600}.
+#
+# Per alpha, against hard. PROMISING only if all three hold:
+#   (1) the paired T5 success gain >= rule.t5_gain and its CI's lower bound > 0;
+#   (2) ln(L5_alpha / L5_hard) has its CI's upper bound < 0 (matched probe batches);
+#   (3) each of T1-T4 >= hard's - rule.retention_tolerance (point estimates).
+# Several promising: the largest T5 gain; ties -> the lower T5 probe loss, then the larger alpha;
+# frozen in an immutable bundle. EFFECTIVELY HARD (nominal, per alpha): its scaled pass-through
+# on T5's start Gram < nominal.effectively_hard_ratio x T5's free-energy fraction, in both halves.
+#
+# Verdict, first match: replay_invalid; incomplete (an arm is missing); alpha_found (an alpha
+# that clearly beats hard projection is reported even if the free arm does not separately
+# establish the saturation cost); no_detected_saturation_cost (ln(L5_hard / L5_free)'s CI is not
+# above 0 -- not proof that there is none); accumulation_limited (none promising, and every
+# alpha >= rule.hard_alpha_min effectively hard: Eq. 10's accumulation leaves no soft headroom, a
+# fix would be a new SGP variant); none_passes (no tested alpha meets the plasticity-retention
+# criteria on this T5 transition; this alpha sweep stops -- one task and one seed do not settle
+# SGP in general). The premise ln(L5_hard / L5_free) is reported with every verdict.
+#
+# Reported only: retention_borderline (per alpha and old task, when the paired CI of
+# alpha - hard contains -rule.retention_tolerance); the Pareto sets (T5 against mean T1-T4,
+# success and probe); the change from the start; the realised update split; lambda statistics;
+# update_c and residuals; the coupling prediction.
+#
+# Follow-up (not automatic): alpha_found -> continue the frozen alpha as the GPM -> SGP hybrid
+# through follow_up's T6-T8 and validate the local intervention from adaptive GPM seeds 1-2's
+# post-T4 states (their own replays). follow_up is fixed here, before any T5 result, and is not
+# used by this sweep.
+
+seed: 0
+out: t5_sweep                        # under results/
+curriculum: seq_hetero_t5
+
+t5:
+  stage: 4
+  task_key: libero_10/STUDY_SCENE1_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy
+  backup: libero_10/KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+  gate0:
+    report: gate0_t5/gate0.json      # scripts/gate0.py --tasks <T5> --amp --out-dir results/gate0_t5
+    sha256: 9fd7368ebbaae20c4836d61b98093e962cc68cdaae351dad40ea0734f332e786   # 88% [78, 96]: pass (point estimate; borderline CI)
+    threshold: 0.80
+    margin: 0.15                     # T5's descriptive plasticity threshold = its Gate-0 success - margin
+
+source:                              # adaptive GPM, seed 0 (code 9701620)
+  run: seq_hetero__gpm_projected_adam_ne90__seed0
+  eps: 0.95
+  new_energy_fraction: 0.9
+  capture_config: subspace
+  sha256:
+    stage0: 08151a08c0aaa522592999f0f645afe99403dc022992de977a3c81c79204e19f
+    stage1: 6c930927b209e631227ceff682f54a005b7bd97a2fb4a1be97e6dae2b9575a74
+    stage2: f3f5202eac82e9210b6f62d6494c9934aa12946f116d5fec6931f28338b02404
+    stage3: 4a2b4e3ffb6c8fc867adfd1aaee6f8d4fc781b44423abdb51e94ca5db332cf15
+    memory0: 65d69c8610361cdbdadb7b12ec2ef09e2e7684341be930420e9ba30ada24e894
+    memory1: d95795bb43077cc33a886ed095823beaa9e308573700a2f6f091ee10cfbd59de
+    memory2: db20de36177a0900b8286812e60d6c79d1684497f801b5b2b118929d19b3f1fe
+    memory3: 8a2f9ab7ede969ad1faa8276dbdfde73ccb9baf0d299f24ef2d0edeb3fcb8234
+    result: e25d35fd25f81b65a8e719868ca5b9db8d676fed416fc8c0399ce83c723b22ba
+
+recipe: {steps: 30000, lr: 1.0e-4}   # adaptive GPM's own (= seq_ft's) recipe
+
+replay:
+  alpha: 25                          # the replay's own SGP alpha; sigma' does not depend on it
+  spectrum_rtol: 1.0e-6
+  projector_rtol: 1.0e-6
+  cosine_atol: 1.0e-6
+  operator_rtol: 1.0e-6
+  operator_floor: 1.0e-12
+
+nominal:
+  capture_tag: t5_sweep_nominal      # seeds: derive_seed(namespace, "<tag>_probe::<T5>" / "<tag>::<T5>", 4)
+  effectively_hard_ratio: 0.10
+
+arms:                                # trained in this order
+  hard: {projection: hard}
+  free: {projection: none}
+  sgp_a25: {projection: scaled, alpha: 25}
+  sgp_a100: {projection: scaled, alpha: 100}
+  sgp_a400: {projection: scaled, alpha: 400}
+  sgp_a800: {projection: scaled, alpha: 800}
+  sgp_a1600: {projection: scaled, alpha: 1600}
+
+rule:
+  t5_gain: 0.10
+  retention_tolerance: 0.10
+  hard_alpha_min: 100                # accumulation_limited: every alpha >= this is effectively hard
+
+probe_tolerance: {rtol: 1.0e-4, atol: 1.0e-7}   # as established by the optimizer study
+batch_bootstrap: {n_resamples: 10000, seed: 0, confidence: 0.95}
+
+follow_up:                           # fixed before any T5 result; NOT used by this sweep
+  T6:
+    primary: libero_10/LIVING_ROOM_SCENE5_put_the_white_mug_on_the_left_plate_and_put_the_yellow_and_white_mug_on_the_right_plate
+    backup: libero_10/LIVING_ROOM_SCENE6_put_the_white_mug_on_the_plate_and_put_the_chocolate_pudding_to_the_right_of_the_plate
+  T7:
+    primary: libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it
+    backup: libero_10/KITCHEN_SCENE8_put_both_moka_pots_on_the_stove
+  T8:
+    primary: libero_10/LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket
+    backup: libero_10/LIVING_ROOM_SCENE1_put_both_the_alphabet_soup_and_the_cream_cheese_box_in_the_basket

@@ -91,8 +91,13 @@ class SeedContext:
     probe_refs: dict      # role -> loss matrix L[stage][task]
 
 
-def seed_context(cfg: dict, seed: int, root: Path) -> SeedContext:
-    """The seed's seq_ft reference, its paired GPM runs and diagnostics, all cross-checked."""
+def seed_context(cfg: dict, seed: int, root: Path, extend_curriculum: str | Path | None = None) -> SeedContext:
+    """The seed's seq_ft reference, its paired GPM runs and diagnostics, all cross-checked.
+
+    ``extend_curriculum`` (optional) replaces the reference's curriculum with one that extends
+    it: its first stages must be exactly the reference's (task keys and demo counts), and the
+    later stages have no references.
+    """
     from flowcl.data.curriculum import load_curriculum
     from flowcl.envs.evaluation import EvaluationReport
 
@@ -117,6 +122,12 @@ def seed_context(cfg: dict, seed: int, root: Path) -> SeedContext:
                              f"{d['reference_run_id']!r}, expected {run!r} with {ref_dir.name!r}")
     if diags["gpm"]["config"]["probe"] != diags["adaptive_gpm"]["config"]["probe"]:
         raise ValueError("the two diagnostics reports used different probes")
+    if extend_curriculum is not None:
+        extended = load_curriculum(extend_curriculum)
+        prefix = [(st.task_key, st.n_demos) for st in extended.stages[:n]]
+        if len(extended.stages) <= n or prefix != [(st.task_key, st.n_demos) for st in curriculum.stages]:
+            raise ValueError(f"curriculum {extended.name!r} does not extend {curriculum.name!r}")
+        curriculum = extended
     return SeedContext(
         seed=seed, ref_dir=ref_dir, ref_config=config, curriculum=curriculum,
         namespace=namespace, runs=runs, evals=evals, probe=diags["gpm"]["config"]["probe"],
@@ -127,19 +138,22 @@ def seed_context(cfg: dict, seed: int, root: Path) -> SeedContext:
 
 
 def stage_cells(ctx: SeedContext, stage: int, report, probes: dict, bootstrap: dict) -> dict:
-    """Every task trained so far: success, paired gains vs the three references, probes."""
+    """Every task trained so far: success, paired gains vs the three references, probes.
+
+    A stage beyond the references' curriculum (an extended curriculum) has no references."""
     by_task = report.by_task()
+    roles = [role for role in ROLES if stage in ctx.evals[role]]
     cells = {}
     for j in range(stage + 1):
         key = ctx.curriculum.stages[j].task_key
         te = by_task[key]
-        refs = {role: ctx.evals[role][stage].by_task()[key] for role in ROLES}
+        refs = {role: ctx.evals[role][stage].by_task()[key] for role in roles}
         cells[str(j)] = {
             "task_key": key, **_success(te),
-            "paired": {role: paired_against(te, refs[role], bootstrap) for role in ROLES},
-            "reference_success": {role: refs[role].estimate.value for role in ROLES},
+            "paired": {role: paired_against(te, refs[role], bootstrap) for role in roles},
+            "reference_success": {role: refs[role].estimate.value for role in roles},
             "probe_loss": probes[j],
-            "probe_reference": {role: ctx.probe_refs[role][stage][j] for role in ROLES},
+            "probe_reference": {role: ctx.probe_refs[role][stage][j] for role in roles},
         }
     return cells
 
@@ -211,21 +225,43 @@ def warm_text_cache(policy, dataset, device: str) -> list[str]:
     A fresh process would first encode it inside an AMP training step instead, and the cached
     embedding would differ in its last bits, enough for the trajectory to drift from step 0.
     """
+    return _encode_instructions(policy, dataset, device, amp=False)
+
+
+def _encode_instructions(policy, dataset, device: str, amp: bool) -> list[str]:
     texts = sorted({episode.language for episode in dataset.episodes})
-    with torch.no_grad(), torch.autocast(device_type=torch.device(device).type, enabled=False):
+    device_type = torch.device(device).type
+    with torch.no_grad(), torch.autocast(device_type=device_type, enabled=amp and device_type == "cuda"):
         for text in texts:
             policy.text_encoder([text])
     return texts
 
 
+def warm_runner_cache(policy, datasets: dict, device: str, amp: bool) -> dict:
+    """The whole text-cache state of a continual run, for every task in ``datasets``.
+
+    The runner encodes task 0's instruction inside its first (AMP, if ``amp``) training step,
+    and every later task's in fp32 by the evaluation after task 0 (it evaluates every task
+    after every stage). Returns ``{task: {"texts": [...], "precision": "amp" | "fp32"}}``.
+    """
+    out = {}
+    for j in sorted(datasets):
+        task_amp = amp and j == 0
+        texts = _encode_instructions(policy, datasets[j], device, amp=task_amp)
+        out[j] = {"texts": texts, "precision": "amp" if task_amp and torch.device(device).type == "cuda"
+                  else "fp32"}
+    return out
+
+
 def stage_setup(ctx: SeedContext, stage: int, steps: int, lr: float, start_checkpoint: Path,
                 out_dir: Path, run_id: str, expect: dict, *, tasks, train_overrides: dict | None,
                 device: str, dataset_dir: Path | None, build_datasets: Callable | None,
-                warm_cache: bool = False) -> StageSetup:
+                warm_cache: bool | str = False) -> StageSetup:
     """What every stage run shares: the start checkpoint (with its frozen stats), the datasets
     of ``tasks``, the ``TrainConfig`` (the reference's recipe plus ``train_overrides``), the
     attempt run directory, the method context, and seq_ft's stream generator for ``stage``.
-    ``warm_cache`` runs :func:`warm_text_cache` on the stage's dataset (the runner's state)."""
+    ``warm_cache``: ``True`` runs :func:`warm_text_cache` on the stage's dataset (the state the
+    runner trains a stage in); ``"runner"`` runs :func:`warm_runner_cache` on every built task."""
     from flowcl.methods.base import TaskContext
     from flowcl.train.checkpoint import load_checkpoint
     from flowcl.train.pipeline import build_dataset
@@ -255,8 +291,12 @@ def stage_setup(ctx: SeedContext, stage: int, steps: int, lr: float, start_check
                           seed_namespace_run_id=ctx.namespace, method_run_id=run_id)
     generator = torch.Generator(device="cpu").manual_seed(
         stage_seed(ctx.namespace, stages[stage].task_key, stage))
-    if warm_cache:
+    if warm_cache == "runner":
+        warm_runner_cache(start.policy, datasets, device, amp=train_cfg.amp)
+    elif warm_cache is True:
         warm_text_cache(start.policy, datasets[stage], device)
+    elif warm_cache:
+        raise ValueError(f"unknown warm_cache {warm_cache!r}")
     return StageSetup(start=start, parent_sha=parent_sha, datasets=datasets, train_cfg=train_cfg,
                       run=run, context=context, generator=generator)
 
@@ -279,7 +319,7 @@ def train_stage(
     device: str = "cuda",
     dataset_dir: Path | None = None,
     build_datasets: Callable | None = None,
-    warm_cache: bool = False,
+    warm_cache: bool | str = False,
 ) -> dict:
     """Train task ``stage`` from ``start_checkpoint``; evaluate tasks ``0..stage``; publish.
 
@@ -298,7 +338,7 @@ def train_stage(
     if train_overrides is not None:
         expect["train_overrides"] = dict(train_overrides)
     if warm_cache:
-        expect["warm_text_cache"] = True
+        expect["warm_text_cache"] = warm_cache
     published = load_published(out_dir, expect)
     if published is not None:
         print(f"[flowcl] {run_id}: published and valid, reused", flush=True)
@@ -339,7 +379,7 @@ def train_stage(
         "checkpoint": "checkpoints/final.pt", "checkpoint_sha256": file_sha256(ckpt),
         "cells": cells,
         "plasticity": {"lu": cells[str(stage)]["success"],
-                       "seq_ft": cells[str(stage)]["reference_success"]["seq_ft"]},
+                       "seq_ft": cells[str(stage)]["reference_success"].get("seq_ft")},
         "training": {"final_loss": log.final_loss, "mean_last_50_loss": log.mean_last(50),
                      "wall_clock_s": wall},
         **extra,
@@ -368,7 +408,7 @@ def pilot_stage(
     device: str = "cuda",
     dataset_dir: Path | None = None,
     build_datasets: Callable | None = None,
-    warm_cache: bool = False,
+    warm_cache: bool | str = False,
 ) -> dict:
     """Loss only: the first ``stop_after`` steps of task ``stage``'s ``steps``-step schedule.
 
@@ -386,7 +426,7 @@ def pilot_stage(
               "namespace": ctx.namespace, "steps": int(steps), "lr": float(lr),
               "method": method_spec, "train_overrides": overrides}
     if warm_cache:
-        expect["warm_text_cache"] = True
+        expect["warm_text_cache"] = warm_cache
     published = load_published(out_dir, expect)
     if published is not None:
         print(f"[flowcl] {run_id}: published and valid, reused", flush=True)

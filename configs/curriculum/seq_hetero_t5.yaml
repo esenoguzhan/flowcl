@@ -1,0 +1,27 @@
+# seq_hetero plus a fifth task, for the T5 saturation stress test (configs/analysis/t5_sweep.yaml).
+#
+# The first four stages are seq_hetero's, unchanged: low_update.seed_context checks that this
+# curriculum extends the reference runs' own, and no seq_hetero run is affected by this file.
+# T5 is fixed by Gate 0 (results/gate0_t5/gate0.json): a scene type (a study) and objects that
+# none of T1-T4 contains, after T4's kitchen. Pre-registered backup, used only if T5 fails
+# Gate 0: libero_10/KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it.
+name: seq_hetero_t5
+
+description: >
+  seq_hetero (one task per suite) followed by a fifth, heterogeneous LIBERO-10 task.
+
+expectation: >
+  After T4 the adaptive GPM memory is nearly full (trunk occupancy about 0.99), so T5 is where
+  hard projection should cost the most plasticity.
+
+tasks:
+  - task_key: libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_goal/open_the_middle_drawer_of_the_cabinet
+    n_demos: 50
+  - task_key: libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+    n_demos: 50
+  - task_key: libero_10/STUDY_SCENE1_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy
+    n_demos: 50
