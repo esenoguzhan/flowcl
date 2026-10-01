@@ -6,6 +6,10 @@ lives in :mod:`flowcl.experiments.gate0`.
 Example::
 
     uv run python scripts/gate0.py --curriculum seq_hetero --train-steps 30000
+
+Smoke runs (``--n-episodes`` set, or ``--train-steps`` below 30000) must pass both
+``--results-root`` and ``--out-dir`` outside the repository's ``results/``: otherwise the
+single-task run directory and the report (default ``results/gate0/``) would overwrite real ones.
 """
 
 from __future__ import annotations
@@ -44,6 +48,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        default=None,
+        help="Where the single-task run directory goes (default: the repository's results/).",
+    )
 
     parser.add_argument("--train-steps", type=int, default=30000)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -69,6 +79,15 @@ def main() -> None:
         "verdict from randomly initialised encoders is meaningless.",
     )
     args = parser.parse_args()
+
+    if args.n_episodes is not None or args.train_steps < 30000:
+        results = (repo_root() / "results").resolve()
+        for flag, path in (("--results-root", args.results_root), ("--out-dir", args.out_dir)):
+            if path is None or path.resolve() == results or results in path.resolve().parents:
+                parser.error(
+                    f"a smoke run needs {flag} outside the repository's results/ "
+                    "(it would overwrite a real run or report)"
+                )
 
     spec = load_embodiment_spec(args.embodiment)
 
@@ -105,6 +124,7 @@ def main() -> None:
         bootstrap=eval_payload.get("bootstrap"),
         pretrained=not args.no_pretrained,
         out_dir=args.out_dir,
+        results_root=args.results_root,
     )
 
 

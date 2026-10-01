@@ -1,0 +1,138 @@
+# E1: the two-sided protection go/no-go measurement (docs/thesis_plan.md, Workstream E).
+# NO TRAINING. Committed before any run. Evaluated by scripts/twosided_gonogo.py; queued by
+# scripts/queue_twosided_gonogo.sh.
+#
+# Question: does old-task OUTPUT sensitivity occupy few enough directions that protecting
+# (∪U) ⊗ (∪M) (k_out x k_in weight directions per layer) instead of GPM's d_out x k_in would free
+# capacity in the saturated trunk? This establishes POTENTIAL capacity savings only: whether
+# retention survives the weaker constraint is E2's question (pilots against random U).
+#
+# Source: adaptive GPM seed 0 (gpm_projected_adam_ne90), stage0-3.pt and memory_task0-3.pt,
+# SHA-pinned below (the same files as configs/analysis/t5_sweep.yaml).
+#
+# INDEXING. --task i (i = 0..3) is curriculum stage i = task T(i+1). It is captured at
+# stage{i}.pt (the end-of-task weights, the pairing GPM's memory_task{i} was captured on), on
+# stage i's whole dataset, with seed index i in every derive_seed. Its memory-replay reference
+# is memory_task{i}, built from memory_task{i-1} (nothing for i = 0). Text: U_{i+1}, one-based.
+#
+# CAPTURE, per task i (the exact incremental protocol):
+#   text cache: warm_runner_cache (T1's instruction encoded under AMP, later ones in fp32);
+#   the production pass: gate2.capture_task_grams with GPM's own seeds, derive_seed(ns,
+#     "gpm_memory_probe::<key>", i) and derive_seed(ns, "gpm_memory::<key>", i) -> the input
+#     Gram K_i and the reachability views;
+#   the output pass, over the same data in the same order with the same s/noise stream (a fresh
+#     generator from the same capture seed), forward GRAD-ENABLED (not forward_policy, which is
+#     no_grad), fp32, autocast off, eval():
+#     * Hutchinson: R = capture.n_probes independent probes (A, B) per sample, u ~ N(0, I) over
+#       the velocity (B, H, D), masked by action_mask, drawn on the CPU from derive_seed(ns,
+#       "<capture.u_tag>::<key>", i) (its own generator; the s/noise stream is untouched). One
+#       forward; torch.autograd.grad((velocity * u).sum(), retained registry outputs) per probe,
+#       the first with retain_graph. Only outputs are differentiated: no parameter .grad.
+#     * per layer and probe, sum g g^T (d_out x d_out, float64, CPU) over up to
+#       tokens_per_sample (from capture_config) positions per sample, picked by a CPU generator
+#       seeded capture.output_subsample_seed among the layer's primary view (as the input side)
+#       restricted to positions whose output gradient is not exactly zero (zero rows carry no
+#       sensitivity and would change no Gram).
+#     * an ActivationCapture rides the same forward (capture_config's subsample seed) and
+#       rebuilds the input Gram K~_i.
+#
+# VALIDITY, per task (any failure -> the capture is invalid):
+#   memory replay: extend_basis(memory_task{i-1}, K_i, source.eps, f = source.new_energy_fraction)
+#     matches memory_task{i} per layer (t5_sweep's compare_layer, the replay tolerances below;
+#     bitwise reported). Establishes basis and spectrum consistency, not Gram equality.
+#   forward identity: per layer ||K~_i - K_i||_F / ||K_i||_F <= identity.gram_rtol, all entries
+#     finite (bitwise reported). Supports "U was captured on the same forward as M".
+#   orientation (each retained output's last dim = out_features); every output Gram finite;
+#     rows per output dimension >= capture_config's min_samples_per_dim for EVERY probe;
+#     weights bit-identical and every parameter's .grad unchanged after the capture.
+#   SMOKE (--smoke-batches N, outside results/): the memory replay and the samples-per-dimension
+#     check are UNVERIFIED (recorded, not enforced); the rest is enforced; a smoke capture never
+#     makes the summary complete.
+#
+# U RULE (chosen before any run): the union is accumulated task by task with extend_basis, the
+# same call that builds M: U_{<=i+1} = extend_basis(U_{<=i}, G_i, eps_out, new_energy_fraction).
+# DECISIVE: u_rule.decisive (adaptive, eps_out 0.95, f 0.9 = M's own rule). G_i = G_A + G_B.
+# The fixed-eps rule (new_energy_fraction null) is reported as a COMPARISON, not a guaranteed
+# lower bound: once the chains diverge after T2 neither union need contain the other.
+#
+# DECISIVE QUANTITY: the parameter-weighted trunk two-sided fraction
+#   sum_l k_out,l * k_in,l / sum_l d_out,l * d_in,l over the 49 trunk registry weights,
+# with U = U_1 ∪ U_2 ∪ U_3 (indices 0-2, decisive rule) and M = memory_task2: the start state of
+# E2's T4 pilot. GPM's own fraction there, sum d_out k_in / sum d_out d_in, is computed in the run
+# (about 0.933). NOTE: docs/thesis_plan.md's "about 0.94 for GPM" is the MEDIAN over trunk layers
+# of k_in/d_in (sequence_report.capacity_by_stage, 0.941); the comparison here is parameter-
+# weighted on both sides.
+#
+# VERDICT, first match:
+#   invalid     any capture failed a validity check;
+#   incomplete  fewer than 4 non-smoke captures;
+#   pass        decisive quantity <= rule.threshold;
+#   fail        otherwise.
+# Exit codes of the summary: 0 pass/fail (a valid finding), 3 invalid, 4 incomplete.
+# LABELS (reported with the verdict, never changing it):
+#   estimator_sensitive  the A-only and B-only decisive fractions lie on opposite sides of
+#                        rule.threshold. The verdict stays the registered one on G_A + G_B; R,
+#                        the seeds and the U rule are NOT changed after the results are seen.
+#   near_full_rank       trunk param-weighted k_out/d_out >= rule.near_full_rank at the decisive
+#                        point (for D2's angle-B row: E[J^T J] near full rank).
+#
+# REPORTED ONLY: k_out and fractions for eps_out in u_rule.eps_out x {adaptive, fixed}, per half,
+# per group and overall, after each of T1-T4; GPM's fraction per stage; median and weighted
+# rho_out; stability (fractions from the A-only and B-only chains, and per-layer overlap
+# ||U_A^T U_B||_F^2 / max(k)); the T4 point (U_1..U_4 with memory_task3: E2's T5-pilot start);
+# a FORECAST to T8, per layer and side, k(T) = min(d, k(T4) + (T - 4) (k(T4) - k(T2)) / 2),
+# labelled as a forecast (it cannot show that saturation will be avoided).
+#
+# Outputs (results/<out>/): capture/task{i}/{grams_A.pt, grams_B.pt, capture.json} (published
+# atomically), bases/U_adaptive_e0.95_task{i}.pt (the decisive chain, for E2), summary.json.
+
+seed: 0
+out: twosided_gonogo                 # under results/
+
+source:                              # adaptive GPM, seed 0
+  run: seq_hetero__gpm_projected_adam_ne90__seed0
+  eps: 0.95
+  new_energy_fraction: 0.9
+  capture_config: subspace
+  sha256:
+    stage0: 08151a08c0aaa522592999f0f645afe99403dc022992de977a3c81c79204e19f
+    stage1: 6c930927b209e631227ceff682f54a005b7bd97a2fb4a1be97e6dae2b9575a74
+    stage2: f3f5202eac82e9210b6f62d6494c9934aa12946f116d5fec6931f28338b02404
+    stage3: 4a2b4e3ffb6c8fc867adfd1aaee6f8d4fc781b44423abdb51e94ca5db332cf15
+    memory0: 65d69c8610361cdbdadb7b12ec2ef09e2e7684341be930420e9ba30ada24e894
+    memory1: d95795bb43077cc33a886ed095823beaa9e308573700a2f6f091ee10cfbd59de
+    memory2: db20de36177a0900b8286812e60d6c79d1684497f801b5b2b118929d19b3f1fe
+    memory3: 8a2f9ab7ede969ad1faa8276dbdfde73ccb9baf0d299f24ef2d0edeb3fcb8234
+    result: e25d35fd25f81b65a8e719868ca5b9db8d676fed416fc8c0399ce83c723b22ba
+
+capture:
+  n_probes: 2                        # A, B
+  u_tag: twosided_u
+  output_subsample_seed: 1
+
+replay:                              # as configs/analysis/t5_sweep.yaml
+  spectrum_rtol: 1.0e-6
+  projector_rtol: 1.0e-6
+  cosine_atol: 1.0e-6
+  operator_rtol: 1.0e-6
+  operator_floor: 1.0e-12
+
+identity:
+  gram_rtol: 1.0e-5
+
+u_rule:
+  decisive: {rule: adaptive, eps_out: 0.95}
+  eps_out: [0.90, 0.95, 0.99]
+  rules:                             # rule -> new_energy_fraction
+    adaptive: 0.9
+    fixed: null
+
+rule:
+  decisive_task: 2                   # index: U_1..U_3 with memory_task2
+  half: trunk
+  threshold: 0.50
+  near_full_rank: 0.90
+
+forecast:
+  from_tasks: [1, 3]                 # indices (T2, T4): the mean increment over two transitions
+  to: [5, 6, 7, 8]                   # one-based tasks
