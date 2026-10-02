@@ -189,3 +189,24 @@ def test_resume_queue_dry_run(tmp_path):
     done = subprocess.run(["bash", str(queue)], env={**env, "QUEUE_FAIL_STEP": "0_resume"},
                           capture_output=True, text=True, timeout=300)
     assert done.returncode == 1
+
+
+def test_resume_queue_takes_the_confirmatory_config(tmp_path):
+    import os
+    import subprocess
+
+    queue = repo_root() / "scripts" / "queue_resume_check.sh"
+    cfg_path = repo_root() / "configs" / "analysis" / "resume_check_ne90.yaml"
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_LOG_ROOT": str(tmp_path)}
+    done = subprocess.run(["bash", str(queue), "--config", str(cfg_path)], env=env, capture_output=True,
+                          text=True, timeout=300)
+    assert done.returncode == 0, done.stderr
+    (logdir,) = list(tmp_path.glob("queue_*_resume_check_ne90"))
+    cmd = (logdir / "0_resume.log").read_text()
+    cfg = OmegaConf.load(cfg_path)
+    assert "--method gpm_ne90" in cmd and f"--resume-sha256 {cfg.source.sha256.stage2}" in cmd
+    assert "--resume-run results/seq_hetero__gpm_projected_adam_ne90__seed0" in cmd
+    assert "--results-root results/resume_check_ne90" in cmd
+    assert f"--config {cfg_path}" in (logdir / "1_check.log").read_text()
+    base = OmegaConf.load(repo_root() / "configs" / "analysis" / "resume_check.yaml")
+    assert cfg.source.stage == base.source.stage and set(cfg.source.sha256) == set(base.source.sha256)

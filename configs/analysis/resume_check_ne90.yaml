@@ -1,0 +1,25 @@
+# A1, confirmatory resume test on a source without schema drift. Committed before this run, after
+# the first test (configs/analysis/resume_check.yaml; docs/runs/2026-10-02_resume_check.md) failed
+# its criterion 2 by the registered rule. That failure was diagnosed as metadata schema drift:
+# plain GPM seed 0 was trained at 0184293 (23 Sep), before 9701620 added two metadata keys
+# (target_fraction in each layer's memory history; new_energy_fraction in the config). The
+# resumed memory had those extra keys and nothing else differed: every tensor and every shared
+# value was equal, and the checkpoint and all evaluation episodes were identical.
+#
+# This source, adaptive GPM seed 0, was trained at 9701620. Its memory files already carry both
+# keys, and no later commit changes GPM's memory schema (_basis_meta adds nothing for GPM). Same
+# procedure and the same three criteria as resume_check.yaml (checkpoint bitwise; memory content;
+# every per-episode success and step count), at stage 3, into results/<out>/.
+
+out: resume_check_ne90               # under results/
+
+source:
+  run: seq_hetero__gpm_projected_adam_ne90__seed0
+  stage: 3
+  method: gpm_ne90                   # configs/method/gpm_ne90.yaml (the source's own method config)
+  sha256:
+    stage2: f3f5202eac82e9210b6f62d6494c9934aa12946f116d5fec6931f28338b02404
+    stage3: 4a2b4e3ffb6c8fc867adfd1aaee6f8d4fc781b44423abdb51e94ca5db332cf15
+    memory2: db20de36177a0900b8286812e60d6c79d1684497f801b5b2b118929d19b3f1fe
+    memory3: 8a2f9ab7ede969ad1faa8276dbdfde73ccb9baf0d299f24ef2d0edeb3fcb8234
+    eval3: 5e6d2bcf1fa7d476c545f1217107fc0bec0fb1ab1943837fd327e3ff46f1d487
