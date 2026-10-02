@@ -2,7 +2,8 @@
 
 Spec §1: no logic in scripts/. See :mod:`flowcl.experiments.gate0_t8`.
 
-    gate0_t8.py tasks                                   # one line per slot: SLOT PRIMARY BACKUP
+    gate0_t8.py tasks [--config C]                      # one line per slot: SLOT PRIMARY BACKUP
+    gate0_t8.py out [--config C]                        # the output directory name under results/
     gate0_t8.py fresh --results-root R --slot-dir D --task KEY     # exit 1 if outputs exist
     gate0_t8.py backup --report P --task KEY --since EPOCH
         # prints the decision; exit 0 run the backup, 1 the primary passed, 2 no valid report
@@ -14,13 +15,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from flowcl.experiments.gate0_t8 import PRIMARY_PASSED, RUN_BACKUP, backup_decision, slots, stale_paths
+from flowcl.experiments.gate0_t8 import PRIMARY_PASSED, RUN_BACKUP, backup_decision, load_slots, stale_paths
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("tasks")
+    for name in ("tasks", "out"):
+        sub.add_parser(name).add_argument("--config", type=Path, default=None)
     fresh = sub.add_parser("fresh")
     fresh.add_argument("--results-root", type=Path, required=True)
     fresh.add_argument("--slot-dir", type=Path, required=True)
@@ -31,8 +33,10 @@ def main() -> None:
     backup.add_argument("--since", type=float, required=True)
     args = parser.parse_args()
     if args.cmd == "tasks":
-        for slot, keys in slots().items():
+        for slot, keys in load_slots(args.config)[1].items():
             print(slot, keys["primary"], keys["backup"])
+    elif args.cmd == "out":
+        print(load_slots(args.config)[0])
     elif args.cmd == "fresh":
         found = stale_paths(args.results_root, args.slot_dir, args.task)
         if found:

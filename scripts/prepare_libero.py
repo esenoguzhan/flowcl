@@ -31,11 +31,23 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--tasks",
+        nargs="+",
+        default=None,
+        metavar="SUITE/TASK_NAME",
+        help="Fetch and verify only these task files (e.g. a few libero_90 tasks), not suites.",
+    )
+    parser.add_argument(
         "--skip-download",
         action="store_true",
         help="Only configure and verify; never fetch.",
     )
     args = parser.parse_args()
+
+    if args.tasks:
+        libero_setup.download_tasks(args.tasks, dataset_dir=args.dataset_dir,
+                                    skip_download=args.skip_download)
+        return
 
     libero_setup.prepare(
         dataset_dir=args.dataset_dir,

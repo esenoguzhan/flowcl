@@ -19,6 +19,9 @@ RUN_BACKUP, PRIMARY_PASSED = "run_backup", "primary_passed"
 NO_REPORT, STALE, WRONG_TASK, MALFORMED = "no_report", "stale_report", "wrong_task", "malformed_report"
 
 
+DEFAULT_OUT = "gate0_t8"
+
+
 def slots(cfg: dict | None = None) -> dict[str, dict[str, str]]:
     """``{"T6": {"primary": key, "backup": key}, ...}`` from the T5 sweep's ``follow_up``."""
     if cfg is None:
@@ -26,6 +29,25 @@ def slots(cfg: dict | None = None) -> dict[str, dict[str, str]]:
 
         cfg = load_sweep_config()
     return {slot: {"primary": v["primary"], "backup": v["backup"]} for slot, v in cfg["follow_up"].items()}
+
+
+def load_slots(path: str | Path | None = None) -> tuple[str, dict[str, dict[str, str]]]:
+    """``(out, slots)``: round 1's (the T5 sweep's ``follow_up``, ``results/gate0_t8``) when
+    ``path`` is ``None``, else a later round's config (``out`` and ``slots``, e.g.
+    ``configs/analysis/gate0_t8_r2.yaml``)."""
+    if path is None:
+        return DEFAULT_OUT, slots()
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    out = cfg["out"]
+    if out == DEFAULT_OUT or "/" in out:
+        raise ValueError(f"a later round needs its own output directory name, got {out!r}")
+    got = {slot: {"primary": v["primary"], "backup": v["backup"]} for slot, v in cfg["slots"].items()}
+    keys = [k for v in got.values() for k in v.values()]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"{path}: a task appears twice among the slots")
+    return out, got
 
 
 def stale_paths(results_root: Path, slot_dir: Path, task_key: str, seed: int = 0) -> list[str]:

@@ -1,0 +1,41 @@
+# Gate 0, round 2, for the T6 and T8 slots (docs/thesis_plan.md, A2). Committed before any run on
+# these tasks. Queued by: bash scripts/queue_gate0_t8.sh --config configs/analysis/gate0_t8_r2.yaml
+#
+# WHY. Round 1 (docs/runs/2026-10-02_gate0_t8.md) filled T7 (libero_10 KITCHEN_SCENE4, 96%) but left
+# T6 and T8 unresolved: both pre-registered LIBERO-10 candidates of each slot failed Gate 0
+# (T6 72/44, T8 68/62), and the rule gives no automatic third choice.
+#
+# POOL AND CRITERIA (chosen by the user on 2 Oct, before any run on these tasks):
+#   pool: LIBERO-90 kitchen and study scenes. That is the scene family whose LIBERO-10 tasks
+#     passed (T4, T5, T7); all four round-1 failures were living-room two-object tasks. Round 1's
+#     outcome thus chose the pool (disclosed): Gate 0 is a capability filter on the curriculum, not
+#     a method outcome. Only these four demo files are fetched
+#     (scripts/prepare_libero.py --tasks ...), not the ~64 GB suite.
+#   criteria, as T5 was chosen (a new scene, and objects no earlier task manipulates):
+#     - the scene is not in the curriculum (excluded: KITCHEN_SCENE3 = T4, STUDY_SCENE1 = T5,
+#       KITCHEN_SCENE4 = T7) and the four candidates are in four different scenes;
+#     - the moved object is moved by no task in T1-T7 (black bowl, milk, moka pot, book; the stove
+#       is switched in T4) nor by another candidate;
+#     - each slot's backup uses a different action type from its primary.
+#   The picks are DELIBERATE under these criteria. The user chose this over a seeded draw, which
+#   landed on bowls and drawers close to T1 and T3.
+#   Disclosed overlap: T8's primary follows T7's template "put X in a drawer of the cabinet and
+#   close it" (new object, new scene, top drawer instead of bottom); T8's backup places an object
+#   next to the caddy, the fixture of T5.
+#
+# RULE PER SLOT, unchanged (flowcl/experiments/gate0_t8.py): Gate 0 (>= 80% success, the point
+# estimate decides) on the primary; the backup only if this invocation's fresh primary report
+# says passed: false; no automatic third choice.
+# RECIPE: T5's and round 1's Gate 0 (flowpolicy_base, frozen DINOv2-S, every parameter, 30k steps,
+# lr 1e-4, batch 64, AMP, seed 0, 50 demos, 50 rollouts). LIBERO-90 tasks are mostly shorter than
+# LIBERO-10's; T8's primary is two-step.
+
+out: gate0_t8_r2                     # under results/
+
+slots:
+  T6:
+    primary: libero_90/KITCHEN_SCENE9_put_the_frying_pan_on_the_cabinet_shelf
+    backup: libero_90/KITCHEN_SCENE6_close_the_microwave
+  T8:
+    primary: libero_90/KITCHEN_SCENE10_put_the_chocolate_pudding_in_the_top_drawer_of_the_cabinet_and_close_it
+    backup: libero_90/STUDY_SCENE3_pick_up_the_red_mug_and_place_it_to_the_right_of_the_caddy

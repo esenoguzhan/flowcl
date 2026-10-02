@@ -376,3 +376,60 @@ def test_gate0_queue_backups_staleness_and_status(tmp_path):
 
     rc, log, _ = run_queue(G8_QUEUE, tmp_path / "e", args=("--from-step", "1"), present=["gate0_t8/T6/gate0.json"])
     assert rc == 0 and "PRIOR 0_T6 ok" in log and "START 0_T6:" not in log and "START 1_T7:" in log
+
+
+# ---- Gate 0 round 2 (LIBERO-90 candidates for T6 and T8) -------------------------------------------------
+
+R2 = repo_root() / "configs" / "analysis" / "gate0_t8_r2.yaml"
+
+
+def test_round2_config_meets_its_criteria():
+    import re
+
+    out, slots = g8.load_slots(R2)
+    assert out == "gate0_t8_r2" and list(slots) == ["T6", "T8"]
+    keys = [k for v in slots.values() for k in v.values()]
+    round1 = {k for v in g8.slots().values() for k in v.values()}
+    assert len(set(keys)) == 4 and not round1 & set(keys)
+    scenes = []
+    for key in keys:
+        suite, name = key.split("/")
+        assert suite == "libero_90"
+        assert (repo_root() / "benchmark" / "LIBERO" / "libero" / "libero" / "bddl_files" / suite
+                / f"{name}.bddl").is_file(), key
+        scene = re.match(r"^((?:KITCHEN|STUDY)_SCENE\d+)_", name).group(1)
+        assert scene not in {"KITCHEN_SCENE3", "KITCHEN_SCENE4", "STUDY_SCENE1"}      # T4, T7, T5
+        assert not any(o in name for o in ("black_bowl", "milk", "moka_pot", "book"))  # T1-T7's objects
+        scenes.append(scene)
+    assert len(set(scenes)) == 4
+    from flowcl.data.libero_setup import task_file_pattern
+    assert task_file_pattern(keys[0]) == f"libero_90/{keys[0].split('/')[1]}_demo.hdf5"
+    with pytest.raises(ValueError, match="Unknown suite"):
+        task_file_pattern("libero_1000/x")
+    with pytest.raises(ValueError, match="must be"):
+        task_file_pattern("libero_90")
+
+
+def test_load_slots_refuses_round1_output_and_duplicates(tmp_path):
+    assert g8.load_slots(None)[0] == "gate0_t8"
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("out: gate0_t8\nslots: {T6: {primary: a/b, backup: a/c}}\n")
+    with pytest.raises(ValueError, match="own output"):
+        g8.load_slots(bad)
+    dup = tmp_path / "dup.yaml"
+    dup.write_text("out: r9\nslots: {T6: {primary: a/b, backup: a/c}, T8: {primary: a/b, backup: a/d}}\n")
+    with pytest.raises(ValueError, match="twice"):
+        g8.load_slots(dup)
+
+
+def test_gate0_queue_round2_config(tmp_path):
+    _, slots = g8.load_slots(R2)
+    rc, log, logdir = run_queue(G8_QUEUE, tmp_path / "a", args=("--config", str(R2)),
+                                env_extra={"QUEUE_DRY_FAILED_SLOTS": "T8"})
+    assert rc == 0 and logdir.name.endswith("_gate0_t8_r2") and log.rstrip().endswith("QUEUE DONE ok")
+    assert "START 0_T6:" in log and "START 1_T8:" in log and "START 1_T8_backup:" in log
+    assert "START 0_T6_backup:" not in log and "T7" not in log
+    cmd = (logdir / "0_T6.log").read_text()
+    assert f"--tasks {slots['T6']['primary']}" in cmd
+    assert cmd.strip().endswith(str(tmp_path / "a" / "results" / "gate0_t8_r2" / "T6"))
+    assert f"--tasks {slots['T8']['backup']}" in (logdir / "1_T8_backup.log").read_text()

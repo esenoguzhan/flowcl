@@ -115,6 +115,44 @@ def download(
     return dataset_dir
 
 
+def task_file_pattern(task_key: str) -> str:
+    """``"<suite>/<task name>"`` -> the demo file's path in the HuggingFace repo."""
+    suite, sep, name = task_key.partition("/")
+    if not sep or not name or "/" in name:
+        raise ValueError(f"task key {task_key!r} must be '<suite>/<task name>'")
+    if suite not in SUITE_TASK_COUNTS:
+        raise ValueError(f"Unknown suite {suite!r}; valid suites are {sorted(SUITE_TASK_COUNTS)}")
+    return f"{suite}/{name}_demo.hdf5"
+
+
+def download_tasks(task_keys, dataset_dir: Path | None = None, skip_download: bool = False) -> list[Path]:
+    """Fetch individual task files (e.g. a few LIBERO-90 tasks) rather than a whole suite.
+
+    Each file is verified with the §3.2 demo-count and action-stats check. A pattern that matches
+    nothing must not look like success, so a missing file raises.
+    """
+    from flowcl.data.libero_adapter import verify_task_file
+
+    dataset_dir = Path(dataset_dir) if dataset_dir else default_dataset_dir()
+    ensure_libero_config(dataset_dir)
+    patterns = [task_file_pattern(k) for k in task_keys]
+    missing = [p for p in patterns if not (dataset_dir / p).is_file()]
+    if missing and not skip_download:
+        from huggingface_hub import snapshot_download
+
+        print(f"[flowcl] downloading {len(missing)} task file(s) from {HF_REPO_ID} -> {dataset_dir}")
+        snapshot_download(repo_id=HF_REPO_ID, repo_type="dataset", local_dir=str(dataset_dir),
+                          allow_patterns=missing)
+    paths = [dataset_dir / p for p in patterns]
+    absent = [str(p) for p in paths if not p.is_file()]
+    if absent:
+        raise FileNotFoundError(f"task files missing after download: {absent}")
+    for path in paths:
+        verify_task_file(path)
+        print(f"[flowcl] OK {path.relative_to(dataset_dir)}")
+    return paths
+
+
 def check(
     dataset_dir: Path | None = None,
     suites: tuple[str, ...] = REQUIRED_SUITES,

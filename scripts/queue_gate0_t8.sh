@@ -5,8 +5,10 @@
 # (flowcl/analysis/gates.py), the backup rule is flowcl/experiments/gate0_t8.py. Run it only when
 # no other GPU job is running.
 #
-# Usage:    bash scripts/queue_gate0_t8.sh [--from-step K]
-#   --from-step K  resume at slot K (0 = T6, 1 = T7, 2 = T8); earlier slots are only checked.
+# Usage:    bash scripts/queue_gate0_t8.sh [--config C] [--from-step K]
+#   --config C     a later round's slots and output name (e.g. configs/analysis/gate0_t8_r2.yaml);
+#                  default: round 1 (t5_sweep.yaml follow_up -> results/gate0_t8)
+#   --from-step K  resume at slot K (in the config's slot order); earlier slots are only checked.
 #
 # Per slot: refuse (a failure) if its run directory or report already exists; run the primary;
 # run the backup ONLY if this primary step returned 0 and its fresh report covers exactly the
@@ -19,12 +21,14 @@
 #           QUEUE_DRY_FAILED_SLOTS="T7 ..." (a dry primary of that slot writes a failing report).
 
 set -u
-USAGE="usage: queue_gate0_t8.sh [--from-step K]"
+USAGE="usage: queue_gate0_t8.sh [--config C] [--from-step K]"
 LAST=2
 FROM=0
+CONFIG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --from-step) FROM="${2:-}"; shift 2 || { echo "$USAGE" >&2; exit 2; } ;;
+        --config) CONFIG="${2:-}"; shift 2 || { echo "$USAGE" >&2; exit 2; } ;;
         *) echo "unknown argument '$1'; $USAGE" >&2; exit 2 ;;
     esac
 done
@@ -34,11 +38,16 @@ if [ "$FROM" -gt $LAST ]; then echo "--from-step must be an integer 0..$LAST, go
 cd "$(dirname "$0")/.." || { echo "cannot cd to repo root" >&2; exit 1; }
 export MUJOCO_GL=egl
 
-LOGDIR="${QUEUE_LOG_ROOT:-results/logs}/queue_$(date +%Y%m%d_%H%M%S)_gate0_t8"
+HELP="uv run python scripts/gate0_t8.py"
+CFG_ARGS=()
+if [ -n "$CONFIG" ]; then CFG_ARGS=(--config "$CONFIG"); fi
+NAME=$($HELP out "${CFG_ARGS[@]}") || { echo "cannot read the config '$CONFIG'" >&2; exit 2; }
+
+LOGDIR="${QUEUE_LOG_ROOT:-results/logs}/queue_$(date +%Y%m%d_%H%M%S)_$NAME"
 mkdir -p "$LOGDIR"
 QUEUE_LOG="$LOGDIR/queue.log"
 RES="${QUEUE_RESULTS_ROOT:-results}"
-OUT="$RES/gate0_t8"
+OUT="$RES/$NAME"
 FAILED=""
 
 note() { echo "$(date '+%F %T') $*" | tee -a "$QUEUE_LOG"; }
@@ -69,11 +78,10 @@ dry_report() {  # testing only: a dry primary of a slot in QUEUE_DRY_FAILED_SLOT
     esac
 }
 
-HELP="uv run python scripts/gate0_t8.py"
 GATE0="uv run python scripts/gate0.py --seed 0 --train-steps 30000 --batch-size 64 --lr 1e-4 --amp"
-note "QUEUE START gate0_t8 from_step=$FROM git $(git rev-parse HEAD) status '$(git status --porcelain | wc -l) changes'"
+note "QUEUE START $NAME config='$CONFIG' from_step=$FROM git $(git rev-parse HEAD) status '$(git status --porcelain | wc -l) changes'"
 
-SLOTS=$($HELP tasks) || { note "cannot read the slots"; note "QUEUE DONE FAILED: slots"; exit 1; }
+SLOTS=$($HELP tasks "${CFG_ARGS[@]}") || { note "cannot read the slots"; note "QUEUE DONE FAILED: slots"; exit 1; }
 
 k=0
 # shellcheck disable=SC2086
