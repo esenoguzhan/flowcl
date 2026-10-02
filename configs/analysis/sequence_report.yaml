@@ -21,6 +21,17 @@ criteria:
     seq_hetero__seq_ft__seed2:          # registered 25 Sep 2026, before seq_ft seed 2 ran
       mode: derived
       margin: 0.15
+    # The reverse-order control (configs/analysis/reverse_order.yaml), registered 2 Oct 2026,
+    # before any reverse run: thresholds from each reverse seq_ft's own diagonal.
+    seq_hetero_reverse__seq_ft__seed0:
+      mode: derived
+      margin: 0.15
+    seq_hetero_reverse__seq_ft__seed1:
+      mode: derived
+      margin: 0.15
+    seq_hetero_reverse__seq_ft__seed2:
+      mode: derived
+      margin: 0.15
   # Plasticity OK for task j:        R[j][j] >= threshold_j
   # Final retention OK for task j<3: R[3][j] >= threshold_j
   # SGP fallback triggered if plasticity fails on any of these task indices (T3, T4).

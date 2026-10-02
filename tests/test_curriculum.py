@@ -73,3 +73,11 @@ def test_load_rejects_a_missing_config():
 def test_empty_curriculum_is_rejected_at_construction():
     with pytest.raises(ValueError, match="has no stages"):
         Curriculum(name="x", stages=())
+
+
+def test_reverse_yaml_equals_the_derived_reverse():
+    """configs/curriculum/seq_hetero_reverse.yaml says its task list is asserted here."""
+    yaml_cur = load_curriculum("seq_hetero_reverse")
+    derived = load_curriculum("seq_hetero").reversed()
+    assert yaml_cur.name == derived.name == "seq_hetero_reverse"
+    assert [(s.task_key, s.n_demos) for s in yaml_cur.stages] == [(s.task_key, s.n_demos) for s in derived.stages]

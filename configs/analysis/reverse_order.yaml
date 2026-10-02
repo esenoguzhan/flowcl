@@ -1,0 +1,96 @@
+# C2: the reverse-order control (docs/thesis_plan.md, Workstream C). Locked by SHA before the smoke
+# run; committed before any registered (non-scratch) run. Evaluated by scripts/reverse_order.py;
+# queued by scripts/queue_reverse_order.sh.
+#
+# QUESTION. In the forward order (Spatial -> Object -> Goal -> LIBERO-10), plain GPM forgot Object
+# (position 2) when Goal was trained: R[2][1] = 2 / 2 / 22% on seeds 0-2, and adaptive GPM fixed it
+# (+66 / +64 / +56 pp). In the reverse order (configs/curriculum/seq_hetero_reverse.yaml: LIBERO-10
+# -> Goal -> Object -> Spatial), Goal is at position 2 and Object at position 3. Which one does plain
+# GPM forget?
+#
+# RUNS, per seed S (same recipe and method configs as the forward runs): seq_ft, gpm (plain),
+# gpm_ne90 (adaptive; identity-checked against plain at stages 0-1), under the reverse namespace
+# seq_hetero_reverse__seq_ft__seed{S}. Plain and adaptive GPM are paired with reverse seq_ft
+# episode for episode. Forward-vs-reverse comparisons are UNPAIRED (reported only).
+#
+# INDICES (0-based stages/tasks in the reverse curriculum): 0 LIBERO-10, 1 Goal, 2 Object, 3 Spatial.
+# THRESHOLDS: theta_j = R_seqft_rev[j][j] - margin (the reverse seq_ft's own diagonal; the rule of
+# configs/analysis/sequence_report.yaml, entries in derived mode). Point estimates decide.
+# CELLS (plain GPM):
+#   position: Goal (task 1) at R[2][1], after Object trained;
+#   task:     Object (task 2) at R[3][2], after Spatial trained.
+#   A cell is not_learned if plain GPM's diagonal R[j][j] < theta_j; otherwise forgotten if its
+#   retention value < theta_j, else retained.
+# VERDICT (per seed), first match:
+#   incomplete    a seq_ft or plain-GPM input is missing or malformed          (summary exit 4)
+#   invalid       the plain-GPM verdict's validity failed (VALIDITY below)      (summary exit 3)
+#   inconclusive  a needed cell is not_learned                                  (exit 0)
+#   both | position | task | neither                                            (exit 0)
+# LABELS (never change the verdict): borderline (a CI straddles theta) on the two retention cells
+# and on the two acquisition diagonals; weak_reference when R_seqft[j][j] < weak_reference_below.
+# The borderline check conditions on the estimated theta; it does not include theta's uncertainty.
+#
+# INTERPRETATION. The verdicts are descriptive patterns, not causes. Reversal changes each task's
+# predecessors, its successor and the normalization statistics (fitted on LIBERO-10 instead of
+# Spatial). "position" means Goal crossed theta at position 2 in this curriculum; it does not
+# establish that position 2 causes under-protection, and it coincides with the Goal -> Object pair
+# (the forward Object -> Goal pair in the other direction), so position and pair are not separable
+# here. "task" tests Object against a different successor (Spatial). "neither" rules out neither
+# explanation in general. Separating them would need permutations holding the normalization and the
+# directed successor pair fixed (not planned).
+#
+# VALIDITY of the plain-GPM verdict (enforced by the summary; sequence reports write regardless):
+#   complete: seq_ft and plain matrices 4x4, the configured rollouts in every cell;
+#   production: curriculum seq_hetero_reverse, seed S, namespace seq_hetero_reverse__seq_ft__seed{S},
+#     train = production.train, eval n_episodes = production.n_episodes, method config equal to
+#     configs/method/{seq_ft,gpm}.yaml, clean git_sha;
+#   statistics: every run's stats.json fingerprint equal, fitted_on_task_id = the curriculum's
+#     stage-0 task, every stage checkpoint's stats_fingerprint equal to its run's stats.json;
+#   T1 pairing passed (plain GPM's t1_pairing.json);
+#   episode pairing: identical per-episode seeds for every (stage, task), seq_ft vs plain;
+#   provenance: plain GPM's sequence report checks all pass;
+#   thresholds: the report's threshold block equals the summary's theta and the SHA-256 of the
+#     reverse seq_ft result.json.
+# ADAPTIVE COMPARISON (own completeness and validity; never changes the plain verdict):
+#   incomplete  adaptive inputs missing (an identity failure stops the run before evaluation);
+#   invalid     adaptive evidence present but a check fails: identity_stage{0,1}.json, its sequence
+#               report's checks, seed pairing, production settings, statistics (same fingerprint);
+#   valid       otherwise.
+# REPORTED ONLY: drops with rollout-paired CIs (episode seeds are shared across stages):
+# Goal R[1][1]-R[2][1], Object R[2][2]-R[3][2], for plain and adaptive; adaptive minus plain at both
+# drops (a bootstrap over matched episode indices, all four outcomes resampled jointly) and at final
+# retention; the protection mechanism for the Goal and Object memory updates per half
+# (proj_energy_fraction, target and captured fractions, k_added, occupancy after each stage); every
+# cell of the three matrices; the forward seed-S numbers beside the reverse ones (unpaired).
+# The rollout CIs describe the evaluated policies. Seeds 1-2 use this rule; the same valid verdict on
+# all three shows the pattern recurs across those seeds, not a statistical claim about the order.
+#
+# SMOKE (--smoke, scratch only): steps, rollouts and the 30k/50-episode production check relaxed and
+# disclosed; a dirty tree excused (clean_git_sha); everything else enforced.
+
+curriculum: seq_hetero_reverse
+forward_curriculum: seq_hetero       # for the unpaired forward comparison (reported only)
+margin_pp: 15
+weak_reference_below: 0.70
+
+cells:
+  position: {task: 1, stage: 2}      # Goal after Object
+  task: {task: 2, stage: 3}          # Object after Spatial
+
+methods:                             # role -> configs/method/<file>
+  seq_ft: seq_ft
+  plain: gpm
+  adaptive: gpm_ne90
+
+production:
+  train: {steps: 30000, batch_size: 64, lr: 1.0e-4, amp: true}
+  n_episodes: 50
+
+smoke:
+  train: {steps: 200, amp: true}
+  n_episodes: 1
+
+reports:                             # sequence report output directories under the results root
+  plain: gpm_seq_reverse_seed{seed}
+  adaptive: gpm_seq_ne90_reverse_seed{seed}
+out: reverse_order/seed{seed}
