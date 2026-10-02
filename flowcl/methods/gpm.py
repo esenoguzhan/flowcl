@@ -393,6 +393,23 @@ class GPM(BaseMethod):
         self.memory_history = {int(k): v for k, v in meta["memory_history"].items()}
         return meta
 
+    def restore_state(self, checkpoint_extra: dict, source_run: Path, task_idx: int) -> dict:
+        """Resume after ``task_idx``: the memory artifact the stage checkpoint names (verified
+        by :meth:`restore_memory` against its recorded SHA-256 and identity) and the
+        per-task ``memory_extended`` flags. The per-task logs belong to the source run."""
+        artifacts = {a["path"]: a["sha256"] for a in checkpoint_extra.get("method_artifacts") or []}
+        key = f"method/memory_task{task_idx}.pt"
+        if key not in artifacts:
+            raise ValueError(f"the stage-{task_idx} checkpoint names no {key}; cannot restore "
+                             f"{self.display_name}'s memory (artifacts: {sorted(artifacts)})")
+        meta = self.restore_memory(Path(source_run) / key, artifacts[key],
+                                   method_run_id=checkpoint_extra.get("method_run_id"),
+                                   task_idx=task_idx)
+        state = checkpoint_extra.get("method_state") or {}
+        self.memory_extended = {int(k): bool(v) for k, v in (state.get("memory_extended") or {}).items()}
+        return {"memory": key, "sha256": artifacts[key], "tasks_in_memory": meta.get("tasks_in_memory"),
+                "memory_extended": {str(k): v for k, v in self.memory_extended.items()}}
+
     # ---- §6 hooks --------------------------------------------------------------
 
     def on_task_start(self, policy, task_idx, *, context) -> None:

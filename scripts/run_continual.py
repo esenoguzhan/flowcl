@@ -110,7 +110,26 @@ def main() -> None:
         help="Write the run under this directory instead of results/ (smoke runs only).",
     )
     parser.add_argument("--t1-pairing-max-rel-diff", type=float, default=None)
+    parser.add_argument(
+        "--resume-run",
+        type=Path,
+        default=None,
+        help=(
+            "Resume this run at a stage boundary (with --start-stage K): start from its "
+            "checkpoints/stage{K-1}.pt, restore the method state, keep its seed namespace and "
+            "stats, import its evaluations of stages < K, and train stages K.. into a new run "
+            "directory (never the source's)."
+        ),
+    )
+    parser.add_argument("--start-stage", type=int, default=0)
+    parser.add_argument(
+        "--resume-sha256",
+        default=None,
+        help="Expected SHA-256 of the resume checkpoint (recorded either way).",
+    )
     args = parser.parse_args()
+    if (args.resume_run is None) != (args.start_stage == 0):
+        parser.error("--resume-run and --start-stage K (K >= 1) go together")
 
     spec = load_embodiment_spec(args.embodiment)
     curriculum = load_curriculum(args.curriculum)
@@ -161,7 +180,7 @@ def main() -> None:
         candidate = repo_root() / "results" / seed_namespace_run_id(curriculum.name, args.seed)
         if (candidate / "checkpoints" / "stage0.pt").is_file():
             t1_reference = candidate
-    if args.no_t1_check:
+    if args.no_t1_check or args.resume_run is not None:  # a resumed run does not retrain T1
         t1_reference = None
     run_continual(
         curriculum,
@@ -187,6 +206,9 @@ def main() -> None:
         identity_reference_run=args.identity_reference_run,
         identity_stages=tuple(args.identity_stages),
         results_root=args.results_root,
+        resume_run=args.resume_run,
+        start_stage=args.start_stage,
+        resume_sha256=args.resume_sha256,
     )
 
 

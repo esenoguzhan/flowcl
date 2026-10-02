@@ -1,0 +1,36 @@
+# A1: the stage-boundary resume test (docs/thesis_plan.md, Workstream A). Committed before the run.
+# Queued by scripts/queue_resume_check.sh; compared by scripts/resume_check.py.
+#
+# The test: resume plain GPM seed 0 (source.run) at stage 3 from its own stage2.pt
+# (scripts/run_continual.py --resume-run ... --start-stage 3), into results/<out>/ (never the
+# source), with the source's recipe, method config and evaluation config. The runner itself
+# restores the memory from the stage-2 checkpoint's artifact list (SHA-verified), recreates the
+# runner's text cache (T1 under AMP, the rest in fp32), imports stages 0-2's evaluations, and
+# checks stage 3's checkpoint against the source's before evaluating (--identity-stages 3).
+#
+# PASS only if all three hold (the plan's criteria):
+#   1. stage3.pt: every state-dict tensor equal to the source's, bitwise (0 of N differ);
+#   2. memory_task3.pt: equal in CONTENT, every tensor (dtype, shape, value) and metadata value.
+#      Byte equality is reported, not required: pickled bytes depend on object sharing, which a
+#      restored memory does not reproduce (seen in the CPU test, with identical content);
+#   3. eval/stage3.json: every task's per-episode successes and step counts equal.
+# gpm_logs_task3.json (c-values, residuals) is reported only. FAIL -> E3 does not use the resume
+# path until the cause is found and fixed.
+#
+# Code drift since the source run (0184293, 23 Sep): the trainer was refactored (schedule,
+# optimizer and stop_after fields; identical numbers under the default recipe) and GPM gained the
+# SGP hooks (hard GPM's projector and update are unchanged). Adaptive GPM's stage-0/1 identity
+# against this run passed bitwise on later code (9701620).
+
+out: resume_check                    # under results/
+
+source:
+  run: seq_hetero__gpm_projected_adam__seed0
+  stage: 3                           # resume at this stage, from stage{stage - 1}.pt
+  method: gpm                        # configs/method/gpm.yaml (the source's own method config)
+  sha256:
+    stage2: a0d7062227089ba8cc17b50a22f7bb6a9d7a44b1f37c181cec9a4a47873ad153
+    stage3: a97e9fbcbf22ab37fddf903e5e969ba060b62ce965a2050b015036c288187b86
+    memory2: b79264eaa27b6c7f3950a41a850b241af8046053ab1db763b04bcabbdf856839
+    memory3: e04a6ae73feaac899b515db418db6eca5751cba8d60b31bfaceed1d0b0e4af9c
+    eval3: 85ceb49fa016da508f02599983687c6092dc8ee656a48fd85ba4455413422a79

@@ -19,7 +19,9 @@ a call site, not a comment.
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,6 +92,9 @@ class ContinualResult:
     method_registry_name: str | None = None
     t1_pairing: dict | None = None
     identity_checks: dict[str, dict] = field(default_factory=dict)
+    # A resumed run: the stages before ``resume["start_stage"]`` come from the source run.
+    resume: dict | None = None
+    imported_stages: list[dict] = field(default_factory=list)
 
     def estimates(self) -> dict[tuple[int, str], Estimate]:
         """``(stage, task_key) -> Estimate``, so no rate travels without its CI."""
@@ -122,10 +127,11 @@ class ContinualResult:
                 "n_rollouts": self.matrix.n_rollouts.tolist(),
             },
             "metrics": self.summary(baseline).as_dict(),
-            "stages": [record.as_dict() for record in self.stages],
+            "stages": self.imported_stages + [record.as_dict() for record in self.stages],
             "systems": self.systems,
             "t1_pairing": self.t1_pairing,
             "identity_checks": self.identity_checks,
+            "resume": self.resume,
         }
 
     def save(self, path: str | Path, baseline: dict[str, float] | None = None) -> Path:
@@ -150,6 +156,157 @@ def seed_namespace_run_id(curriculum: str, seed: int) -> str:
     paired with it.
     """
     return continual_run_id("seq_ft", curriculum, seed)
+
+
+# Train-config fields that may differ between a source run and its resumption (where and how
+# fast it runs, not what it computes).
+RESUME_TRAIN_EXEMPT = ("device", "num_workers", "log_every")
+
+
+@dataclass
+class ResumeSource:
+    """A verified stage boundary of an earlier run (see :func:`load_resume_source`)."""
+
+    run: Path
+    start_stage: int
+    checkpoint: Path
+    sha256: str
+    loaded: object        # LoadedCheckpoint of stage{start_stage - 1}.pt
+    namespace: str
+    evaluations: dict     # stage -> EvaluationReport, for stages < start_stage
+    stage_dicts: list     # result.json-style records for stages < start_stage
+
+    def record(self) -> dict:
+        return {"run": str(self.run), "start_stage": self.start_stage,
+                "checkpoint": str(self.checkpoint), "sha256": self.sha256,
+                "imported_stages": list(range(self.start_stage))}
+
+
+def load_resume_source(
+    resume_run: Path,
+    start_stage: int,
+    curriculum: Curriculum,
+    method_name: str,
+    method_kwargs: dict | None,
+    raw_policy_cfg: dict,
+    train_cfg: TrainConfig,
+    seed: int,
+    expected_sha256: str | None = None,
+    device: str = "cpu",
+) -> ResumeSource:
+    """Load and verify ``checkpoints/stage{K-1}.pt`` of ``resume_run`` (``K = start_stage``).
+
+    Refuses (``ValueError``, every problem listed) unless the source's first ``K`` curriculum
+    stages equal this curriculum's, its method and kwargs, recipe (except
+    :data:`RESUME_TRAIN_EXEMPT`), policy config and seed equal this run's, the checkpoint is the
+    end of stage ``K-1`` of that task (and has ``expected_sha256`` if given), its stats match the
+    source's ``stats.json``, every method artifact it names is on disk with its recorded
+    SHA-256, and every stage before ``K`` has its evaluation file. The seed namespace is the
+    source's, so a resumed run keeps the source's pairing even under an extended curriculum.
+    """
+    from omegaconf import OmegaConf
+
+    from flowcl.train.checkpoint import load_checkpoint
+
+    resume_run = Path(resume_run)
+    K = int(start_stage)
+    if not 1 <= K < len(curriculum.stages):
+        raise ValueError(f"start_stage must lie in 1..{len(curriculum.stages) - 1}, got {K}")
+    conf = OmegaConf.to_container(OmegaConf.load(resume_run / "config.yaml"), resolve=True)
+    checkpoint = resume_run / "checkpoints" / f"stage{K - 1}.pt"
+    sha = file_sha256(checkpoint)
+    problems: dict = {}
+    if expected_sha256 is not None and sha != expected_sha256:
+        problems["checkpoint_sha256"] = (sha, expected_sha256)
+
+    src_tasks = [(t["task_key"], t["n_demos"]) for t in conf["curriculum"]["tasks"]]
+    own_tasks = [(st.task_key, st.n_demos) for st in curriculum.stages]
+    if len(src_tasks) < K or src_tasks[:K] != own_tasks[:K]:
+        problems["curriculum"] = {"source": src_tasks[:K], "this": own_tasks[:K]}
+    src_method = {k: v for k, v in conf["method"].items() if k != "display_name"}
+    if src_method != {"name": method_name, **(method_kwargs or {})}:
+        problems["method"] = {"source": src_method, "this": {"name": method_name, **(method_kwargs or {})}}
+    if conf.get("seed") != seed:
+        problems["seed"] = (conf.get("seed"), seed)
+    defaults = {f.name: f.default for f in dataclasses.fields(TrainConfig)}
+    own_train = vars(train_cfg)
+    train_diff = {
+        k: (conf["train"].get(k, defaults.get(k)), own_train.get(k))
+        for k in set(conf["train"]) | set(own_train)
+        if k not in RESUME_TRAIN_EXEMPT and conf["train"].get(k, defaults.get(k)) != own_train.get(k)
+    }
+    if train_diff:
+        problems["train"] = train_diff
+
+    loaded = load_checkpoint(checkpoint, device=device)
+    payload, extra = loaded.payload, loaded.payload.get("extra", {})
+    if payload.get("stage") != K - 1 or payload.get("task_key") != curriculum.stages[K - 1].task_key:
+        problems["checkpoint_stage"] = (payload.get("stage"), payload.get("task_key"))
+    if dict(payload["policy_config"]) != dict(raw_policy_cfg):
+        problems["policy_config"] = "the checkpoint's policy config differs from this run's"
+    namespace = conf.get("seed_namespace_run_id")
+    if extra.get("seed_namespace_run_id") != namespace:
+        problems["namespace"] = (extra.get("seed_namespace_run_id"), namespace)
+    src_stats = NormalizationStats.load(resume_run / "stats.json")
+    if src_stats.fingerprint() != loaded.stats.fingerprint():
+        problems["stats"] = (src_stats.fingerprint(), loaded.stats.fingerprint())
+    for art in extra.get("method_artifacts", []):
+        path = resume_run / art["path"]
+        if not path.is_file() or file_sha256(path) != art["sha256"]:
+            problems.setdefault("method_artifacts", []).append(art["path"])
+
+    result_path = resume_run / "result.json"
+    recorded = json.loads(result_path.read_text())["stages"] if result_path.is_file() else None
+    evaluations, stage_dicts = {}, []
+    for k in range(K):
+        path = resume_run / "eval" / f"stage{k}.json"
+        if not path.is_file():
+            problems.setdefault("evaluations", []).append(str(path))
+            continue
+        report = EvaluationReport.load(path)
+        if report.stage != k or (report.seed_namespace_run_id not in (None, namespace)):
+            problems.setdefault("evaluations", []).append(f"{path}: stage {report.stage}, "
+                                                         f"namespace {report.seed_namespace_run_id}")
+        evaluations[k] = report
+        if recorded is not None and k < len(recorded):
+            entry = dict(recorded[k])
+            if entry.get("task_key") != curriculum.stages[k].task_key:
+                problems.setdefault("result_stages", []).append(k)
+        else:  # a run that stopped before writing result.json
+            entry = {"stage": k, "task_key": curriculum.stages[k].task_key,
+                     "n_demos": curriculum.stages[k].n_demos,
+                     "checkpoint": str(resume_run / "checkpoints" / f"stage{k}.pt"),
+                     "evaluation": report.as_dict()}
+        entry["imported_from"] = str(resume_run)
+        stage_dicts.append(entry)
+    if problems:
+        raise ValueError(f"cannot resume {resume_run} at stage {K}: {problems}")
+    return ResumeSource(run=resume_run, start_stage=K, checkpoint=checkpoint, sha256=sha,
+                        loaded=loaded, namespace=namespace, evaluations=evaluations,
+                        stage_dicts=stage_dicts)
+
+
+def warm_runner_text_cache(policy, curriculum: Curriculum, dataset_dir, device, amp: bool) -> dict:
+    """Recreate the runner's text-encoder cache at a stage boundary (for a resumed run).
+
+    The frozen text encoder caches each instruction in the precision active when it is first
+    encoded (:class:`flowcl.models.encoders.CachedTextEncoder`). In the runner, T1's instruction
+    is first encoded inside T1's (AMP, if ``amp``) training step; every other task's is first
+    encoded in fp32 by the evaluation after stage 0, which covers every task. The instructions
+    are the demo files' own (:func:`flowcl.data.libero_adapter.read_task_metadata`), one string
+    per call, as :func:`flowcl.experiments.low_update.warm_runner_cache` does.
+    """
+    from flowcl.data.libero_adapter import read_task_metadata
+
+    device_type = torch.device(device).type
+    state = {}
+    for idx, stage in enumerate(curriculum.stages):
+        text = read_task_metadata(stage.ref.demo_path(dataset_dir)).language
+        task_amp = bool(amp and idx == 0 and device_type == "cuda")
+        with torch.no_grad(), torch.autocast(device_type=device_type, enabled=task_amp):
+            policy.text_encoder([text])
+        state[stage.task_key] = {"text": text, "precision": "amp" if task_amp else "fp32"}
+    return state
 
 
 def method_label(method, method_name: str) -> str:
@@ -265,6 +422,9 @@ def run_continual(
     t1_pairing_max_rel_diff: float = T1_PAIRING_MAX_REL_DIFF,
     identity_reference_run: Path | None = None,
     identity_stages: tuple[int, ...] = (),
+    resume_run: Path | None = None,
+    start_stage: int = 0,
+    resume_sha256: str | None = None,
 ) -> ContinualResult:
     """Train one policy through ``curriculum`` under ``method_name``.
 
@@ -287,6 +447,14 @@ def run_continual(
             exactly at ``identity_stages`` (:func:`stage_identity_check`); checked right
             after each listed stage's checkpoint, before evaluation, and the run stops
             on a mismatch.
+        resume_run, start_stage: Resume at a stage boundary: start from
+            ``resume_run/checkpoints/stage{start_stage-1}.pt`` (verified by
+            :func:`load_resume_source`, against ``resume_sha256`` if given), restore the
+            method's state from that checkpoint's artifacts
+            (``method.restore_state``), recreate the runner's text cache
+            (:func:`warm_runner_text_cache`), import the earlier stages' evaluations, and
+            train stages ``start_stage..``. The run keeps the source's seed namespace and
+            frozen stats. It recovers stage boundaries only: a stage that crashed is rerun.
 
     Seeding: every stream derives from :func:`seed_namespace_run_id`, not from this
     run's id; both ids are recorded in the config, checkpoints, eval files and result.
@@ -317,6 +485,20 @@ def run_continual(
     seed_ns = seed_namespace_run_id(curriculum.name, seed)
     raw_policy_cfg = load_policy_config(policy_config)
 
+    source = None
+    if resume_run is not None:
+        from flowcl.utils.libero_paths import repo_root
+
+        target = (Path(results_root) if results_root else repo_root() / "results") / run_id
+        if target.resolve() == Path(resume_run).resolve():
+            raise ValueError(f"a resumed run must not write into its source ({resume_run})")
+        source = load_resume_source(resume_run, start_stage, curriculum, method_name, method_kwargs,
+                                    raw_policy_cfg, train_cfg, seed, expected_sha256=resume_sha256,
+                                    device=train_cfg.device)
+        seed_ns = source.namespace  # the source's pairing, also under an extended curriculum
+    elif start_stage:
+        raise ValueError("start_stage needs resume_run")
+
     run = create_run(
         run_id=run_id,
         cfg={
@@ -334,6 +516,7 @@ def run_continual(
                     str(identity_reference_run) if identity_reference_run else None
                 ),
                 "identity_stages": list(identity_stages),
+                "resume": source.record() if source else None,
             },
             "curriculum": {
                 "name": curriculum.name,
@@ -357,11 +540,14 @@ def run_continual(
     curriculum.assert_consistent(dataset_dir)
     torch.manual_seed(seed)
 
-    # §3.3: fit once on task 1, then freeze for the whole curriculum.
-    first = curriculum.stages[0]
-    stats = fit_stats(
-        first.ref, spec, n_demos=first.n_demos, dataset_dir=dataset_dir
-    )
+    if source is None:
+        # §3.3: fit once on task 1, then freeze for the whole curriculum.
+        first = curriculum.stages[0]
+        stats = fit_stats(
+            first.ref, spec, n_demos=first.n_demos, dataset_dir=dataset_dir
+        )
+    else:
+        stats = source.loaded.stats  # the source's frozen task-1 stats, verified above
     stats.save(run.artifact("stats.json"))
     stats_fingerprint = stats.fingerprint()
     print(
@@ -370,7 +556,19 @@ def run_continual(
         flush=True,
     )
 
-    policy = build_policy(raw_policy_cfg, spec, pretrained=pretrained)
+    resume_record = None
+    if source is None:
+        policy = build_policy(raw_policy_cfg, spec, pretrained=pretrained)
+    else:
+        policy = source.loaded.policy
+        restored = method.restore_state(source.loaded.payload.get("extra", {}), source.run,
+                                        source.start_stage - 1)
+        cache = warm_runner_text_cache(policy, curriculum, dataset_dir, train_cfg.device,
+                                       amp=train_cfg.amp)
+        resume_record = {**source.record(), "method_state": restored, "text_cache": cache}
+        atomic_write_text(run.artifact("resume.json"), json.dumps(resume_record, indent=2) + "\n")
+        print(f"[flowcl] {run_id}: resumed from {source.checkpoint} (sha256 {source.sha256[:12]}), "
+              f"training stages {source.start_stage}..{len(curriculum.stages) - 1}", flush=True)
     policy.to(torch.device(train_cfg.device))
     parameter_report = policy.parameter_report()
 
@@ -385,10 +583,23 @@ def run_continual(
         task_keys=curriculum.task_keys,
         matrix=matrix,
         run=run,
+        resume=resume_record,
     )
 
+    if source is not None:
+        for k, report in sorted(source.evaluations.items()):
+            shutil.copy2(source.run / "eval" / f"stage{k}.json", run.subdir("eval") / f"stage{k}.json")
+            for task_position, task_key in enumerate(curriculum.task_keys):
+                entry = report.by_task().get(task_key)
+                if entry is not None:
+                    matrix.set(k, task_position, entry.estimate.value, entry.n_rollouts)
+        result.imported_stages = source.stage_dicts
+
+    first_stage = source.start_stage if source is not None else 0
     total_started = time.perf_counter()
     for stage_idx, stage in enumerate(curriculum.stages):
+        if stage_idx < first_stage:
+            continue
         # The §3.3 stage-boundary assertion. Deliberately before the dataset is built,
         # so a method that refitted stats cannot get as far as training on them.
         assert_frozen(
@@ -550,6 +761,7 @@ def run_continual(
         "is_exemplar_free": getattr(method, "is_exemplar_free", True),
         "total_wall_clock_s": time.perf_counter() - total_started,
         "train_wall_clock_s": sum(r.train_log.wall_clock_s for r in result.stages),
+        "resumed_at_stage": first_stage if source is not None else None,
     }
 
     if evaluate:

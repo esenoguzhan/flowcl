@@ -171,6 +171,21 @@ class BaseMethod:
     def state_dict(self) -> dict:
         return {"name": self.name}
 
+    def restore_state(self, checkpoint_extra: dict, source_run: Path, task_idx: int) -> dict:
+        """Resume after ``task_idx`` from a stage checkpoint's ``extra`` (and its run's files).
+
+        A method that persists nothing across tasks has nothing to restore. One that wrote
+        artifacts must override this: silently starting from an empty state would make a
+        resumed run a different method.
+        """
+        artifacts = checkpoint_extra.get("method_artifacts") or []
+        if artifacts:
+            raise NotImplementedError(
+                f"{self.name} stored artifacts at task {task_idx} "
+                f"({[a['path'] for a in artifacts]}); resuming it needs its own restore_state"
+            )
+        return {}
+
     # ---- §8.2 systems reporting ------------------------------------------------
 
     def stored_bytes(self) -> int:
