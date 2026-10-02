@@ -1,0 +1,39 @@
+# seq_hetero_t5 plus T6-T8, for the eight-task evaluation (docs/thesis_plan.md, A2 and E3).
+#
+# The first five stages are seq_hetero_t5's, unchanged (and its first four are seq_hetero's), so
+# low_update.seed_context accepts this curriculum as an extension of the reference runs' own and
+# every run inherits seq_hetero's seed namespace. No existing run is affected by this file.
+# T6-T8 are fixed by Gate 0 under rules committed before each round:
+#   round 1 (configs/analysis/t5_sweep.yaml follow_up; docs/runs/2026-10-02_gate0_t8.md):
+#     T7 = libero_10 KITCHEN_SCENE4 (96%); T6 and T8 unresolved (both LIBERO-10 candidates failed);
+#   round 2 (configs/analysis/gate0_t8_r2.yaml; docs/runs/2026-10-02_gate0_t8_r2.md), LIBERO-90
+#     kitchen/study candidates chosen under written novelty criteria:
+#     T6 = KITCHEN_SCENE6 close the microwave (the backup, 96%; the frying-pan primary got 78%),
+#     T8 = KITCHEN_SCENE10 chocolate pudding into the top drawer and close it (92%).
+name: seq_hetero_t8
+
+description: >
+  seq_hetero (one task per suite), a fifth LIBERO-10 study task, then three kitchen tasks in
+  scenes none of T1-T5 uses (two from LIBERO-90, one from LIBERO-10).
+
+expectation: >
+  The adaptive GPM trunk memory is nearly full after T4, so T5-T8 measure how protection,
+  plasticity and retention trade off once the capacity is exhausted.
+
+tasks:
+  - task_key: libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+    n_demos: 50
+  - task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    n_demos: 50
+  - task_key: libero_goal/open_the_middle_drawer_of_the_cabinet
+    n_demos: 50
+  - task_key: libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+    n_demos: 50
+  - task_key: libero_10/STUDY_SCENE1_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy
+    n_demos: 50
+  - task_key: libero_90/KITCHEN_SCENE6_close_the_microwave
+    n_demos: 50
+  - task_key: libero_10/KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it
+    n_demos: 50
+  - task_key: libero_90/KITCHEN_SCENE10_put_the_chocolate_pudding_in_the_top_drawer_of_the_cabinet_and_close_it
+    n_demos: 50

@@ -433,3 +433,16 @@ def test_gate0_queue_round2_config(tmp_path):
     assert f"--tasks {slots['T6']['primary']}" in cmd
     assert cmd.strip().endswith(str(tmp_path / "a" / "results" / "gate0_t8_r2" / "T6"))
     assert f"--tasks {slots['T8']['backup']}" in (logdir / "1_T8_backup.log").read_text()
+
+
+def test_seq_hetero_t8_is_t5_plus_the_gate0_slots():
+    from flowcl.data.curriculum import load_curriculum
+
+    t8 = [st.task_key for st in load_curriculum("seq_hetero_t8").stages]
+    t5 = [st.task_key for st in load_curriculum("seq_hetero_t5").stages]
+    _, r2 = g8.load_slots(R2)
+    assert t8[:5] == t5 and len(t8) == 8 and len(set(t8)) == 8
+    assert t8[5] == r2["T6"]["backup"]               # round 2: the primary failed, the backup passed
+    assert t8[6] == g8.slots()["T7"]["primary"]      # round 1
+    assert t8[7] == r2["T8"]["primary"]              # round 2
+    assert all(st.n_demos == 50 for st in load_curriculum("seq_hetero_t8").stages)
