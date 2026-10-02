@@ -11,6 +11,7 @@ but do not decide).
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -41,6 +42,8 @@ def deep_differences(a, b, path: str = "", limit: int = 20) -> list[str]:
                 out.append(f"{p}: sequence")
             for i, (u, v) in enumerate(zip(x, y)):
                 walk(u, v, f"{p}[{i}]")
+        elif isinstance(x, float) and isinstance(y, float) and math.isnan(x) and math.isnan(y):
+            return  # NaN marks the same "undefined" in both (e.g. a c-value of a zero update)
         elif type(x) is not type(y) or x != y:
             out.append(f"{p}: {x!r:.60} != {y!r:.60}")
 

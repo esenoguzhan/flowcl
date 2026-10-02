@@ -79,6 +79,8 @@ def test_resumed_gpm_run_reproduces_its_source_bitwise(gpm_source, tmp_path, mon
     assert report["method_artifacts"]["memory_task2.pt"]["differences"] == []
     assert deep_differences({"a": torch.ones(2)}, {"a": torch.zeros(2)}) == [".a: tensor"]
     assert deep_differences({"a": 1}, {"a": 1.0}) and deep_differences([1], (1,))
+    assert deep_differences({"c": float("nan")}, {"c": float("nan")}) == []
+    assert deep_differences({"c": float("nan")}, {"c": 0.5}) == [".c: nan != 0.5"]
     mine = torch.load(run / "checkpoints" / "stage2.pt", weights_only=False)["extra"]
     theirs = torch.load(src / "checkpoints" / "stage2.pt", weights_only=False)["extra"]
     assert mine["method_state"]["memory_extended"] == theirs["method_state"]["memory_extended"]
