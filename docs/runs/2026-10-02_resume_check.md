@@ -1,7 +1,14 @@
-# A1 stage-boundary resume test (plain GPM seed 0, stage 3): `fail` by the registered rule, on metadata schema drift only
+# A1 stage-boundary resume: first test `fail` (metadata schema drift only), confirmatory test `pass`
 
-**Status: the registered verdict is `fail`.** One of the three criteria (memory content) fails.
-Every *computed* quantity is reproduced exactly:
+**Status: A1 is signed off.**
+- **The confirmatory test passes all three criteria** (adaptive GPM seed 0, stage 3; §4): the
+  checkpoint is bitwise identical, the memory content is equal, and every evaluation episode is
+  identical.
+- **The first registered test** (plain GPM seed 0, stage 3; §1–3) keeps its verdict, **`fail`**.
+  Its one failing criterion, memory content, failed only on two metadata keys that code written
+  after its source run adds.
+
+**The first test,** criterion by criterion. Every *computed* quantity is reproduced exactly:
 
 | Criterion (`configs/analysis/resume_check.yaml`) | Result |
 |---|---|
@@ -19,17 +26,27 @@ Every *computed* quantity is reproduced exactly:
   - Every memory tensor is equal, and so are every value both files share and the histories of
     tasks 0–2.
   - The final and mean-last-50 training losses are equal to the source's (0.003032 / 0.008670).
-- **The confirmatory test is registered but not yet run** (`configs/analysis/resume_check_ne90.yaml`,
-  `53b05cb`). Its source, adaptive GPM seed 0, was trained at `9701620`, so its memory files
-  already carry both keys (§4).
+- **The confirmatory test** (`configs/analysis/resume_check_ne90.yaml`, registered in `53b05cb`
+  before its run) used a source trained at `9701620`, whose memory files already carry both keys.
+  It passed (§4).
 
-**Date (local, CEST):** Fri 2 Oct 2026, 14:27:03 → 15:45:36. The resume took 78 min: training
-50 min, then the memory update and four-task evaluation. The check took 5 s.
+**Dates (local, CEST), Fri 2 Oct 2026:**
 
-**Code:** `9a723c6`, clean at queue start. The rule `configs/analysis/resume_check.yaml` was
-committed with the implementation, and its SHA-256 was identical before and after the smoke run.
+| Test | Run | Duration |
+|---|---|---|
+| First | 14:27:03 → 15:45:36 | 78 min (training 50 min, then the memory update and four-task evaluation; the check took 5 s) |
+| Confirmatory | 18:32:53 → 19:36:11 | 63 min |
 
-**Cite:** `results/resume_check/report.json` (SHA-256 `e3e84b92…`).
+**Code:**
+- The first test ran on `9a723c6`, clean at queue start. Its rule
+  `configs/analysis/resume_check.yaml` was committed with the implementation, and the rule's
+  SHA-256 was identical before and after the smoke run.
+- The confirmatory test ran on `e6be1fc`, clean at queue start. Between `53b05cb` and `e6be1fc`
+  only `README.md`, `docs/` and the first test's record changed: no code, config or test.
+
+**Cite:**
+- `results/resume_check/report.json` (SHA-256 `e3e84b92…`);
+- `results/resume_check_ne90/report.json` (SHA-256 `c8b81012…`).
 
 ---
 
@@ -73,18 +90,33 @@ Criterion 2 requires equality of "every tensor and metadata value". Extra keys v
 failure it caught is a schema difference between the code that wrote the source and today's code.
 No restored or recomputed value differs.
 
-## 4. Confirmatory test (registered, pending)
+## 4. Confirmatory test: `pass`
 
-**`configs/analysis/resume_check_ne90.yaml`** (`53b05cb`) applies the same procedure and the same
-three criteria to adaptive GPM seed 0 at stage 3. That source was trained at `9701620`:
+**The test.** `configs/analysis/resume_check_ne90.yaml` (`53b05cb`) applies the same procedure and
+the same three criteria to adaptive GPM seed 0 at stage 3. That source was trained at `9701620`:
 - its memory files carry `target_fraction` and `new_energy_fraction`;
 - no later commit changes GPM's memory schema (`_basis_meta` adds nothing for GPM).
 
-**Launch:** `bash scripts/queue_resume_check.sh --config configs/analysis/resume_check_ne90.yaml`.
-- It was started at 15:47 and stopped at once. The runner's clean-tree guard refused because the
-  working tree had changes that are not this study's: `README.md`, `docs/implementation_notes.md`
-  and `docs/assets/`, all written at 15:46:48.
-- It will run from a clean tree.
+**The restored state.** The run resumed from `stage2.pt` (SHA `f3f5202e…`, the T5 sweep's pinned
+file), with memory tasks 0–2.
+
+| Criterion | Result |
+|---|---|
+| 1. `stage3.pt` bitwise | **pass**: 0 of 656 tensors differ |
+| 2. `memory_task3.pt` content | **pass**: no difference in any tensor, key or value (bytes differ, as expected) |
+| 3. `eval/stage3.json` per episode | **pass**: identical on all four tasks (98 / 84 / 94 / 92%) |
+
+**Also equal:**
+- the final and mean-last-50 training losses (0.007504 / 0.013651);
+- `gpm_logs_task3.json` (reported only).
+  - The comparison helper listed its 600 NaN c-values (steps with a zero update) as differences,
+    because NaN ≠ NaN. A NaN-aware comparison finds 0 real differences.
+  - The helper now treats two NaNs as equal (a follow-up commit). This changes no criterion: the
+    log is reported only, and the memory and checkpoint contain no NaN.
+
+**The first launch** (15:47) was stopped at once by the runner's clean-tree guard. The working tree
+then had a README rewrite in progress that is not this study's. That rewrite was committed
+(`e6be1fc`), and the test ran from that clean tree.
 
 ## 5. Consequences
 
@@ -92,7 +124,8 @@ three criteria to adaptive GPM seed 0 at stage 3. That source was trained at `97
   reproduces weights, memory tensors and evaluation episodes exactly.
 - **Resumed plain-GPM runs** will write the newer metadata schema (two extra keys). Nothing reads
   those keys as a decision input.
-- **The A1 sign-off waits for the confirmatory test.**
+- **A1 is signed off** on the confirmatory test. The first test's `fail` stays on record with its
+  diagnosis.
 - **Not covered:**
   - resuming a crashed stage (a stage that crashed is rerun);
   - an extended curriculum (E3's seq_hetero → seq_hetero_t8). The namespace inheritance is in the
@@ -101,7 +134,10 @@ three criteria to adaptive GPM seed 0 at stage 3. That source was trained at `97
 ## 6. Artifact map
 
 ```
-results/resume_check/report.json                                  # the comparison (SHA-256 e3e84b92...)
+results/resume_check/report.json                                  # the first test (SHA-256 e3e84b92...)
+results/resume_check_ne90/report.json                             # the confirmatory test (SHA-256 c8b81012...)
+results/resume_check_ne90/seq_hetero__gpm_projected_adam_ne90__seed0/   # its resumed run
+results/logs/queue_20261002_183253_resume_check_ne90/              # its queue logs
 results/resume_check/seq_hetero__gpm_projected_adam__seed0/        # the resumed run: config (with the
                                                                   # resume block), resume.json, stats,
                                                                   # checkpoints/stage3.pt, method/*_task3.*,
