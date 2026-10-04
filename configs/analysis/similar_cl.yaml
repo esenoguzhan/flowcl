@@ -1,0 +1,113 @@
+# Similar-vs-diverse two-task continual study: does GPM's projection cost more plasticity on a task
+# SIMILAR to the first than on a diverse one? EXPLORATORY: one seed, one A state, three selected B
+# tasks, predictions stated in advance, no gate. The follow-up of the similar-task diagnostic
+# (configs/analysis/similar_tasks.yaml; docs/runs/2026-10-04_similar_tasks.md). Committed before any
+# registered run (the scratch smoke run included). Evaluated by scripts/similar_cl.py; queued by
+# scripts/queue_similar_cl.sh.
+#
+# CURRICULA: A (libero_goal/put_the_bowl_on_the_plate) -> B, for B = bowl->stove (S, similar),
+# milk->basket (D, diverse), bowl->cabinet top (S2, similar). ARMS: seq_ft; allowlist_ft (only GPM's
+# trainable set from Task 2 on, no projection; flowcl/methods/allowlist_ft.py); plain GPM. Standard
+# recipe (30k steps, lr 1e-4, batch 64, AMP, 50 episodes per cell, every task evaluated after every
+# stage).
+#
+# ONE A STATE: S's three runs train both stages; allowlist_ft and gpm must equal S's seq_ft at stage 0
+# bit for bit (the runner's identity check; GPM also keeps its T1 pairing). D's and S2's runs resume
+# at stage 1 from S's stage0.pt of the same arm (A1 resume, source SHA-256 recorded and expected), so
+# every run inherits S's seed namespace: A's rollouts are paired across every run and checkpoint, B's
+# across the three arms of a curriculum and with B's zero-shot cell.
+#
+# STAGE 0 (on S seq_ft's stage0.pt, no training): B's zero-shot cell for milk and cabinet (S's
+# namespace and recorded eval config; stove's is in S's own stage-0 eval); the fixed probe loss
+# (flowcl.analysis.probes: identical batches, s and noise; fp32) on A and every B; the instruction
+# probes A <-> each B. STAGE 1 (each run's stage1.pt): probe loss on A and B; instruction probe A <-> B.
+# INSTRUCTION PROBE, both directions (A's data under B's instruction, B's data under A's): (i) the
+# velocity statistic of the diagnostic (similar_tasks.paired_swap: pooled sum ||v_swap - v_ref||^2 /
+# sum ||v_ref||^2 over valid positions, noisy demonstration actions in the decoder); (ii) sampled
+# chunks (language_check.instruction_sensitivity: policy.sample() from identical observations and
+# initial noise, pooled sum |diff| / sum |chunk| over fixed batches, the eval config's Euler steps).
+# The text cache is rebuilt as in the runner before any probe (A first, under AMP when the run used
+# AMP on CUDA; every B in fp32) and its precision recorded. Chunk sensitivity shows instruction
+# INFLUENCE at inference, not correct task selection (that needs instruction-swap rollouts: not run).
+#
+# CELLS per curriculum c, arm m: R[0][0] (A), Z_c (B zero-shot), R_m[1][1] (B), R_m[1][0] (A after B).
+# PAIRED DIFFERENCES (rollout-paired bootstrap, configs/eval/libero_eval.yaml):
+#   dP_proj   = R_gpm[1][1] - R_allow[1][1]   projection's plasticity cost
+#   dP_freeze = R_allow[1][1] - R_seqft[1][1] freezing's
+#   dP_tot    = R_gpm[1][1] - R_seqft[1][1]   the whole GPM configuration's
+#   dR_*      = the same pairings on R[1][0]; forgetting R[0][0] - R_m[1][0] per arm.
+# ASSESSABILITY (declared conventions, not validity): A_weak if seq_ft's R[0][0] < a_weak_below (the
+# retention comparisons are then not assessable); a plasticity difference is inconclusive when its
+# comparator's R[1][1] < b_acquired_min (a small dP is not read as a small cost).
+#
+# PREDICTIONS (descriptive; conditional on these three B tasks and this A state -- similarity and
+# difficulty are not varied independently):
+#  P1 projection costs more plasticity on similar B than on diverse B: mean dP_proj over the similar
+#     curricula that are complete, minus dP_proj of D. supported < p1_supported_below; direction_only
+#     in [p1_supported_below, 0); not_supported >= 0; inconclusive if a used curriculum is invalid or a
+#     comparator did not acquire B. Point estimates; different B tasks, so unpaired. Labelled by its
+#     basis: both similar curricula (the mean and each contrast) or "S versus D, one similar task".
+#  P2 GPM retains A better than seq_ft in every curriculum: dR_tot paired CI low > 0, per curriculum.
+#  P2b (reported) does projection protect beyond freezing: dR_proj.
+#  P3 (reported) seq_ft's forgetting of A, similar against diverse.
+#  P4 (reported) instruction dependence at stage 1 against stage 0, both statistics, per arm.
+#  P5 (reported) dP_tot, dP_freeze, Z_c, probe losses.
+# VALIDITY (per run; a failure marks the curriculum invalid): complete cells with n_episodes rollouts;
+# production settings and a clean git_sha; S's namespace; one stats fingerprint fitted on A (every
+# checkpoint agreeing); S's identity_stage0 passed for allowlist_ft and gpm, GPM's T1 pairing passed;
+# resume.json naming S's stage0.pt of the same arm with its current SHA-256, stage 0 only imported (no
+# stage0.pt, eval/stage0.json identical to the source's); identical per-episode seeds across arms and
+# against the zero-shot file; allowlist_ft's recorded trainable set equal to the allowlist; every
+# state-dict tensor outside the allowlist equal between the arm's source stage0.pt and stage1.pt
+# (allowlist_ft, gpm; allowlisted tensors that did not move are reported, not failed); GPM's memory
+# artifacts matching their recorded SHA-256 and the worst residual over bound <= 1. The stage-0 file
+# names S seq_ft's stage0.pt by SHA-256. PROBE ARTIFACTS are required: missing -> incomplete; a
+# checkpoint SHA, weight check or cache precision that does not match -> that artifact invalid (its P4
+# values are withheld; the success comparisons stand).
+# STATUS / EXIT: valid 0; invalid 3 (any check failed); incomplete 4 (e.g. S2 stopped; S and D still
+# reported).
+
+seed: 0
+out: similar_cl                       # under the results root
+task_a: libero_goal/put_the_bowl_on_the_plate
+source_curriculum: similar_ab_stove   # trains stage 0; its namespace is every run's
+
+curricula:                            # queue order
+  - {name: similar_ab_stove, short: S, category: similar}
+  - {name: similar_ab_milk, short: D, category: diverse}
+  - {name: similar_ab_cabinet, short: S2, category: similar}
+
+arms:                                 # arm -> configs/method/<file>
+  seq_ft: seq_ft
+  allowlist_ft: allowlist_ft
+  gpm: gpm
+
+production:
+  train: {steps: 30000, batch_size: 64, lr: 1.0e-4, amp: true}
+  n_episodes: 50
+
+smoke:
+  train: {steps: 200, amp: true}
+  n_episodes: 1
+
+a_weak_below: 0.80
+b_acquired_min: 0.50
+p1_supported_below: -0.10
+
+probe:                                # fixed-batch probe loss
+  batch_size: 64
+  n_batches: 16
+  seed_tags:
+    shuffle: similar_cl_probe::shuffle
+    flow_time: similar_cl_probe::flow_time
+    noise: similar_cl_probe::noise
+
+swap:                                 # velocity statistic (similar_tasks.paired_swap)
+  capture_config: subspace
+  n_batches: 16
+  seed_tag: similar_cl_swap
+
+chunks:                               # sampled-chunk sensitivity (instruction_sensitivity)
+  batch_size: 32
+  n_batches: 8
+  seed_tag: similar_cl_chunks

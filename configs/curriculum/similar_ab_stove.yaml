@@ -1,0 +1,18 @@
+# Two-task A -> B curriculum for the similar-vs-diverse continual study
+# (configs/analysis/similar_cl.yaml). T1 is task A of the similar-task diagnostic
+# (docs/runs/2026-10-04_similar_tasks.md); T2 is similar (same scene and object, another target).
+name: similar_ab_stove
+
+description: >
+  A (put the bowl on the plate) then B (libero_goal/put_the_bowl_on_the_stove). B is similar (same scene and object, another target).
+
+expectation: >
+  Exploratory. Hard projection removes more of a similar B's gradient energy than a diverse
+  B's at A's checkpoint, so GPM's plasticity cost (against allowlist fine-tuning) is predicted
+  to be larger on a similar B.
+
+tasks:
+  - task_key: libero_goal/put_the_bowl_on_the_plate
+    n_demos: 50
+  - task_key: libero_goal/put_the_bowl_on_the_stove
+    n_demos: 50

@@ -8,8 +8,9 @@ Methods appear in the §6 implementation order. ``gpm`` is here ahead of its bui
 slot for the Gate 3 feasibility pilot only.
 """
 
+from flowcl.methods.allowlist_ft import AllowlistFT
 from flowcl.methods.gpm import GPM
 from flowcl.methods.seq_ft import SeqFT
 from flowcl.methods.sgp import SGP
 
-__all__ = ["SeqFT", "GPM", "SGP"]
+__all__ = ["SeqFT", "GPM", "SGP", "AllowlistFT"]

@@ -1,0 +1,3 @@
+# Sequential fine-tuning restricted to GPM's trainable set from Task 2 on (no projection).
+# The control that separates freezing from projection (configs/analysis/similar_cl.yaml).
+name: allowlist_ft
