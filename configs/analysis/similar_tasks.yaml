@@ -1,0 +1,91 @@
+# Similar-task diagnostic: do SIMILAR tasks share GPM's protected input space more than diverse ones,
+# and does the signal that tells them apart (the instruction) fall outside it? EXPLORATORY: one seed,
+# one A policy, no continual training, no gate, no claim level. Committed before any run (the scratch
+# smoke run included). Evaluated by scripts/similar_tasks.py; queued by scripts/queue_similar_tasks.sh.
+#
+# TASK A: libero_goal/put_the_bowl_on_the_plate, trained by scripts/gate0.py (the Gate 0 recipe:
+# 30k steps, lr 1e-4, batch 64, AMP, seed 0, every parameter; 50 rollouts recorded as a sanity check,
+# flag A_weak below 80%). Every measurement is at A's final checkpoint, fp32, autocast off, eval(),
+# no optimizer step, weights verified unchanged.
+#
+# M_A: A's eps-thresholded input basis per registry layer from A's own data (capture_task_grams with
+# this study's seed tags, primary view, then basis_from_gram); eps 0.95 primary, 0.99 reported. A
+# CONTROLLED fp32 DIAGNOSTIC with GPM's capture function and eps -- not a bitwise reproduction of a GPM
+# run's memory: the seeds use this study's tags (not GPM's gpm_memory:: namespace), and every
+# instruction string used is encoded once in fp32 before any capture (not AMP-first for A as in the
+# runner; docs/methods_notes.md §3), which keeps the text-cache state deterministic. A's checkpoint
+# SHA-256 and M_A's artifact SHA-256 are pinned at the memory step; every later step verifies both.
+# Self-control: captured_energy_fraction(M_A, K_A) >= eps - 1e-6 per layer on the very Gram M_A was
+# built from (rank selection can overshoot); an independent stochastic recapture of A (another
+# capture seed, the same training examples -- not held-out data) is reported.
+#
+# PER TASK B (at A's checkpoint, B's data under A's frozen statistics):
+#  1 input overlap   captured_energy_fraction(M_A, K_B) per layer (GPM's proj_energy_fraction);
+#  2 blocked grad    Gate 3: c = ||G M_A M_A^T|| / ||G||; hard projection keeps sqrt(1 - c^2) of the
+#                    raw-gradient norm and removes c^2 of its energy (c = 0.95: 31% of the norm
+#                    survives, 90% of the energy is removed). Primary: global_c(0.95)["trunk"]["energy"]
+#                    (pooled over batches); "full" (full-dataset gradient), per half and per layer
+#                    reported. Gate 3's batch-bootstrap CIs are conditional on this checkpoint and data.
+#  3 local alignment cosine of A's and B's full-dataset gradients, per layer and pooled (all, trunk,
+#                    decoder); both norms; split-half self-consistency cos(G_even, G_odd) of each task
+#                    (Gate 3's keep_split_gradients); a cosine is `unstable` where either task's
+#                    self-consistency < stability_threshold (declared convention), undefined at zero
+#                    norm. A positive cosine = a local shared descent direction at this checkpoint, not
+#                    positive transfer in training or rollouts; raw-gradient overlap does not test the
+#                    AdamW-SGP step-budget coupling (optimizer steps), which is not claimed.
+#  4 instruction     each batch twice through the same s/noise: reference = the dataset's NATIVE
+#    signal          instruction, swap = the other task's (the HDF5 language_instruction strings). On
+#                    A's data for every B; on B's own data as well for the SIMILAR B. Per layer, at the
+#                    same subsampled positions and observations: D = sum (x_swap - x_ref)(...)^T and
+#                    K_ref = sum x_ref x_ref^T; reported size tr D / tr K_ref and share outside memory
+#                    1 - tr(M_A^T D M_A) / tr D (undefined where tr D = 0: excluded from share averages,
+#                    contributing layer counts reported). Per comparison, one policy-output statistic:
+#                    output sensitivity sum ||v_swap - v_ref||^2 / sum ||v_ref||^2 over valid action
+#                    positions, numerator and denominator pooled across batches (undefined at a zero
+#                    denominator; the numerator reported).
+# SUMMARIES: per half (trunk, decoder) median and parameter-weighted mean; per category the mean over
+# its tasks, and the differences similar - diverse, same_scene - diverse, same_object_goal - diverse.
+#
+# PREDICTIONS (descriptive, no gate):
+#  P1 similar tasks' trunk input overlap >= diverse tasks' (same_scene and same_object_goal between);
+#  P2 global_c(0.95)["trunk"]["energy"] higher for similar than for diverse;
+#  P3 local alignment with A positive for similar, near 0 for diverse (unstable cosines reported, not
+#     counted);
+#  P4 (measured, no direction) do instruction-induced differences occupy unprotected directions, and
+#     how large are they, in the activations and in the output velocity? Free directions show
+#     available representational room; they do not establish that B can be learned through them nor
+#     that A would be preserved.
+# STRONGEST CLAIM: "At this A checkpoint, these selected similar tasks have more (or less) activation
+# and raw-gradient overlap with A's protected space, while instruction-induced differences have the
+# measured magnitude and free-space share."
+# FOLLOW-UP (not automatic): if the similar tasks' global_c(0.95)["trunk"]["energy"] >= followup_c
+# (descriptive: >= 90% of the gradient energy removed), the next candidate is a two-task A -> B study,
+# seq_ft vs GPM (plain and adaptive GPM are identical through A's memory and B's training,
+# configs/method/gpm_ne90.yaml); comparing adaptive protection would need a third task.
+
+seed: 0
+out: similar_tasks                    # under results/
+
+task_a: libero_goal/put_the_bowl_on_the_plate
+a_gate0_out: gate0_similar            # scripts/gate0.py --out-dir results/<this>
+a_gate0_threshold: 0.80
+
+tasks_b:                              # measured in this order
+  - {key: libero_goal/put_the_bowl_on_the_stove, category: similar}
+  - {key: libero_goal/put_the_bowl_on_top_of_the_cabinet, category: similar}
+  - {key: libero_goal/open_the_middle_drawer_of_the_cabinet, category: same_scene}
+  - {key: libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate, category: same_object_goal}
+  - {key: libero_object/pick_up_the_milk_and_place_it_in_the_basket, category: diverse}
+  - {key: libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it, category: diverse}
+
+eps: 0.95
+eps_reported: [0.90, 0.95, 0.99]
+capture_config: subspace              # configs/analysis/subspace.yaml (tokens per sample, N/d >= 10, ...)
+seed_tags:
+  probe: similar_tasks_probe
+  capture: similar_tasks_capture
+  recapture: similar_tasks_recapture
+  swap: similar_tasks_swap
+stability_threshold: 0.5
+self_control_tol: 1.0e-6
+followup_c: 0.95

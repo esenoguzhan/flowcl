@@ -229,6 +229,10 @@ class GradientInterference:
     # loss-weighted full-dataset gradients.
     s_trace: list[torch.Tensor] = field(default_factory=list, repr=False)
     full_gradients: dict[str, torch.Tensor] | None = field(default=None, repr=False)
+    # In memory only, when requested: the same loss-weighted gradients over the even-indexed and
+    # the odd-indexed batches ({"even": {layer: G}, "odd": {layer: G}}), for split-half stability.
+    split_gradients: dict[str, dict[str, torch.Tensor]] | None = field(default=None, repr=False)
+    split_counts: dict[str, float] | None = field(default=None, repr=False)   # valid elements per half
 
     def mean_c(self, eps: float) -> dict[str, float]:
         return {n: layer.mean_c(eps) for n, layer in self.layers.items()}
@@ -354,6 +358,7 @@ def measure_gradient_interference(
     checkpoint_path: Path | None = None,
     keep_full_gradient: bool = False,
     extra_bases: dict[str, dict[str, SubspaceBasis]] | None = None,
+    keep_split_gradients: bool = False,
 ) -> GradientInterference:
     """Decompose one task's training gradients at ``loaded`` against ``bases``.
 
@@ -364,6 +369,10 @@ def measure_gradient_interference(
     per-batch gradients against, in the same pass; their per-batch parallel energies land
     in ``LayerInterference.extra_parallel[label]``. ``None`` leaves everything else as it
     was.
+
+    ``keep_split_gradients``: also accumulate the loss-weighted gradients of the even-indexed and
+    the odd-indexed batches separately (the same ``n_b`` weighting as the full gradient), returned
+    in ``split_gradients``. Off by default; nothing else changes.
     """
     thresholds = cfg.energy_thresholds
     check_provenance(loaded, bases, meta, thresholds)
@@ -433,6 +442,9 @@ def measure_gradient_interference(
     }
     n_total, n_samples, n_batches = 0.0, 0, 0
     s_trace: list[torch.Tensor] = []
+    split = ({half: {e.name: torch.zeros(e.module.weight.shape, dtype=torch.float64, device=device)
+                     for e in entries} for half in ("even", "odd")} if keep_split_gradients else None)
+    n_split = {"even": 0.0, "odd": 0.0}
 
     try:
         for batch_idx, batch in enumerate(loader):
@@ -479,6 +491,11 @@ def measure_gradient_interference(
                 # Loss-weighted: each batch's loss is a mean over its own n_b valid
                 # elements, so n_b * G_b is that batch's share of the summed loss.
                 full[entry.name].add_(G.to(torch.float64), alpha=n_b)
+                if split is not None:
+                    split["even" if batch_idx % 2 == 0 else "odd"][entry.name].add_(
+                        G.to(torch.float64), alpha=n_b)
+            if split is not None:
+                n_split["even" if batch_idx % 2 == 0 else "odd"] += n_b
             n_total += n_b
             n_samples += size
             n_batches += 1
@@ -500,6 +517,10 @@ def measure_gradient_interference(
         layers[entry.name].full_total = total
         layers[entry.name].full_parallel = dict(zip(thresholds, parallel))
         full[entry.name] = G_full
+    if split is not None:
+        for half, grads in split.items():
+            for name in grads:
+                grads[name] = grads[name] / n_split[half] if n_split[half] > 0 else grads[name]
 
     return GradientInterference(
         label=label,
@@ -514,6 +535,8 @@ def measure_gradient_interference(
         wall_clock_s=time.perf_counter() - started,
         s_trace=s_trace,
         full_gradients=full if keep_full_gradient else None,
+        split_gradients=split,
+        split_counts=dict(n_split) if split is not None else None,
     )
 
 
