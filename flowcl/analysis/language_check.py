@@ -22,6 +22,12 @@ Two measurements, cheap first:
 Measurement 1 can pass while 2 fails: a policy can let language perturb its outputs
 without letting it select the object. So 2 is the verdict and 1 is the diagnostic that
 tells you *why*.
+
+A drop in the original task's success shows instruction *dependence*; it does not show that
+the policy did what the swapped instruction asked (it may just be disrupted). When the two
+tasks share a scene, the swapped rollout can also score the **requested** task's goal
+(``requested_task``): whether it was reached, and when, without ending the episode, so the
+original success keeps the normal stopping rule.
 """
 
 from __future__ import annotations
@@ -162,6 +168,16 @@ class SwapResult:
     drop: Estimate
     correct_successes: list[bool] = field(default_factory=list)
     swapped_successes: list[bool] = field(default_factory=list)
+    # Requested-goal scoring (``requested_task``); empty when not scored.
+    requested_task: str | None = None
+    requested: Estimate | None = None
+    requested_reached: list[bool] = field(default_factory=list)
+    requested_first_step: list[int | None] = field(default_factory=list)
+    requested_at_end: list[bool] = field(default_factory=list)
+    requested_at_start: list[bool] = field(default_factory=list)
+    swapped_n_steps: list[int] = field(default_factory=list)
+    seeds: list[int] = field(default_factory=list)
+    correct_reused: bool = False
 
     @property
     def discriminates(self) -> bool:
@@ -186,7 +202,23 @@ class SwapResult:
             "discriminates": self.discriminates,
             "correct_successes": [bool(s) for s in self.correct_successes],
             "swapped_successes": [bool(s) for s in self.swapped_successes],
+            "correct_reused": self.correct_reused,
+            "seeds": [int(x) for x in self.seeds],
+            "swapped_n_steps": [int(x) for x in self.swapped_n_steps],
+            "correct_estimate": _estimate_dict(self.correct),
+            "swapped_estimate": _estimate_dict(self.swapped),
+            "drop_estimate": _estimate_dict(self.drop),
+            "requested_task": self.requested_task,
+            "requested_estimate": _estimate_dict(self.requested) if self.requested else None,
+            "requested_reached": [bool(x) for x in self.requested_reached],
+            "requested_first_step": list(self.requested_first_step),
+            "requested_at_end": [bool(x) for x in self.requested_at_end],
+            "requested_at_start": [bool(x) for x in self.requested_at_start],
         }
+
+
+def _estimate_dict(e: Estimate) -> dict:
+    return {"value": float(e.value), "low": float(e.low), "high": float(e.high)}
 
 
 def instruction_swap_rollouts(
@@ -199,28 +231,57 @@ def instruction_swap_rollouts(
     cfg: EvalConfig,
     bootstrap: dict | None = None,
     progress: bool = True,
+    requested_task: str | None = None,
+    correct_successes: list[bool] | None = None,
 ) -> SwapResult:
     """Roll out ``ref`` under its own instruction and under ``swapped_instruction``.
 
     Both arms use ``ref``'s scene, ``ref``'s success predicate and the same fixed
     initial states, so the difference is attributable to the instruction and the
     comparison is paired.
+
+    Args:
+        requested_task: The task whose instruction ``swapped_instruction`` is. Its goal
+            (:func:`flowcl.envs.libero_env.goal_state`) is scored in every swapped rollout
+            without ending it; every object the goal names must exist in ``ref``'s env.
+        correct_successes: The correct-instruction arm from an evaluation with the same
+            ``run_id`` and episodes (so the same seeds); its rollouts are then not rerun.
     """
+    from flowcl.envs.libero_env import goal_state
+
     bootstrap = bootstrap or {}
     if swapped_instruction.strip().lower() == ref.language.strip().lower():
         raise ValueError(
             f"swapped instruction is identical to {ref.task_key}'s own instruction; "
             "the check would trivially show no difference"
         )
+    if correct_successes is not None and len(correct_successes) != cfg.n_episodes:
+        raise ValueError(
+            f"{len(correct_successes)} reused correct-instruction successes for "
+            f"{cfg.n_episodes} episodes"
+        )
+    goal = goal_state(requested_task) if requested_task else None
 
-    correct_successes: list[bool] = []
+    reused = correct_successes is not None
+    correct_list: list[bool] = list(correct_successes) if reused else []
     swapped_successes: list[bool] = []
+    alt = {"reached": [], "first": [], "end": [], "start": [], "steps": []}
+    seeds: list[int] = []
 
     with LiberoTaskEnv(
         suite=ref.suite, task_idx=ref.task_idx, spec=spec, image_size=cfg.image_size
     ) as env:
+        if goal is not None:
+            missing = env.missing_goal_objects(goal)
+            if missing:
+                raise ValueError(
+                    f"{requested_task}'s goal names objects {missing} that {ref.task_key}'s "
+                    "scene does not have; the requested goal cannot be scored there"
+                )
         for episode_idx in range(cfg.n_episodes):
-            correct = env.rollout(policy, episode_idx, stats, run_id, cfg)
+            if not reused:
+                correct = env.rollout(policy, episode_idx, stats, run_id, cfg)
+                correct_list.append(correct.success)
             swapped = env.rollout(
                 policy,
                 episode_idx,
@@ -228,15 +289,24 @@ def instruction_swap_rollouts(
                 run_id,
                 cfg,
                 language=swapped_instruction,
+                alt_goal=goal,
             )
-            correct_successes.append(correct.success)
             swapped_successes.append(swapped.success)
+            seeds.append(swapped.seed)
+            alt["steps"].append(swapped.n_steps)
+            if goal is not None:
+                alt["reached"].append(bool(swapped.alt_reached))
+                alt["first"].append(swapped.alt_first_step)
+                alt["end"].append(bool(swapped.alt_at_end))
+                alt["start"].append(bool(swapped.alt_at_start))
             if progress:
                 print(
                     f"[flowcl] {ref.task_key} init {episode_idx + 1}/"
                     f"{cfg.n_episodes}: correct="
-                    f"{'S' if correct.success else '.'} swapped="
-                    f"{'S' if swapped.success else '.'}",
+                    f"{'S' if correct_list[episode_idx] else '.'} swapped="
+                    f"{'S' if swapped.success else '.'}"
+                    + (f" requested={'R' if swapped.alt_reached else '.'}"
+                       if goal is not None else ""),
                     flush=True,
                 )
 
@@ -249,16 +319,55 @@ def instruction_swap_rollouts(
         task_key=ref.task_key,
         correct_instruction=ref.language,
         swapped_instruction=swapped_instruction,
-        correct=success_estimate(correct_successes, **kwargs),
+        correct=success_estimate(correct_list, **kwargs),
         swapped=success_estimate(swapped_successes, **kwargs),
         drop=paired_difference_ci(
-            np.asarray(correct_successes, dtype=np.float64),
+            np.asarray(correct_list, dtype=np.float64),
             np.asarray(swapped_successes, dtype=np.float64),
             **kwargs,
         ),
-        correct_successes=correct_successes,
+        correct_successes=correct_list,
         swapped_successes=swapped_successes,
+        requested_task=requested_task,
+        requested=success_estimate(alt["reached"], **kwargs) if goal is not None else None,
+        requested_reached=alt["reached"],
+        requested_first_step=alt["first"],
+        requested_at_end=alt["end"],
+        requested_at_start=alt["start"],
+        swapped_n_steps=alt["steps"],
+        seeds=seeds,
+        correct_reused=reused,
     )
+
+
+@torch.no_grad()
+def instruction_token_contrast(policy, instruction_a: str, instruction_b: str) -> dict:
+    """How different two instructions are where the policy first sees them.
+
+    ``raw``: the frozen text encoder's cached per-token embeddings (CPU cache, the precision
+    they were first encoded in); ``projected``: after the trainable ``token_projection``, what
+    the trunk receives. Relative Frobenius norm of the difference, the number of token
+    positions that differ at all, and the first such position.
+    """
+    if instruction_a == instruction_b:
+        raise ValueError("instruction_token_contrast needs two different instructions")
+    encoder = policy.text_encoder
+    projected = encoder([instruction_a, instruction_b]).float()
+    raw = torch.stack([encoder._cache[instruction_a], encoder._cache[instruction_b]]).float()
+
+    def contrast(pair: torch.Tensor) -> dict:
+        a, b = pair[0], pair[1]
+        diff = b - a
+        differs = (diff.abs().amax(dim=-1) > 0).nonzero().flatten().tolist()
+        return {
+            "relative": float(diff.norm() / a.norm()) if float(a.norm()) > 0 else None,
+            "n_tokens": int(a.shape[0]),
+            "n_tokens_differing": len(differs),
+            "first_differing_token": differs[0] if differs else None,
+        }
+
+    return {"raw": contrast(raw), "projected": contrast(projected),
+            "instruction_a": instruction_a, "instruction_b": instruction_b}
 
 
 @dataclass

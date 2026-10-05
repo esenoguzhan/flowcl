@@ -1,0 +1,141 @@
+# Language-conditioned base study: can a jointly trained base select between similar tasks by
+# instruction, and does GPM keep A from that base when a similar task is learned? EXPLORATORY: one
+# seed, one base, two arms, conventions fixed in advance, no gate. Follows the similar-vs-diverse
+# study (configs/analysis/similar_cl.yaml; docs/runs/2026-10-05_similar_cl.md), where every arm lost
+# A completely to a similar B from a single-task A base. Committed before any registered run (the
+# scratch smoke run included). Evaluated by scripts/language_cl.py; queued by
+# scripts/queue_language_cl.sh.
+#
+# WHY: in a single-task stage the instruction is a constant input, so nothing in the training
+# contrast requires selecting behaviour by it. The language weights do get gradients, but
+# dependence on another instruction is underdetermined, so a single-task policy's ~0 instruction
+# sensitivity says nothing about whether the pathway can work. This study gives stage 0 that
+# contrast.
+#
+# CURRICULUM langbase_cabinet_stove: stage 0 = A (bowl -> plate) co-trained with S2 (bowl -> top of
+# the cabinet), 2 x 30k steps, uniform over timesteps (exposure recorded, not claimed equal); stage
+# 1 = S (bowl -> stove), 30k. Stats fitted on A. A, S2 and S evaluated after every stage, 50
+# rollouts each (S at stage 0 is its zero-shot cell). ARMS: seq_ft and plain GPM (memory built
+# from the joint stage-0 data), both full runs; GPM must equal seq_ft at stage 0 bit for bit
+# (identity check) and passes its T1 pairing. No allowlist_ft: a positive result supports "joint
+# base + GPM (freezing + projection)" only; attributing it to language needs the deferred
+# diverse-base control, and to projection needs allowlist_ft.
+#
+# SWAP ROLLOUTS (flowcl.analysis.language_check.instruction_swap_rollouts; the run's namespace, its
+# eval config and its rebuilt text cache): a task's own scene, initial states and success predicate
+# under another task's instruction. The stopping rule is the normal one (the task's own goal or the
+# timeout); the REQUESTED task's goal (its BDDL goal, LIBERO's own parser) is scored after every
+# step without ending the episode: reached (ever), first step, holds at the end, holds at the start.
+# Stage 0 (seq_ft stage0.pt): A under S2's instruction and S2 under A's; the correct-instruction arm
+# is rerun and compared with eval/stage0.json (determinism, reported). Stage 1 (each arm's
+# stage1.pt): A under S's instruction and S under A's; the correct arm is the eval's (seeds
+# checked).
+#
+# PROBES (descriptive only), on (a) the A-only base similar_ab_stove__seq_ft__seed0 stage0.pt with
+# the A-only GPM memory_task0.pt, (b) this study's base (seq_ft stage0.pt) with this GPM run's
+# memory_task0.pt, (c) seq_ft stage1.pt, (d) gpm stage1.pt; text cache rebuilt as each run's runner
+# built it. Probe loss on A, S2, S (similar_cl's fixed batches); for A <-> S2 and A <-> S both
+# directions: velocity and chunk sensitivity (similar_cl's statistics, batches and seed tags), the
+# per-layer instruction-signal size and, with a memory, its share outside it; token contrast after
+# token_projection (raw and projected); the token_projection gradient norm on a fixed batch of A, S2
+# and S (diagnostic only: small at a converged checkpoint can mean a good fit). At (b) only: memory
+# coverage, the share of A's and of S2's own activation energy (primary view) inside the joint
+# memory, per layer. Memory ranks of (a) and (b) from the artifacts. (a) must reproduce
+# results/similar_cl/stage0/stage0.json (probe loss and both instruction statistics for A, S, S2)
+# within reproduction_rtol, or (a)'s artifact is invalid.
+#
+# RULES (point conventions are exploratory, never equivalence claims; every CI is shown):
+#  L1a instruction dependence (base, seq_ft stage 0): constituent_not_learned if R0[A] or R0[S2] <
+#      learned_min; else instruction_dependence_demonstrated if BOTH swaps discriminate (drop >=
+#      swap_drop_min and its paired CI low > 0); else instruction_dependence_not_demonstrated
+#      (failing a threshold is not proof of absence).
+#  L1b task selection (only when L1a is demonstrated): task_selection_threshold_met if the
+#      requested goal is reached in >= selection_min of swapped rollouts in BOTH directions (worded
+#      as meeting the threshold, not as reliable selection); else task_selection_not_demonstrated
+#      ("instruction dependence demonstrated; task selection not demonstrated under the chosen
+#      criterion"). The same statistic is reported at stage 1, per arm, for A <-> S.
+#  L3 retention (interpretable only when L1a is demonstrated; read with L1b). dR_A = R_gpm[1][A] -
+#      R_seqft[1][A], GPM forgetting R_gpm[0][A] - R_gpm[1][A], dP = R_gpm[1][S] - R_seqft[1][S],
+#      all rollout-paired. inconclusive_acquisition if either arm's R[1][S] < acquired_min; else
+#      no_interference if seq_ft's forgetting of A <= forgetting_max (point); else, if dR_A's CI low
+#      > 0: protects (GPM forgetting <= forgetting_max and dP >= -plasticity_cost_max),
+#      protects_at_plasticity_cost (forgetting <= forgetting_max, dP < -plasticity_cost_max),
+#      partial (otherwise); else no_demonstrated_advantage ("this GPM configuration, after a
+#      language-conditioned base"). The same is reported for S2. The A-only lineage (GPM, A after S:
+#      0.00) is quoted unpaired.
+#  L4 (reported): S's zero-shot cell; seq_ft's forgetting of A and S2; the stage-1 requested-goal
+#      rates per arm; exposure per task.
+# VALIDITY (a failure marks the study invalid): complete cells (n_episodes rollouts) for A, S2, S at
+# both stages in both runs; production settings, clean git_sha, this namespace, the method configs;
+# the joint stage as declared (co_train S2, steps_factor 2, 2 x steps trained, train keys [A, S2] in
+# both stage0.pt); one stats fingerprint fitted on A; GPM identity at stage 0 and T1 pairing;
+# identical per-episode seeds across arms; GPM's memory artifacts matching their SHA-256 and the
+# worst residual over bound <= 1. SWAP and PROBE artifacts: checkpoint SHA, weights unchanged, the
+# rebuilt text-cache precision as the runner's, swapped-rollout seeds equal to the eval's, every
+# requested goal scorable in the scene (named objects present, identical model signature: joint
+# names, qpos/dof addresses, body names, nq/nv, state size). A requested goal holding at a rollout's
+# start is reported (it would make "reached" vacuous for that episode). Missing artifact ->
+# incomplete; failed check -> that artifact invalid.
+# STATUS / EXIT: valid 0; invalid 3; incomplete 4.
+
+seed: 0
+out: language_cl                    # under the results root
+curriculum: langbase_cabinet_stove
+task_a: libero_goal/put_the_bowl_on_the_plate
+task_co: libero_goal/put_the_bowl_on_top_of_the_cabinet   # S2, co-trained at stage 0
+task_b: libero_goal/put_the_bowl_on_the_stove             # S, stage 1
+
+a_only:                             # the single-task A base of similar_cl, probe (a)
+  curriculum: similar_ab_stove
+  seq_ft_run: similar_ab_stove__seq_ft__seed0
+  gpm_run: similar_ab_stove__gpm_projected_adam__seed0
+  stage0_probe: similar_cl/stage0/stage0.json
+  gpm_a_after_s: 0.00               # quoted unpaired (similar_cl R_gpm[1][0], S curriculum)
+
+arms:                               # arm -> configs/method/<file>
+  seq_ft: seq_ft
+  gpm: gpm
+
+production:
+  train: {steps: 30000, batch_size: 64, lr: 1.0e-4, amp: true}
+  n_episodes: 50
+  steps_factor: 2
+
+smoke:
+  train: {steps: 200, amp: true}
+  n_episodes: 1
+  steps_factor: 2
+
+learned_min: 0.80
+swap_drop_min: 0.15                 # = language_check.MIN_SWAP_SUCCESS_DROP (asserted)
+selection_min: 0.50
+acquired_min: 0.50
+forgetting_max: 0.10
+plasticity_cost_max: 0.10
+reproduction_rtol: 1.0e-3
+
+probe:                              # fixed-batch probe loss (similar_cl's)
+  batch_size: 64
+  n_batches: 16
+  seed_tags:
+    shuffle: similar_cl_probe::shuffle
+    flow_time: similar_cl_probe::flow_time
+    noise: similar_cl_probe::noise
+
+swap:                               # velocity statistic (similar_cl's)
+  capture_config: subspace
+  n_batches: 16
+  seed_tag: similar_cl_swap
+
+chunks:                             # sampled-chunk sensitivity (similar_cl's)
+  batch_size: 32
+  n_batches: 8
+  seed_tag: similar_cl_chunks
+
+gradient:                           # token_projection gradient norm (diagnostic)
+  batch_size: 64
+  seed_tag: language_cl_gradient
+
+coverage:                           # memory coverage at (b)
+  capture_config: subspace
+  seed_tag: language_cl_coverage

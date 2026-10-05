@@ -459,3 +459,54 @@ def test_interrupted_artifact_write_leaves_no_partial_file(tmp_path, monkeypatch
     with pytest.raises(OSError):
         atomic_write_text(tmp_path / "gpm_logs_task0.json", "{}")
     assert not (tmp_path / "gpm_logs_task0.json").exists()
+
+
+def test_gpm_memory_of_a_joint_dataset_covers_both_tasks(dataset_dir, tmp_path):
+    """The memory capture runs over the whole (concatenated) stage dataset in a fixed order, so a
+    joint stage's memory is built from every constituent's inputs, not only the first task's."""
+    from omegaconf import OmegaConf
+
+    import flowcl.experiments.gate2 as gate2
+    from flowcl.data.config import load_embodiment_spec
+    from flowcl.data.tasks import TaskRef
+    from flowcl.methods.base import TaskContext
+    from flowcl.methods.gpm import GPM
+    from flowcl.models.build import build_policy
+    from flowcl.train.pipeline import build_dataset, fit_stats
+    from flowcl.utils.libero_paths import repo_root
+
+    milk = TaskRef.from_key("libero_object/pick_up_the_milk_and_place_it_in_the_basket")
+    sauce = TaskRef.from_key("libero_object/pick_up_the_tomato_sauce_and_place_it_in_the_basket")
+    spec = load_embodiment_spec("libero_franka")
+    stats = fit_stats(milk, spec, n_demos=1, dataset_dir=dataset_dir)
+    dataset = build_dataset([milk, sauce], spec, stats, n_demos=1, dataset_dir=dataset_dir)
+    cfg = OmegaConf.load(repo_root() / "configs" / "analysis" / "subspace.yaml")
+    cfg.min_samples_per_dim = 0.01
+    cfg.num_workers = 0
+    capture = tmp_path / "capture.yaml"
+    OmegaConf.save(cfg, capture)
+    policy = build_policy({"d_model": 384, "n_trunk_layers": 6, "n_heads": 8, "n_decoder_layers": 2,
+                           "n_context_tokens": 4, "pretrained": False, "euler_steps": 2}, spec, pretrained=False)
+    generator = torch.Generator().manual_seed(0)
+    for name, param in policy.named_parameters():   # wake the zero-initialised decoder (reachability)
+        if "modulation" in name or name.startswith("flow_head.action_out"):
+            with torch.no_grad():
+                param.copy_(torch.randn(param.shape, generator=generator) * 0.05)
+    seen = []
+    real = gate2.capture_task_grams
+
+    def spy(policy, ds, *args, **kwargs):
+        seen.append(sorted({ds.episodes[ds.sample_index(i).episode_idx].task_id for i in range(len(ds))}))
+        return real(policy, ds, *args, **kwargs)
+
+    gate2.capture_task_grams = spy
+    try:
+        method = GPM(update_memory=True, capture_config=str(capture))
+        ctx = TaskContext(task_key=milk.task_key, dataset=dataset, device="cpu", seed_namespace_run_id="ns",
+                          method_run_id="run")
+        method.on_task_start(policy, 0, context=ctx)
+        method.on_task_end(policy, 0, context=ctx)
+    finally:
+        gate2.capture_task_grams = real
+    assert seen == [sorted([milk.task_key, sauce.task_key])]
+    assert method._memory and all(M.shape[1] > 0 for M in method._memory.values())

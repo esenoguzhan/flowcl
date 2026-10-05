@@ -303,3 +303,126 @@ def test_replan_count_follows_execute_k():
     assert horizon == 16 and execute_k == 8
     assert math.ceil(max_steps / execute_k) == 75
     assert math.ceil(max_steps / horizon) == 38
+
+
+# ---- requested-goal scoring (the instruction-swap check) ----------------------------------------
+
+
+class _FakeSim:
+    """Counts steps; this task's goal holds from ``own_at`` on, the other goal in ``[alt_from, alt_to)``."""
+
+    def __init__(self, own_at, alt_from, alt_to):
+        self.own_at, self.alt_from, self.alt_to, self.t = own_at, alt_from, alt_to, 0
+
+    def seed(self, seed):
+        pass
+
+    def reset(self):
+        self.t = 0
+
+    def set_init_state(self, state):
+        self.t = 0
+        return {}
+
+    def step(self, action):
+        self.t += 1
+        return {}, 0.0, False, {}
+
+    def check_success(self):
+        return self.own_at is not None and self.t >= self.own_at
+
+
+def _fake_env(sim):
+    import types
+
+    import torch
+
+    from flowcl.data.config import load_embodiment_spec
+    from flowcl.envs.libero_env import LiberoTaskEnv
+
+    env = object.__new__(LiberoTaskEnv)
+    env.spec = load_embodiment_spec("libero_franka")
+    env.env = sim
+    env.init_states = [None]
+    env.suite_name = "libero_goal"
+    env.task = types.SimpleNamespace(name="fake_task")
+    env._build_policy_batch = lambda obs, stats, device, language=None: {}
+    env.goal_holds = lambda goal: sim.alt_from <= sim.t < sim.alt_to
+
+    class Policy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1))
+
+        def sample(self, batch, n_steps=None, generator=None):
+            return torch.zeros(1, env.spec.action.chunk_horizon, env.spec.d_action)
+
+    stats = types.SimpleNamespace(denormalize_action=lambda a: a)
+    return env, Policy(), stats
+
+
+def test_the_requested_goal_is_recorded_and_never_ends_the_episode():
+    env, policy, stats = _fake_env(_FakeSim(own_at=None, alt_from=5, alt_to=10))
+    r = env.rollout(policy, 0, stats, "run", EvalConfig(max_steps=40), alt_goal=[["on", "a", "b"]])
+    assert (r.success, r.n_steps) == (False, 40)          # ran to the timeout despite the requested goal
+    assert (r.alt_at_start, r.alt_first_step, r.alt_at_end, r.alt_reached) == (False, 5, False, True)
+
+
+def test_the_own_goal_still_ends_the_episode_and_both_are_recorded():
+    env, policy, stats = _fake_env(_FakeSim(own_at=12, alt_from=3, alt_to=10**6))
+    r = env.rollout(policy, 0, stats, "run", EvalConfig(max_steps=40), alt_goal=[["on", "a", "b"]])
+    assert (r.success, r.n_steps) == (True, 12)
+    assert (r.alt_first_step, r.alt_at_end, r.alt_reached) == (3, True, True)
+
+
+def test_without_a_requested_goal_nothing_is_scored():
+    env, policy, stats = _fake_env(_FakeSim(own_at=7, alt_from=0, alt_to=10**6))
+    r = env.rollout(policy, 0, stats, "run", EvalConfig(max_steps=40))
+    assert (r.success, r.n_steps) == (True, 7)
+    assert (r.alt_at_start, r.alt_first_step, r.alt_at_end, r.alt_reached) == (None, None, None, None)
+
+
+GOAL_PLATE = "libero_goal/put_the_bowl_on_the_plate"
+GOAL_CABINET = "libero_goal/put_the_bowl_on_top_of_the_cabinet"
+GOAL_STOVE = "libero_goal/put_the_bowl_on_the_stove"
+
+
+@pytest.mark.sim
+def test_goal_predicates_are_correct_on_known_states(dataset_dir):
+    """In the plate task's env: the model is identical to the cabinet and stove tasks' (so their
+    demo states may be loaded), its own parsed goal agrees with ``check_success``, and each task's
+    goal holds exactly at that task's demo end state."""
+    import h5py
+
+    from flowcl.data.config import load_embodiment_spec
+    from flowcl.data.tasks import TaskRef
+    from flowcl.envs.libero_env import LiberoTaskEnv, goal_state
+
+    spec = load_embodiment_spec("libero_franka")
+    keys = (GOAL_PLATE, GOAL_CABINET, GOAL_STOVE)
+    goals = {k: goal_state(k) for k in keys}
+    assert goals[GOAL_CABINET] == [["on", "akita_black_bowl_1", "wooden_cabinet_1_top_side"]]
+    signatures = {}
+    for k in keys[1:]:
+        ref = TaskRef.from_key(k)
+        with LiberoTaskEnv(ref.suite, ref.task_idx, spec) as other:
+            signatures[k] = other.model_signature()
+    plate = TaskRef.from_key(GOAL_PLATE)
+    with LiberoTaskEnv(plate.suite, plate.task_idx, spec) as env:
+        own = env.model_signature()
+        assert all(sig == own for sig in signatures.values()), "the scenes differ; states are not portable"
+        assert own["state_size"] == 1 + own["nq"] + own["nv"]
+        assert all(not env.missing_goal_objects(g) for g in goals.values())
+        for k in keys:
+            with h5py.File(TaskRef.from_key(k).demo_path(dataset_dir), "r") as f:
+                states = f["data/demo_0/states"][()]
+            assert states.shape[1] == own["state_size"]
+            for label, state in (("start", states[0]), ("end", states[-1])):
+                env.env.reset()
+                env.set_sim_state(state)
+                holds = {g: env.goal_holds(goals[g]) for g in keys}
+                assert holds[GOAL_PLATE] == env.check_success(), (k, label)
+                expected = {g: (label == "end" and g == k) for g in keys}
+                assert holds == expected, (k, label, holds)
+        with pytest.raises(KeyError, match="untracked"):
+            env.goal_holds([["on", "akita_black_bowl_1", "no_such_object"]])

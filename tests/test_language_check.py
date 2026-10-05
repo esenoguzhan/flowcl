@@ -246,3 +246,97 @@ def test_estimate_construction_in_swap_is_consistent():
     swap = make_swap([True] * 10 + [False] * 10, [False] * 20)
     assert isinstance(swap.drop, Estimate)
     assert swap.drop.low <= swap.drop.value <= swap.drop.high
+
+
+# ---- token contrast and requested-goal swap rollouts --------------------------------------------
+
+
+def test_token_contrast_locates_the_differing_word(spec):
+    from flowcl.analysis.language_check import instruction_token_contrast
+
+    fresh = build_test_policy(spec)
+    with torch.no_grad():
+        fresh.text_encoder([MILK, SAUCE])
+    out = instruction_token_contrast(fresh, MILK, SAUCE)
+    for view in ("raw", "projected"):
+        assert out[view]["n_tokens"] == fresh.text_encoder.max_length
+        assert out[view]["relative"] > 0
+        # <|startoftext|> pick up the | milk/tomato ... : the first difference is token 4
+        assert out[view]["first_differing_token"] == 4
+    assert out["projected"]["n_tokens_differing"] <= out["projected"]["n_tokens"]
+    with pytest.raises(ValueError, match="two different"):
+        instruction_token_contrast(fresh, MILK, MILK)
+
+
+class _SwapEnv:
+    """Stands in for LiberoTaskEnv: records its rollouts, reports a requested goal on even episodes."""
+
+    calls: list = []
+    missing: list = []
+
+    def __init__(self, suite, task_idx, spec, image_size):
+        self.task_key = f"{suite}/t{task_idx}"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def missing_goal_objects(self, goal):
+        return list(self.missing)
+
+    def rollout(self, policy, episode_idx, stats, run_id, cfg, language=None, alt_goal=None):
+        from flowcl.envs.libero_env import RolloutResult
+
+        _SwapEnv.calls.append((episode_idx, language, alt_goal is not None))
+        swapped = language is not None
+        return RolloutResult(success=not swapped, n_steps=600 if swapped else 50, task_key=self.task_key,
+                             episode_idx=episode_idx, seed=1000 + episode_idx, n_replans=1,
+                             alt_at_start=False if alt_goal else None,
+                             alt_first_step=(30 if episode_idx % 2 == 0 else None) if alt_goal else None,
+                             alt_at_end=(episode_idx % 2 == 0) if alt_goal else None)
+
+
+def _swap(monkeypatch, **kwargs):
+    import types
+
+    import flowcl.analysis.language_check as lc
+    import flowcl.envs.libero_env as le
+    from flowcl.envs.libero_env import EvalConfig
+
+    _SwapEnv.calls = []
+    monkeypatch.setattr(lc, "LiberoTaskEnv", _SwapEnv)
+    monkeypatch.setattr(le, "goal_state", lambda key: [["on", "bowl", key]])
+    ref = types.SimpleNamespace(suite="libero_goal", task_idx=0, language="put the bowl on the plate",
+                                task_key="libero_goal/plate")
+    return lc.instruction_swap_rollouts(None, ref, "put the bowl on the stove", None, None, "ns",
+                                        EvalConfig(n_episodes=4), progress=False, **kwargs)
+
+
+def test_swap_rollouts_score_the_requested_goal_and_can_reuse_an_eval(monkeypatch):
+    fresh = _swap(monkeypatch, requested_task="libero_goal/stove")
+    assert [c for c in _SwapEnv.calls if c[1] is None] == [(i, None, False) for i in range(4)]
+    assert fresh.correct_successes == [True] * 4 and fresh.swapped_successes == [False] * 4
+    assert fresh.requested_reached == [True, False, True, False]
+    assert fresh.requested_first_step == [30, None, 30, None]
+    assert fresh.requested.value == 0.5 and fresh.seeds == [1000, 1001, 1002, 1003]
+    assert not fresh.correct_reused and fresh.drop.value == 1.0
+
+    reused = _swap(monkeypatch, requested_task="libero_goal/stove", correct_successes=[True, False, True, True])
+    assert all(c[1] is not None for c in _SwapEnv.calls)          # only swapped rollouts ran
+    assert reused.correct_reused and reused.correct_successes == [True, False, True, True]
+    assert reused.drop.value == 0.75
+    d = reused.as_dict()
+    assert d["requested_estimate"]["value"] == 0.5 and d["requested_at_start"] == [False] * 4
+
+    plain = _swap(monkeypatch)
+    assert plain.requested is None and plain.requested_reached == [] and plain.as_dict()["requested_estimate"] is None
+
+
+def test_swap_rollouts_refuse_an_unscorable_goal_and_a_short_reuse(monkeypatch):
+    with pytest.raises(ValueError, match="episodes"):
+        _swap(monkeypatch, correct_successes=[True])
+    monkeypatch.setattr(_SwapEnv, "missing", ["flat_stove_1"])
+    with pytest.raises(ValueError, match="cannot be scored"):
+        _swap(monkeypatch, requested_task="libero_goal/stove")

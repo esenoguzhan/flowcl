@@ -212,3 +212,21 @@ def test_resume_queue_takes_the_confirmatory_config(tmp_path):
     assert f"--config {cfg_path}" in (logdir / "1_check.log").read_text()
     base = OmegaConf.load(repo_root() / "configs" / "analysis" / "resume_check.yaml")
     assert cfg.source.stage == base.source.stage and set(cfg.source.sha256) == set(base.source.sha256)
+
+
+def test_resume_refuses_a_different_joint_stage(gpm_source):
+    """Co-trained tasks and the steps factor are part of a stage's identity; configs written before
+    they existed compare as no co-training and factor 1."""
+    from flowcl.train.continual import _stage_identity
+
+    assert _stage_identity({"task_key": MILK, "n_demos": 1}) == (MILK, 1, (), 1)
+    args = dict(method_name="gpm", method_kwargs=gpm_source["kwargs"], raw_policy_cfg=dict(TINY_POLICY),
+                train_cfg=tiny_cfg(), seed=0)
+    ketchup = "libero_object/pick_up_the_ketchup_and_place_it_in_the_basket"
+    for first in ({"task_key": MILK, "n_demos": 1, "co_train": [ketchup]},
+                  {"task_key": MILK, "n_demos": 1, "steps_factor": 2}):
+        cur = load_curriculum({"name": "test_trio", "tasks": [
+            first, {"task_key": SAUCE, "n_demos": 1}, {"task_key": BBQ, "n_demos": 1}]})
+        with pytest.raises(ValueError, match="'curriculum'"):
+            load_resume_source(gpm_source["run"], 2, cur, **args)
+    load_resume_source(gpm_source["run"], 2, trio(), **args)   # the unchanged curriculum still resumes

@@ -1,0 +1,27 @@
+# Two-stage curriculum for the language-conditioned base study (configs/analysis/language_cl.yaml).
+# Stage 0 trains A (put the bowl on the plate) JOINTLY with S2 (put the bowl on top of the cabinet):
+# the same scene, object and kind of goal, so only the instruction tells the two apart and the base
+# has a training contrast that requires reading it. steps_factor 2 gives the stage 60k steps under
+# the 30k recipe, uniform over timesteps (A 4,669 and S2 5,094 samples: 47.8 / 52.2 %, i.e. about
+# 0.96x and 1.04x a single-task stage's exposure; recorded per run, not claimed equal). Stage 1 is
+# S (put the bowl on the stove), the similar task A was lost to in docs/runs/2026-10-05_similar_cl.md.
+# S2 is evaluated after every stage like any task but is not a retention-matrix column.
+name: langbase_cabinet_stove
+
+description: >
+  A (bowl -> plate) co-trained with S2 (bowl -> top of the cabinet) at stage 0, then S
+  (bowl -> stove). All three share the LIBERO-Goal scene and object; the instruction is the
+  only input that tells them apart.
+
+expectation: >
+  Exploratory. If the joint base selects A or S2 by instruction, GPM may protect A while S is
+  learned, unlike from the single-task A base, where every arm lost A completely.
+
+tasks:
+  - task_key: libero_goal/put_the_bowl_on_the_plate
+    n_demos: 50
+    co_train:
+      - libero_goal/put_the_bowl_on_top_of_the_cabinet
+    steps_factor: 2
+  - task_key: libero_goal/put_the_bowl_on_the_stove
+    n_demos: 50

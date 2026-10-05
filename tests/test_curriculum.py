@@ -81,3 +81,48 @@ def test_reverse_yaml_equals_the_derived_reverse():
     derived = load_curriculum("seq_hetero").reversed()
     assert yaml_cur.name == derived.name == "seq_hetero_reverse"
     assert [(s.task_key, s.n_demos) for s in yaml_cur.stages] == [(s.task_key, s.n_demos) for s in derived.stages]
+
+
+# ---- joint (co-trained) stages ---------------------------------------------------------------
+
+PLATE = "libero_goal/put_the_bowl_on_the_plate"
+CABINET = "libero_goal/put_the_bowl_on_top_of_the_cabinet"
+STOVE = "libero_goal/put_the_bowl_on_the_stove"
+
+
+def test_joint_stage_parses_and_orders_its_tasks():
+    cur = load_curriculum("langbase_cabinet_stove")
+    assert cur.task_keys == (PLATE, STOVE)                     # retention-matrix columns
+    assert [r.task_key for r in cur.stages[0].train_refs] == [PLATE, CABINET]
+    assert cur.stages[0].steps_factor == 2 and cur.stages[1].steps_factor == 1
+    assert [r.task_key for r in cur.eval_refs] == [PLATE, STOVE, CABINET]
+    assert cur.first_task_key == PLATE                          # stats on A only
+    assert cur.stages[0].record() == {"task_key": PLATE, "n_demos": 50, "co_train": [CABINET], "steps_factor": 2}
+    assert cur.stages[1].record() == {"task_key": STOVE, "n_demos": 50}
+
+
+def test_a_plain_curriculum_records_only_its_task_and_demos():
+    cur = load_curriculum("seq_hetero")
+    assert all(set(s.record()) == {"task_key", "n_demos"} for s in cur.stages)
+    assert cur.eval_refs == cur.refs
+    assert all(not s.is_joint and s.train_refs == (s.ref,) for s in cur.stages)
+
+
+@pytest.mark.parametrize("tasks, match", [
+    ([{"task_key": PLATE, "co_train": [STOVE]}, STOVE], "repeats tasks"),
+    ([{"task_key": PLATE, "co_train": [CABINET, CABINET]}], "repeats tasks"),
+    ([{"task_key": PLATE, "co_train": [PLATE]}], "repeats tasks"),
+    ([{"task_key": PLATE, "steps_factor": 0}], "steps_factor"),
+    ([{"task_key": PLATE, "steps_factor": "2"}], "steps_factor"),
+    ([{"task_key": PLATE, "steps_factor": True}], "steps_factor"),
+    ([{"task_key": PLATE, "steps_factor": 1.5}], "steps_factor"),
+    ([{"task_key": PLATE, "cotrain": [CABINET]}], "unknown keys"),
+])
+def test_joint_stage_rejects_bad_declarations(tasks, match):
+    with pytest.raises(ValueError, match=match):
+        load_curriculum({"name": "bad", "tasks": tasks})
+
+
+def test_a_joint_curriculum_has_no_reverse_order():
+    with pytest.raises(ValueError, match="reverse order is not defined"):
+        load_curriculum("langbase_cabinet_stove").reversed()

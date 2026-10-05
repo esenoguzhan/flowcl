@@ -619,3 +619,76 @@ def test_require_clean_tree_refuses_a_dirty_tree(two_task_curriculum, tiny_train
             results_root=tmp_path, pretrained=False, require_clean_tree=True,
         )
     assert not (tmp_path / "test_pair__seq_ft__seed0").exists()
+
+
+# ---- joint (co-trained) stages ----------------------------------------------------------------
+
+
+def test_a_joint_stage_trains_on_the_union_for_factor_x_steps(dataset_dir, tiny_train_cfg, tmp_path, monkeypatch):
+    """Stage 0 trains on MILK and SAUCE for 2 x steps; SAUCE is evaluated after every stage but is not
+    a matrix column; the instructions are pre-encoded one string per call; all of it is recorded."""
+    import json
+
+    import flowcl.train.continual as continual_module
+    from flowcl.train.checkpoint import load_checkpoint
+
+    curriculum = load_curriculum({"name": "test_joint", "tasks": [
+        {"task_key": MILK, "n_demos": 1, "co_train": [SAUCE], "steps_factor": 2},
+        {"task_key": BBQ, "n_demos": 1}]})
+    events = []
+    monkeypatch.setattr(continual_module, "evaluate_tasks", fake_evaluation(events))
+    evaluated = []
+    real_eval = continual_module.evaluate_tasks
+
+    def eval_spy(policy, refs, *args, **kwargs):
+        evaluated.append([r.task_key for r in refs])
+        return real_eval(policy, refs, *args, **kwargs)
+
+    monkeypatch.setattr(continual_module, "evaluate_tasks", eval_spy)
+    trained = []
+    real_train = continual_module.train_one_task
+
+    def train_spy(policy, dataset, cfg, **kwargs):
+        trained.append((sorted({ep.task_id for ep in dataset.episodes}), cfg.steps, len(dataset),
+                        sorted(policy.text_encoder._cache)))
+        return real_train(policy, dataset, cfg, **kwargs)
+
+    monkeypatch.setattr(continual_module, "train_one_task", train_spy)
+    result = run_continual(curriculum, method_name="seq_ft", spec=load_embodiment_spec("libero_franka"),
+                           policy_config=TINY_POLICY, train_cfg=tiny_train_cfg, eval_cfg=EvalConfig(n_episodes=2),
+                           seed=0, dataset_dir=dataset_dir, results_root=tmp_path, pretrained=False)
+
+    assert trained[0][0] == sorted([MILK, SAUCE]) and trained[0][1] == 2 * tiny_train_cfg.steps
+    assert trained[1][0] == [BBQ] and trained[1][1] == tiny_train_cfg.steps
+    assert len(trained[0][3]) == 2          # both stage-0 instructions cached before training
+    assert evaluated == [[MILK, BBQ, SAUCE]] * 2
+    assert result.matrix.task_keys == (MILK, BBQ)
+    assert [r.train_log.steps for r in result.stages] == [4, 2]
+
+    joint = result.stages[0].joint
+    assert joint["train_task_keys"] == [MILK, SAUCE] and joint["steps_factor"] == 2
+    assert set(joint["task_samples"]) == {MILK, SAUCE} and sum(joint["task_samples"].values()) == trained[0][2]
+    assert set(joint["text_cache"]) == {MILK, SAUCE}
+    assert all(v["precision"] == "fp32" for v in joint["text_cache"].values())   # AMP is CUDA only
+    assert result.stages[1].joint is None
+
+    run = tmp_path / result.run_id
+    saved = json.loads((run / "result.json").read_text())
+    assert saved["stages"][0]["joint"]["train_task_keys"] == [MILK, SAUCE] and "joint" not in saved["stages"][1]
+    assert load_checkpoint(run / "checkpoints" / "stage0.pt").payload["extra"]["joint"]["steps_factor"] == 2
+    from omegaconf import OmegaConf
+    tasks = OmegaConf.to_container(OmegaConf.load(run / "config.yaml"))["curriculum"]["tasks"]
+    assert tasks == [{"task_key": MILK, "n_demos": 1, "co_train": [SAUCE], "steps_factor": 2},
+                     {"task_key": BBQ, "n_demos": 1}]
+
+
+def test_a_plain_curriculum_records_exactly_what_it_did_before(dataset_dir, two_task_curriculum, tiny_train_cfg,
+                                                               tmp_path):
+    from omegaconf import OmegaConf
+
+    result = run_continual(two_task_curriculum, method_name="seq_ft", spec=load_embodiment_spec("libero_franka"),
+                           policy_config=TINY_POLICY, train_cfg=tiny_train_cfg, eval_cfg=EvalConfig(n_episodes=1),
+                           seed=0, dataset_dir=dataset_dir, results_root=tmp_path, pretrained=False, evaluate=False)
+    tasks = OmegaConf.to_container(OmegaConf.load(tmp_path / result.run_id / "config.yaml"))["curriculum"]["tasks"]
+    assert tasks == [{"task_key": MILK, "n_demos": 1}, {"task_key": SAUCE, "n_demos": 1}]
+    assert all(r.joint is None and "joint" not in r.as_dict() for r in result.stages)

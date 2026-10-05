@@ -58,9 +58,11 @@ class StageRecord:
     checkpoint: Path
     evaluation: EvaluationReport
     method_artifacts: list[dict] = field(default_factory=list)
+    # A joint stage (co-trained tasks): its train tasks, per-task samples and text-cache warm-up.
+    joint: dict | None = None
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "stage": self.stage,
             "task_key": self.task_key,
             "n_demos": self.n_demos,
@@ -73,6 +75,9 @@ class StageRecord:
             "method_artifacts": self.method_artifacts,
             "evaluation": self.evaluation.as_dict(),
         }
+        if self.joint is not None:
+            out["joint"] = self.joint
+        return out
 
 
 @dataclass
@@ -219,8 +224,8 @@ def load_resume_source(
     if expected_sha256 is not None and sha != expected_sha256:
         problems["checkpoint_sha256"] = (sha, expected_sha256)
 
-    src_tasks = [(t["task_key"], t["n_demos"]) for t in conf["curriculum"]["tasks"]]
-    own_tasks = [(st.task_key, st.n_demos) for st in curriculum.stages]
+    src_tasks = [_stage_identity(t) for t in conf["curriculum"]["tasks"]]
+    own_tasks = [_stage_identity(st.record()) for st in curriculum.stages]
     if len(src_tasks) < K or src_tasks[:K] != own_tasks[:K]:
         problems["curriculum"] = {"source": src_tasks[:K], "this": own_tasks[:K]}
     src_method = {k: v for k, v in conf["method"].items() if k != "display_name"}
@@ -286,27 +291,76 @@ def load_resume_source(
                         stage_dicts=stage_dicts)
 
 
+def _stage_identity(record: dict) -> tuple:
+    """A recorded stage as resume compares it; configs written before co-training default."""
+    return (record["task_key"], record["n_demos"], tuple(record.get("co_train") or ()),
+            int(record.get("steps_factor", 1)))
+
+
 def warm_runner_text_cache(policy, curriculum: Curriculum, dataset_dir, device, amp: bool) -> dict:
     """Recreate the runner's text-encoder cache at a stage boundary (for a resumed run).
 
     The frozen text encoder caches each instruction in the precision active when it is first
     encoded (:class:`flowcl.models.encoders.CachedTextEncoder`). In the runner, T1's instruction
-    is first encoded inside T1's (AMP, if ``amp``) training step; every other task's is first
-    encoded in fp32 by the evaluation after stage 0, which covers every task. The instructions
-    are the demo files' own (:func:`flowcl.data.libero_adapter.read_task_metadata`), one string
-    per call, as :func:`flowcl.experiments.low_update.warm_runner_cache` does.
+    is first encoded inside T1's (AMP, if ``amp``) training step, and a joint stage 0's every
+    train instruction by :func:`warm_joint_stage_cache` before it trains (AMP too); every other
+    task's is first encoded in fp32 by the evaluation after stage 0, which covers every task. The
+    instructions are the demo files' own (:func:`flowcl.data.libero_adapter.read_task_metadata`),
+    one string per call, as :func:`flowcl.experiments.low_update.warm_runner_cache` does.
     """
     from flowcl.data.libero_adapter import read_task_metadata
 
     device_type = torch.device(device).type
+    first = set(r.task_key for r in curriculum.stages[0].train_refs)
+    order = [*curriculum.stages[0].train_refs,
+             *(r for r in curriculum.eval_refs if r.task_key not in first)]
     state = {}
-    for idx, stage in enumerate(curriculum.stages):
-        text = read_task_metadata(stage.ref.demo_path(dataset_dir)).language
-        task_amp = bool(amp and idx == 0 and device_type == "cuda")
+    for ref in order:
+        text = read_task_metadata(ref.demo_path(dataset_dir)).language
+        task_amp = bool(amp and ref.task_key in first and device_type == "cuda")
         with torch.no_grad(), torch.autocast(device_type=device_type, enabled=task_amp):
             policy.text_encoder([text])
-        state[stage.task_key] = {"text": text, "precision": "amp" if task_amp else "fp32"}
+        state[ref.task_key] = {"text": text, "precision": "amp" if task_amp else "fp32"}
     return state
+
+
+def warm_joint_stage_cache(policy, stage, dataset_dir, device, amp: bool) -> dict:
+    """Encode a joint stage's train instructions before it trains, one string per call.
+
+    Without this the first training step would encode the not-yet-cached instructions of a
+    joint stage in one batched call, in the order the first batch happens to hold them, under
+    AMP: a cache state no later process could rebuild exactly. Instructions already cached
+    (encoded by an earlier evaluation) are left as they are. Returns ``{task_key: {"text",
+    "precision"}}`` for the instructions this call encoded.
+    """
+    from flowcl.data.libero_adapter import read_task_metadata
+
+    device_type = torch.device(device).type
+    task_amp = bool(amp and device_type == "cuda")
+    encoded = {}
+    for ref in stage.train_refs:
+        text = read_task_metadata(ref.demo_path(dataset_dir)).language
+        if text in policy.text_encoder._cache:
+            continue
+        with torch.no_grad(), torch.autocast(device_type=device_type, enabled=task_amp):
+            policy.text_encoder([text])
+        encoded[ref.task_key] = {"text": text, "precision": "amp" if task_amp else "fp32"}
+    return encoded
+
+
+def stage_train_config(train_cfg: TrainConfig, stage) -> TrainConfig:
+    """The stage's recipe: the run's, with ``steps`` multiplied by the stage's ``steps_factor``."""
+    if stage.steps_factor == 1:
+        return train_cfg
+    return dataclasses.replace(train_cfg, steps=int(train_cfg.steps) * int(stage.steps_factor))
+
+
+def task_samples(dataset) -> dict[str, int]:
+    """Training samples (timesteps) per task in a dataset: its exposure under uniform sampling."""
+    out: dict[str, int] = {}
+    for episode in dataset.episodes:
+        out[episode.task_id] = out.get(episode.task_id, 0) + int(episode.length)
+    return out
 
 
 def method_label(method, method_name: str) -> str:
@@ -520,10 +574,7 @@ def run_continual(
             },
             "curriculum": {
                 "name": curriculum.name,
-                "tasks": [
-                    {"task_key": s.task_key, "n_demos": s.n_demos}
-                    for s in curriculum.stages
-                ],
+                "tasks": [s.record() for s in curriculum.stages],
                 "description": curriculum.description,
                 "expectation": curriculum.expectation,
             },
@@ -614,12 +665,23 @@ def run_continual(
             flush=True,
         )
         dataset = build_dataset(
-            [stage.ref],
+            list(stage.train_refs),
             spec,
             stats,
             n_demos=stage.n_demos,
             dataset_dir=dataset_dir,
         )
+        joint = None
+        if stage.is_joint:
+            joint = {
+                "train_task_keys": [r.task_key for r in stage.train_refs],
+                "steps_factor": stage.steps_factor,
+                "task_samples": task_samples(dataset),
+                "text_cache": warm_joint_stage_cache(
+                    policy, stage, dataset_dir, train_cfg.device, amp=train_cfg.amp
+                ),
+            }
+            print(f"[flowcl] joint stage {stage_idx}: {joint}", flush=True)
 
         context = TaskContext(
             task_key=stage.task_key,
@@ -634,7 +696,7 @@ def run_continual(
         train_log = train_one_task(
             policy,
             dataset,
-            train_cfg,
+            stage_train_config(train_cfg, stage),
             method=method,
             task_idx=stage_idx,
             generator=generator,
@@ -669,6 +731,7 @@ def run_continual(
                 "method_state": method.state_dict(),
                 "method_artifacts": method_artifacts,
                 "final_loss": train_log.final_loss,
+                **({"joint": joint} if joint is not None else {}),
             },
         )
 
@@ -715,7 +778,7 @@ def run_continual(
         evaluation = (
             evaluate_tasks(
                 policy,
-                curriculum.refs,
+                curriculum.eval_refs,
                 spec,
                 stats,
                 run_id=seed_ns,  # the rollout seed namespace, shared by every method
@@ -747,6 +810,7 @@ def run_continual(
                 checkpoint=checkpoint,
                 evaluation=evaluation,
                 method_artifacts=method_artifacts,
+                joint=joint,
             )
         )
         # Episodes hold every demo's pixels; releasing the stage's dataset keeps peak

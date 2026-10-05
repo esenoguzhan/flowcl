@@ -52,6 +52,35 @@ N_EVAL_EPISODES = 50
 DEFAULT_MAX_STEPS = 600
 
 
+def task_bddl_path(suite: str, task_idx: int) -> Path:
+    """The BDDL file LIBERO builds ``suite``'s task ``task_idx`` from."""
+    ensure_libero_config()
+    from libero.libero import benchmark, get_libero_path
+
+    task = benchmark.get_benchmark_dict()[suite]().get_task(task_idx)
+    path = Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+    if not path.is_file():
+        raise FileNotFoundError(f"BDDL file not found: {path}")
+    return path
+
+
+def goal_state(task_key: str) -> list[list[str]]:
+    """A task's parsed ``(:goal ...)`` predicates, by LIBERO's own BDDL parser.
+
+    Used to score whether a rollout of *another* task's scene reached this task's goal (the
+    instruction-swap check). That is meaningful only when both tasks share the scene, which
+    :meth:`LiberoTaskEnv.model_signature` and :meth:`LiberoTaskEnv.missing_goal_objects` check.
+    """
+    ensure_libero_config()
+    from libero.libero.envs.bddl_utils import robosuite_parse_problem
+
+    from flowcl.data.tasks import TaskRef
+
+    ref = TaskRef.from_key(task_key)
+    parsed = robosuite_parse_problem(str(task_bddl_path(ref.suite, ref.task_idx)))
+    return [list(state) for state in parsed["goal_state"]]
+
+
 def observation_to_state(obs: dict) -> np.ndarray:
     """Assemble the 8-dim proprioception vector exactly as the demos recorded it.
 
@@ -163,6 +192,15 @@ class RolloutResult:
     # Watcher-only. ``evaluate_tasks`` never sets ``record_video``, so Gate /
     # retention rollouts leave this ``None`` and do not pay for the arrays.
     trace: RolloutTrace | None = None
+    # Another task's goal scored along the way (``rollout(alt_goal=...)``); ``None`` otherwise.
+    # It never ends the episode: the stopping rule stays this task's goal or the timeout.
+    alt_at_start: bool | None = None
+    alt_first_step: int | None = None
+    alt_at_end: bool | None = None
+
+    @property
+    def alt_reached(self) -> bool | None:
+        return None if self.alt_at_end is None else self.alt_first_step is not None
 
 
 @dataclass
@@ -296,6 +334,51 @@ class LiberoTaskEnv:
     def close(self) -> None:
         self.env.close()
 
+    # ---- goal predicates (the instruction-swap check) ---------------------------------
+
+    def missing_goal_objects(self, goal: list[list[str]]) -> list[str]:
+        """Names a goal refers to that this env does not track (empty: the goal is scorable)."""
+        tracked = self.env.env.object_states_dict
+        return sorted({name for state in goal for name in state[1:] if name not in tracked})
+
+    def goal_holds(self, goal: list[list[str]]) -> bool:
+        """Does ``goal`` hold in the current sim state?
+
+        Mirrors LIBERO's ``_check_success`` (every predicate evaluated, conjunction), so for this
+        task's own goal it agrees with :meth:`check_success`.
+        """
+        missing = self.missing_goal_objects(goal)
+        if missing:
+            raise KeyError(f"{self.task_key}: goal refers to untracked objects {missing}")
+        inner = self.env.env
+        result = True
+        for state in goal:
+            result = inner._eval_predicate(state) and result
+        return bool(result)
+
+    def check_success(self) -> bool:
+        return bool(self.env.check_success())
+
+    def model_signature(self) -> dict:
+        """What must match before another task's sim state may be loaded here: joint names in
+        order, their qpos and dof addresses, body names, ``nq``/``nv`` and the state size."""
+        model = self.env.sim.model
+        joints = [model.joint_id2name(i) for i in range(model.njnt)]
+        bodies = [model.body_id2name(i) for i in range(model.nbody)]
+        return {
+            "nq": int(model.nq),
+            "nv": int(model.nv),
+            "joint_names": joints,
+            "jnt_qposadr": [int(x) for x in model.jnt_qposadr],
+            "jnt_dofadr": [int(x) for x in model.jnt_dofadr],
+            "body_names": bodies,
+            "state_size": int(self.env.get_sim_state().shape[0]),
+        }
+
+    def set_sim_state(self, state: np.ndarray) -> None:
+        """Load a flattened sim state (e.g. a demo's) and refresh the observations."""
+        self.env.set_init_state(np.asarray(state))
+
     def __enter__(self) -> "LiberoTaskEnv":
         return self
 
@@ -365,6 +448,7 @@ class LiberoTaskEnv:
         run_id: str,
         cfg: EvalConfig | None = None,
         language: str | None = None,
+        alt_goal: list[list[str]] | None = None,
     ) -> RolloutResult:
         """Run one episode from fixed initial state ``episode_idx`` (§4.4, §8.1).
 
@@ -377,6 +461,9 @@ class LiberoTaskEnv:
                 success predicate. Used only by the §4.1 language-discriminability
                 check, which needs to run this task's env under another task's
                 instruction. Leave ``None`` for every real evaluation.
+            alt_goal: Another task's parsed goal (:func:`goal_state`) to score after every
+                step: the first step it held and whether it holds at the end are recorded.
+                It never ends the episode, so ``success`` keeps its meaning.
         """
         cfg = cfg or EvalConfig()
         execute_k = cfg.execute_k if cfg.execute_k is not None else self.spec.action.execute_k
@@ -398,6 +485,8 @@ class LiberoTaskEnv:
         self.env.seed(seed)
         self.env.reset()
         obs = self.env.set_init_state(self.init_states[episode_idx])
+        alt_at_start = self.goal_holds(alt_goal) if alt_goal is not None else None
+        alt_first_step = None
 
         ensembler = (
             TemporalEnsembler(horizon, self.spec.d_action, cfg.temporal_ensemble_coef)
@@ -456,6 +545,8 @@ class LiberoTaskEnv:
                     trace_actions.append(executed.astype(np.float32))
                     trace_replan.append(offset == 0)
                     trace_states.append(observation_to_state(obs))
+                if alt_goal is not None and alt_first_step is None and self.goal_holds(alt_goal):
+                    alt_first_step = step
                 if self.env.check_success():
                     success = True
                     break
@@ -493,6 +584,9 @@ class LiberoTaskEnv:
             frames=list(camera_frames.get(self.spec.cameras[0], [])),
             camera_frames=camera_frames,
             trace=trace,
+            alt_at_start=alt_at_start,
+            alt_first_step=alt_first_step,
+            alt_at_end=self.goal_holds(alt_goal) if alt_goal is not None else None,
         )
 
     def evaluate(
