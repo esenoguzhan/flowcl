@@ -347,7 +347,10 @@ def instruction_token_contrast(policy, instruction_a: str, instruction_b: str) -
     ``raw``: the frozen text encoder's cached per-token embeddings (CPU cache, the precision
     they were first encoded in); ``projected``: after the trainable ``token_projection``, what
     the trunk receives. Relative Frobenius norm of the difference, the number of token
-    positions that differ at all, and the first such position.
+    positions that differ at all, the first such position, and each position's relative
+    difference. Two instructions cached in different precisions (AMP and fp32, as the runner
+    leaves T1's and a later task's) differ at every position by rounding; the per-position
+    values separate that from the words that differ.
     """
     if instruction_a == instruction_b:
         raise ValueError("instruction_token_contrast needs two different instructions")
@@ -359,11 +362,13 @@ def instruction_token_contrast(policy, instruction_a: str, instruction_b: str) -
         a, b = pair[0], pair[1]
         diff = b - a
         differs = (diff.abs().amax(dim=-1) > 0).nonzero().flatten().tolist()
+        per_token = diff.norm(dim=-1) / a.norm(dim=-1).clamp_min(torch.finfo(torch.float32).tiny)
         return {
             "relative": float(diff.norm() / a.norm()) if float(a.norm()) > 0 else None,
             "n_tokens": int(a.shape[0]),
             "n_tokens_differing": len(differs),
             "first_differing_token": differs[0] if differs else None,
+            "per_token_relative": [float(x) for x in per_token],
         }
 
     return {"raw": contrast(raw), "projected": contrast(projected),

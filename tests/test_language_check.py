@@ -263,6 +263,8 @@ def test_token_contrast_locates_the_differing_word(spec):
         assert out[view]["relative"] > 0
         # <|startoftext|> pick up the | milk/tomato ... : the first difference is token 4
         assert out[view]["first_differing_token"] == 4
+        per = out[view]["per_token_relative"]
+        assert len(per) == out[view]["n_tokens"] and per[:4] == [0.0] * 4 and per[4] > 0
     assert out["projected"]["n_tokens_differing"] <= out["projected"]["n_tokens"]
     with pytest.raises(ValueError, match="two different"):
         instruction_token_contrast(fresh, MILK, MILK)
