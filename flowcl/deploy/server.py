@@ -19,7 +19,9 @@ Errors are returned as a string (the traceback); the runner stops on a string re
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
+import html
 import itertools
 import json
 import threading
@@ -256,16 +258,102 @@ class RequestLog:
             f.write(json.dumps(record, default=lambda o: np.asarray(o).tolist()) + "\n")
 
 
+class ServerState:
+    """What the status page shows: connections, recent requests, errors."""
+
+    def __init__(self) -> None:
+        self.started = time.time()
+        self.active: dict[int, dict] = {}
+        self.n_connections = 0
+        self.n_requests = 0
+        self.recent: collections.deque = collections.deque(maxlen=30)
+        self.errors: collections.deque = collections.deque(maxlen=5)
+
+    def snapshot(self, service: PolicyService) -> dict:
+        meta = service.metadata()
+        return {
+            "now": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "uptime_s": round(time.time() - self.started),
+            "checkpoint": meta["checkpoint"],
+            "checkpoint_sha256": meta["checkpoint_sha256"][:16],
+            "trained": meta["trained"],
+            "execute_ticks": meta["execute_ticks"],
+            "chunk_30hz": meta["chunk_30hz"],
+            "euler_steps": meta["euler_steps"],
+            "instructions": meta["languages"],
+            "connections_total": self.n_connections,
+            "connections_active": list(self.active.values()),
+            "requests_total": self.n_requests,
+            "recent": list(self.recent)[::-1],
+            "errors": list(self.errors)[::-1],
+        }
+
+
+def status_html(snap: dict) -> str:
+    esc = html.escape
+    rows = "".join(
+        f"<tr><td>{esc(r['time'])}</td><td>{r['conn']}</td><td>{esc(r['kind'])}</td>"
+        f"<td>{esc(str(r.get('detail', '')))}</td><td>{'' if r.get('ms') is None else r['ms']}</td></tr>"
+        for r in snap["recent"]
+    ) or "<tr><td colspan=5>no requests yet</td></tr>"
+    active = "".join(
+        f"<li>connection {c['conn']} from {esc(c['peer'])} since {esc(c['since'])}, "
+        f"{c['requests']} requests</li>" for c in snap["connections_active"]
+    ) or "<li>none</li>"
+    errors = "".join(f"<pre>{esc(e['time'])} conn {e['conn']}\n{esc(e['traceback'][-1500:])}</pre>"
+                     for e in snap["errors"]) or "<p>none</p>"
+    tasks = "".join(f"<li>{esc(task)}: <i>{esc(text)}</i></li>" for text, task in snap["instructions"].items())
+    return f"""<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="5">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>flowcl policy server</title>
+<style>body{{font-family:system-ui,sans-serif;margin:16px;max-width:1000px;background:#fff;color:#111}}
+table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid #ddd;padding:3px 6px;text-align:left;font-size:13px}}
+code,pre{{background:#f4f4f4;padding:2px 4px;white-space:pre-wrap}}</style></head><body>
+<h2>flowcl policy server</h2>
+<p>Updated {esc(snap['now'])} (refreshes every 5 s); up {snap['uptime_s'] // 60} min.</p>
+<p><b>Checkpoint:</b> <code>{esc(snap['checkpoint'])}</code> (sha256 {esc(snap['checkpoint_sha256'])}...)<br>
+<b>Trained:</b> run <code>{esc(str(snap['trained'].get('run_id')))}</code>, stage {snap['trained'].get('stage')},
+tasks {esc(str(snap['trained'].get('task_keys') or snap['trained'].get('task_key')))}<br>
+<b>Execution:</b> {snap['execute_ticks']} of {snap['chunk_30hz']} ticks per chunk at 30 Hz, {snap['euler_steps']} Euler steps</p>
+<p><b>Accepted instructions:</b></p><ul>{tasks}</ul>
+<p><b>Connections:</b> {snap['connections_total']} so far, {snap['requests_total']} requests. Active:</p><ul>{active}</ul>
+<h3>Recent requests</h3><table><tr><th>time</th><th>conn</th><th>type</th><th>detail</th><th>server ms</th></tr>{rows}</table>
+<h3>Recent errors</h3>{errors}
+<p>Same data as JSON: <a href="/status.json">/status.json</a></p></body></html>"""
+
+
 async def serve(service: PolicyService, host: str, port: int, log: RequestLog) -> None:
     from websockets.asyncio.server import serve as ws_serve
 
     ids = itertools.count()
+    state = ServerState()
+
+    def process_request(connection, request):
+        """Plain HTTP (a browser) gets the status page; websocket upgrades pass through."""
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            return None
+        snap = state.snapshot(service)
+        if request.path.startswith("/status.json"):
+            response = connection.respond(200, json.dumps(snap, indent=2, default=str) + "\n")
+            content_type = "application/json"
+        else:
+            response = connection.respond(200, status_html(snap))
+            content_type = "text/html; charset=utf-8"
+        del response.headers["Content-Type"]
+        response.headers["Content-Type"] = content_type
+        return response
+
+    def note(conn: int, kind: str, detail: str = "", ms: float | None = None) -> None:
+        state.recent.append({"time": time.strftime("%H:%M:%S"), "conn": conn, "kind": kind,
+                             "detail": detail, "ms": None if ms is None else round(ms, 1)})
 
     async def handler(ws) -> None:
         conn = next(ids)
         peer = str(getattr(ws, "remote_address", ""))
         log.write(event="open", conn=conn, peer=peer, checkpoint=str(service.checkpoint))
         print(f"[serve] connection {conn} from {peer}", flush=True)
+        state.n_connections += 1
+        state.active[conn] = {"conn": conn, "peer": peer, "since": time.strftime("%H:%M:%S"), "requests": 0}
+        note(conn, "open", peer)
         await ws.send(wire.packb(service.metadata()))
         n = 0
         latencies = []
@@ -282,15 +370,22 @@ async def serve(service: PolicyService, host: str, port: int, log: RequestLog) -
                         log.write(event="infer", conn=conn, seq=request.get("seq"), prompt=request.get("prompt"),
                                   state=request.get("state"), first_action=reply["actions_30hz"][0],
                                   timing=reply["timing"], t_obs=request.get("t_obs"))
+                        note(conn, "infer", f"seq {request.get('seq')}: {str(request.get('prompt'))[:40]}", total)
                     else:
                         log.write(event=request.get("type"), conn=conn, task=request.get("task"),
                                   episode_index=request.get("episode_index"))
+                        note(conn, str(request.get("type")),
+                             f"{request.get('task')} episode {request.get('episode_index')}", total)
                     await ws.send(wire.packb(reply))
                     n += 1
+                    state.n_requests += 1
+                    state.active[conn]["requests"] = n
                 except Exception:
                     tb = traceback.format_exc()
                     log.write(event="error", conn=conn, traceback=tb)
                     print(f"[serve] error on connection {conn}:\n{tb}", flush=True)
+                    state.errors.append({"time": time.strftime("%H:%M:%S"), "conn": conn, "traceback": tb})
+                    note(conn, "error", tb.strip().splitlines()[-1][:80])
                     await ws.send(tb)
         finally:
             summary = {}
@@ -300,7 +395,10 @@ async def serve(service: PolicyService, host: str, port: int, log: RequestLog) -
                            "max_ms": float(np.max(latencies))}
             log.write(event="close", conn=conn, n_requests=n, **summary)
             print(f"[serve] connection {conn} closed after {n} requests {summary}", flush=True)
+            state.active.pop(conn, None)
+            note(conn, "close", f"{n} requests " + (f"p50 {summary['p50_ms']:.0f} ms" if summary else ""))
 
-    async with ws_serve(handler, host, port, compression=None, max_size=None):
-        print(f"[serve] listening on ws://{host}:{port} ({service.checkpoint})", flush=True)
+    async with ws_serve(handler, host, port, compression=None, max_size=None, process_request=process_request):
+        print(f"[serve] listening on ws://{host}:{port} ({service.checkpoint}); status page http://<host>:{port}/",
+              flush=True)
         await asyncio.Future()

@@ -31,7 +31,13 @@ uv run python scripts/serve_policy.py \
   --checkpoint results/single__dobot__puzzle_red_retrieve__seed0/checkpoints/final.pt
 ```
 The server prints `listening on ws://0.0.0.0:8000`. It logs every request to
-`results/dobot_serve/<run>__<ckpt>/requests.jsonl` and dumps the first 5 inputs as npz.
+`results/dobot_serve/<run>__<ckpt>/requests.jsonl` (or `--log-dir`) and dumps the first 5 inputs
+as npz.
+
+**Status page:** open `http://10.147.20.55:8000/` in a browser on any machine on the ZeroTier
+network. It shows the loaded checkpoint, the accepted instructions, active connections, recent
+requests with their latency, and recent errors. It refreshes every 5 s, and the same data is at
+`/status.json`.
 
 Other checkpoints:
 - `results/dobot_puzzle__seq_ft__seed0/checkpoints/stage{0,1,2}.pt`
