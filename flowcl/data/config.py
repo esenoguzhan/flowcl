@@ -69,6 +69,7 @@ def load_embodiment_spec(cfg: DictConfig | dict | str | Path) -> EmbodimentSpec:
         observation=observation,
         action=action,
         notes=str(raw.get("notes", "")),
+        stats_std_floor=float(raw.get("stats_std_floor", 0.0)),
     )
 
 

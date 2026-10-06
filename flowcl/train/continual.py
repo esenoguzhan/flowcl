@@ -308,7 +308,7 @@ def warm_runner_text_cache(policy, curriculum: Curriculum, dataset_dir, device, 
     instructions are the demo files' own (:func:`flowcl.data.libero_adapter.read_task_metadata`),
     one string per call, as :func:`flowcl.experiments.low_update.warm_runner_cache` does.
     """
-    from flowcl.data.libero_adapter import read_task_metadata
+    from flowcl.data.tasks import recorded_language
 
     device_type = torch.device(device).type
     first = set(r.task_key for r in curriculum.stages[0].train_refs)
@@ -316,7 +316,7 @@ def warm_runner_text_cache(policy, curriculum: Curriculum, dataset_dir, device, 
              *(r for r in curriculum.eval_refs if r.task_key not in first)]
     state = {}
     for ref in order:
-        text = read_task_metadata(ref.demo_path(dataset_dir)).language
+        text = recorded_language(ref, dataset_dir)
         task_amp = bool(amp and ref.task_key in first and device_type == "cuda")
         with torch.no_grad(), torch.autocast(device_type=device_type, enabled=task_amp):
             policy.text_encoder([text])
@@ -333,13 +333,13 @@ def warm_joint_stage_cache(policy, stage, dataset_dir, device, amp: bool) -> dic
     (encoded by an earlier evaluation) are left as they are. Returns ``{task_key: {"text",
     "precision"}}`` for the instructions this call encoded.
     """
-    from flowcl.data.libero_adapter import read_task_metadata
+    from flowcl.data.tasks import recorded_language
 
     device_type = torch.device(device).type
     task_amp = bool(amp and device_type == "cuda")
     encoded = {}
     for ref in stage.train_refs:
-        text = read_task_metadata(ref.demo_path(dataset_dir)).language
+        text = recorded_language(ref, dataset_dir)
         if text in policy.text_encoder._cache:
             continue
         with torch.no_grad(), torch.autocast(device_type=device_type, enabled=task_amp):

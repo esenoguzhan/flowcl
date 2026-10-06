@@ -129,10 +129,16 @@ class EmbodimentSpec:
     # Free-form provenance, e.g. which robot/controller the numbers came from.
     notes: str = ""
     _registry: tuple[str, ...] = field(default=(), repr=False)
+    # Lower bound on every fitted state/action std (0 = none, the LIBERO setting).
+    # Joint-position embodiments need it: a joint that barely moves in Task 1 would
+    # otherwise put later tasks' values tens of stds out under the frozen §3.3 stats.
+    stats_std_floor: float = 0.0
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("EmbodimentSpec.name must be non-empty")
+        if self.stats_std_floor < 0:
+            raise ValueError(f"stats_std_floor must be >= 0, got {self.stats_std_floor}")
 
     @property
     def d_state(self) -> int:
@@ -152,9 +158,10 @@ class EmbodimentSpec:
         """Plain-data form, for embedding in checkpoints and run artifacts.
 
         Checkpoints carry the spec rather than a config *name* so that evaluating an
-        old checkpoint cannot silently pick up an edited YAML.
+        old checkpoint cannot silently pick up an edited YAML. ``stats_std_floor``
+        appears only when set, so specs without one serialise exactly as before.
         """
-        return {
+        out = {
             "name": self.name,
             "notes": self.notes,
             "observation": {
@@ -173,6 +180,9 @@ class EmbodimentSpec:
                 "component_keys": [[k, w] for k, w in self.action.component_keys],
             },
         }
+        if self.stats_std_floor:
+            out["stats_std_floor"] = self.stats_std_floor
+        return out
 
     @classmethod
     def from_dict(cls, payload: dict) -> "EmbodimentSpec":
@@ -182,6 +192,7 @@ class EmbodimentSpec:
         return cls(
             name=payload["name"],
             notes=payload.get("notes", ""),
+            stats_std_floor=float(payload.get("stats_std_floor", 0.0)),
             observation=ObservationSpec(
                 cameras=tuple(obs["cameras"]),
                 image_size=tuple(obs["image_size"]),

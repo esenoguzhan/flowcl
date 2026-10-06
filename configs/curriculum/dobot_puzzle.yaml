@@ -1,0 +1,29 @@
+# Dobot X-Trainer puzzle sequence: red -> green -> yellow (branch dobot-hw, a try-out;
+# AgileX stays the thesis plan's Stage B robot).
+#
+# Each task is a single-object tabletop puzzle recorded by teleoperation at the lab
+# (HF Physical-41/*, pinned in flowcl/data/dobot_tasks.py). The scenes differ visually
+# (red box + block, tube + green sticks, yellow cage + tool), so a single-task stage does
+# not need the instruction to tell them apart (the docs/status.md lesson for F2).
+# Red is first: it is the shortest task and the single-task hardware proof.
+#
+# n_demos is each task's episode count minus 10: the last 10 episodes are held out for
+# offline checks and supply the rollouts' initial-condition photos.
+name: dobot_puzzle
+
+description: >
+  Three bimanual tool-use puzzles on the Dobot X-Trainer, one scene each, ~110-130 demos
+  per task at 10 Hz (subsampled from 30 fps).
+
+expectation: >
+  A first look at forgetting on real hardware: seq_ft should lose red after green and
+  yellow; adaptive GPM should keep more of it. Hardware numbers at n = 10 per cell are
+  coarse, so this is transfer evidence and failure analysis, not a ranking.
+
+tasks:
+  - task_key: dobot/puzzle_red_retrieve
+    n_demos: 110
+  - task_key: dobot/puzzle_green_retrieve
+    n_demos: 114
+  - task_key: dobot/puzzle_yellow_retrieve
+    n_demos: 132

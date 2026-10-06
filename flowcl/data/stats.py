@@ -194,11 +194,14 @@ class NormalizationStats:
         ).astype(np.float32)
 
 
-def _field_stats(values: np.ndarray, apply: bool) -> FieldStats:
+def _field_stats(values: np.ndarray, apply: bool, std_floor: float = 0.0) -> FieldStats:
     values = values.astype(np.float64, copy=False)
+    std = values.std(axis=0)
+    if std_floor:
+        std = np.maximum(std, std_floor)
     return FieldStats(
         mean=values.mean(axis=0).tolist(),
-        std=values.std(axis=0).tolist(),
+        std=std.tolist(),
         min=values.min(axis=0).tolist(),
         max=values.max(axis=0).tolist(),
         apply=apply,
@@ -210,6 +213,7 @@ def compute_stats(
     embodiment: str,
     task_id: str,
     normalize_actions: bool = False,
+    std_floor: float = 0.0,
 ) -> NormalizationStats:
     """Fit statistics over the episodes of **one** task (§3.3).
 
@@ -221,6 +225,8 @@ def compute_stats(
         task_id: The task these stats are fitted on. Recorded in provenance and
             checked by :func:`assert_frozen`.
         normalize_actions: Leave False for LIBERO (§3.2).
+        std_floor: Lower bound applied to every fitted std, stored as the effective
+            std (the embodiment's ``stats_std_floor``). 0 leaves the stats unchanged.
 
     Returns:
         Frozen statistics carrying their own provenance.
@@ -250,8 +256,8 @@ def compute_stats(
         fitted_on_task_id=task_id,
         fitted_on_n_demos=len(episodes),
         n_steps=int(states.shape[0]),
-        state=_field_stats(states, apply=True),
-        action=_field_stats(actions, apply=normalize_actions),
+        state=_field_stats(states, apply=True, std_floor=std_floor),
+        action=_field_stats(actions, apply=normalize_actions, std_floor=std_floor),
     )
 
 

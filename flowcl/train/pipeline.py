@@ -89,6 +89,7 @@ def fit_stats(
         task_id=first.task_key,
         # §3.2: LIBERO actions are already in [-1, 1]; record, never renormalise.
         normalize_actions=not spec.action.already_normalized,
+        std_floor=spec.stats_std_floor,
     )
 
 

@@ -23,7 +23,7 @@ from flowcl.data.config import load_embodiment_spec
 from flowcl.data.curriculum import load_curriculum
 from flowcl.data.tasks import resolve_tasks
 from flowcl.envs.evaluation import eval_config_from_dict
-from flowcl.experiments.gate0 import run_gate0
+from flowcl.experiments.gate0 import run_gate0, train_single_task_reference
 from flowcl.train.trainer import TrainConfig
 from flowcl.utils.libero_paths import repo_root
 
@@ -78,6 +78,12 @@ def main() -> None:
         help="Skip pretrained encoder weights. Wiring smoke tests only -- a Gate 0 "
         "verdict from randomly initialised encoders is meaningless.",
     )
+    parser.add_argument(
+        "--no-eval",
+        action="store_true",
+        help="Train the single-task policies and stop: no rollouts and no Gate 0 verdict. "
+        "For embodiments without a simulator (the dobot suite).",
+    )
     args = parser.parse_args()
 
     if args.n_episodes is not None or args.train_steps < 30000:
@@ -99,6 +105,25 @@ def main() -> None:
         refs = resolve_tasks(args.tasks)
         n_demos = args.n_demos
 
+    train_cfg = TrainConfig(
+        steps=args.train_steps,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        num_workers=args.num_workers,
+        device=args.device,
+        amp=args.amp,
+    )
+    if args.no_eval:
+        for ref in refs:
+            print(f"\n[flowcl] === single task (no eval): {ref.task_key} ===", flush=True)
+            trained = train_single_task_reference(
+                ref, spec=spec, policy_config=args.policy, train_cfg=train_cfg, seed=args.seed,
+                n_demos=n_demos, results_root=args.results_root, pretrained=not args.no_pretrained,
+            )
+            print(f"[flowcl] {ref.task_key}: checkpoint {trained.checkpoint}", flush=True)
+            del trained
+        return
+
     eval_path = args.eval_config or (
         repo_root() / "configs" / "eval" / "libero_eval.yaml"
     )
@@ -110,14 +135,7 @@ def main() -> None:
         refs,
         spec=spec,
         policy_config=args.policy,
-        train_cfg=TrainConfig(
-            steps=args.train_steps,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            num_workers=args.num_workers,
-            device=args.device,
-            amp=args.amp,
-        ),
+        train_cfg=train_cfg,
         eval_cfg=eval_config_from_dict(eval_payload),
         seed=args.seed,
         n_demos=n_demos,

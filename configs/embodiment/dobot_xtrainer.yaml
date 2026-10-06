@@ -1,0 +1,54 @@
+# Dobot X-Trainer dual-arm (two Nova arms + Feetech grippers), the lab's ready robot.
+#
+# A side try-out (branch dobot-hw): AgileX stays the Stage B robot of the thesis plan.
+# Demos are the lab's LeRobot v2.1 recordings at 30 fps (HF Physical-41/*); the
+# adapter (flowcl/data/dobot_adapter.py) subsamples them to control_rate_hz.
+name: dobot_xtrainer
+
+observation:
+  # Order is load-bearing (token order into the trunk). Frames are the recorder's
+  # 640x480 images (the top camera is the crop [150:420, 220:480] stretched to
+  # 640x480), reduced by flowcl.deploy.images.to_policy_frame for both training
+  # and serving.
+  cameras:
+    - top
+    - left_wrist
+    - right_wrist
+  image_size: [128, 128]
+  # Measured joint positions; the gripper entries are the previous commanded
+  # gripper, exactly as the robot-side runner builds the state live.
+  d_state: 14
+  state_keys:
+    - [left_joints, 6]
+    - [left_gripper, 1]
+    - [right_joints, 6]
+    - [right_gripper, 1]
+
+action:
+  # Absolute joint targets (rad) + gripper in [0, 1] (1 = open), per arm.
+  d_action: 14
+  control_mode: joint_position
+  # Policy rate: every 3rd frame of the 30 fps recordings. The server upsamples each
+  # chunk back to 30 Hz for the robot's 30 Hz servo loop.
+  control_rate_hz: 10.0
+  # 1.6 s of future actions.
+  chunk_horizon: 16
+  # 0.8 s open-loop (24 robot ticks), then replan.
+  execute_k: 8
+  already_normalized: false
+  component_keys:
+    - [left_joints, 6]
+    - [left_gripper, 1]
+    - [right_joints, 6]
+    - [right_gripper, 1]
+
+# rad. Task 1 (red) barely moves joint 5 (std 0.04-0.05), so under the frozen §3.3
+# stats yellow's joint 5 reaches |z| 22 (left) and 33 (right) without a floor, 11/15
+# at 0.1, about 5/8 at 0.2 (scripts/prepare_dobot.py reports). Chosen from all three
+# tasks' recordings: a deviation from fitting on Task 1 alone, recorded in the run notes.
+stats_std_floor: 0.2
+
+notes: >
+  Dobot X-Trainer, left arm 192.168.5.1 = indices 0-6, right arm 192.168.5.2 = 7-13.
+  ServoJ joint streaming at 30 Hz through the lab's ZMQ robot server. Joint
+  velocities in the recordings are copies of the positions and are not used.

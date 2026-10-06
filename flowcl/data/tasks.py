@@ -43,8 +43,22 @@ def _benchmark(suite: str):
     return registry[suite]()
 
 
+def _is_dobot(suite: str) -> bool:
+    from flowcl.data.dobot_tasks import SUITE
+
+    return suite == SUITE
+
+
 def suite_task_names(suite: str) -> tuple[str, ...]:
-    """Task names for a suite, in LIBERO's own index order."""
+    """Task names for a suite, in LIBERO's own index order.
+
+    The ``dobot`` suite (Dobot X-Trainer recordings, branch dobot-hw) comes from
+    :mod:`flowcl.data.dobot_tasks` instead of LIBERO's registry.
+    """
+    if _is_dobot(suite):
+        from flowcl.data.dobot_tasks import TASKS
+
+        return tuple(TASKS)
     bench = _benchmark(suite)
     return tuple(bench.get_task_names())
 
@@ -102,10 +116,24 @@ class TaskRef:
     @property
     def language(self) -> str:
         """The natural-language instruction LIBERO ships with the task."""
+        if _is_dobot(self.suite):
+            from flowcl.data.dobot_tasks import get_task
+
+            return get_task(self.name).language
         return _benchmark(self.suite).get_task(self.task_idx).language
 
     def demo_path(self, dataset_dir: Path | None = None) -> Path:
-        """Absolute path to this task's HDF5 demos."""
+        """Absolute path to this task's HDF5 demos (the decoded cache for ``dobot``)."""
+        if _is_dobot(self.suite):
+            from flowcl.data.dobot_tasks import cache_path
+
+            path = cache_path(self.name, dataset_dir)
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"Cache for {self.task_key} not found at {path}. Run "
+                    f"`uv run python scripts/prepare_dobot.py --tasks {self.name}`."
+                )
+            return path
         root = Path(dataset_dir) if dataset_dir else default_dataset_dir()
         relative = _benchmark(self.suite).get_task_demonstration(self.task_idx)
         path = root / relative
@@ -124,6 +152,14 @@ class TaskRef:
         builds. That would train the policy on one instruction and evaluate it on
         another, which no loss curve would reveal.
         """
+        if _is_dobot(self.suite):
+            from flowcl.data.dobot_adapter import verify_cache
+            from flowcl.data.dobot_tasks import get_task
+
+            task = get_task(self.name)
+            verify_cache(self.demo_path(dataset_dir), repo_id=task.repo_id,
+                         revision=task.revision, language=task.language, n_demos=None)
+            return
         from flowcl.data.libero_adapter import default_task_id, read_task_metadata
 
         path = self.demo_path(dataset_dir)
@@ -176,6 +212,16 @@ def load_task_episodes(
         verify: Run the §3.2 demo-count and action-stats check first. Leave on
             outside of tight loops; it is the check that catches a corrupt download.
     """
+    if _is_dobot(ref.suite):
+        from flowcl.data.dobot_adapter import iter_cache_episodes, verify_cache
+        from flowcl.data.dobot_tasks import get_task
+
+        path = ref.demo_path(dataset_dir)
+        if verify:
+            task = get_task(ref.name)
+            verify_cache(path, repo_id=task.repo_id, revision=task.revision,
+                         language=task.language, n_demos=n_demos)
+        return list(iter_cache_episodes(path, spec, n_demos=n_demos, task_id=ref.task_key))
     from flowcl.data.libero_adapter import iter_episodes, verify_task_file
 
     path = ref.demo_path(dataset_dir)
@@ -184,3 +230,14 @@ def load_task_episodes(
     return list(
         iter_episodes(path, spec, n_demos=n_demos, task_id=ref.task_key)
     )
+
+
+def recorded_language(ref: TaskRef, dataset_dir: Path | None = None) -> str:
+    """The instruction stored with a task's demos (LIBERO HDF5 metadata or the dobot cache)."""
+    if _is_dobot(ref.suite):
+        from flowcl.data.dobot_adapter import cache_attrs
+
+        return str(cache_attrs(ref.demo_path(dataset_dir))["language"])
+    from flowcl.data.libero_adapter import read_task_metadata
+
+    return read_task_metadata(ref.demo_path(dataset_dir)).language
