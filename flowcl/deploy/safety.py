@@ -27,28 +27,31 @@ def limit_action_step(
     last_action: np.ndarray,
     max_joint_step_rad: float,
     max_gripper_step: float,
-) -> tuple[np.ndarray, bool]:
-    """Clip one 30 Hz command against the previous one. Returns ``(command, clipped)``."""
+) -> tuple[np.ndarray, bool, bool]:
+    """Clip one 30 Hz command against the previous one.
+
+    Returns ``(command, joints_clipped, gripper_clipped)``.
+    """
     limited = np.asarray(action, dtype=np.float32).copy()
     last = np.asarray(last_action, dtype=np.float32)
     delta = limited[JOINT_DIMS] - last[JOINT_DIMS]
     limited[JOINT_DIMS] -= (2.0 * np.pi) * np.round(delta / (2.0 * np.pi))
 
-    clipped = False
+    joints_clipped = gripper_clipped = False
     if max_joint_step_rad > 0:
         delta = limited[JOINT_DIMS] - last[JOINT_DIMS]
         bounded = np.clip(delta, -max_joint_step_rad, max_joint_step_rad)
-        clipped = bool(np.any(bounded != delta))
+        joints_clipped = bool(np.any(bounded != delta))
         limited[JOINT_DIMS] = last[JOINT_DIMS] + bounded
 
     grip = list(GRIPPER_DIMS)
     if max_gripper_step > 0:
         delta = limited[grip] - last[grip]
         bounded = np.clip(delta, -max_gripper_step, max_gripper_step)
-        clipped = clipped or bool(np.any(bounded != delta))
+        gripper_clipped = bool(np.any(bounded != delta))
         limited[grip] = last[grip] + bounded
     limited[grip] = np.clip(limited[grip], 0.0, 1.0)
-    return limited.astype(np.float32, copy=False), clipped
+    return limited.astype(np.float32, copy=False), joints_clipped, gripper_clipped
 
 
 def upsample_chunk(chunk: np.ndarray, factor: int) -> np.ndarray:
@@ -81,12 +84,16 @@ class Envelope:
 
     @classmethod
     def from_actions(cls, actions: np.ndarray, margin_rad: float) -> "Envelope":
-        """Training actions' min/max, widened by ``margin_rad`` on the joints."""
+        """Training actions' min/max, widened by ``margin_rad`` on the joints.
+
+        Grippers get [-0.1, 1.1]: a policy predicts slightly past the open/closed ends,
+        and :func:`limit_action_step` clips them to [0, 1] before they are sent.
+        """
         actions = np.asarray(actions, dtype=np.float64)
         lo = actions.min(axis=0) - margin_rad
         hi = actions.max(axis=0) + margin_rad
         for g in GRIPPER_DIMS:
-            lo[g], hi[g] = 0.0, 1.0
+            lo[g], hi[g] = -0.1, 1.1
         return cls(lo=lo.astype(np.float32), hi=hi.astype(np.float32))
 
     def to_dict(self) -> dict:
