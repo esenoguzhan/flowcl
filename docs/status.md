@@ -6,10 +6,13 @@ changes.
 
 **Deadline:** submission ~1 Mar 2027. Experiments freeze at W17 (25 Jan).
 
-**Right now:** a quick hardware demo on the **Dobot dual-arm** robot (hardware and data ready at
-the lab), run in a separate chat. It covers Workstream F's readiness check (F0) and, if it goes
-well, the single-task proof (F1), both pulled forward. Nothing is queued on the GPU; every tmux
-session is a finished queue.
+**Right now:** a side try-out on the lab's **Dobot X-Trainer** dual-arm (hardware and data ready),
+on branch `dobot-hw`. **AgileX stays the Stage B robot**; whether the try-out merges is decided
+later. It pulls F0/F1-style checks forward: data conventions, replay, single-task proof, cycle
+time. Preparation is in `runs/2026-10-06_dobot_hw_prep.md`. The robot procedure is in
+`scripts/hw/README.md`. The overnight queue (`scripts/queue_dobot.sh`) trains single-task red,
+seq_ft and adaptive GPM on red → green → yellow, then single-task green and yellow. First robot
+session: Wed 7 Oct.
 
 ## 1. Plan progress
 
@@ -28,7 +31,7 @@ session is a finished queue.
 | **D** Track 2 (offline predictors) | **not started** | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct** |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
 | **E2** pilots | not started; angle A is off | D2 (end of W5) is angle B (only if Track 2 finds critical outputs) or the minimum thesis |
-| **F0** hardware readiness | **in progress** (Dobot demo, separate chat) | |
+| **F0** hardware readiness | **in progress** on the Dobot try-out (branch `dobot-hw`): format, conventions, pipeline done; replay and proof on Wed 7 Oct | `runs/2026-10-06_dobot_hw_prep.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | also confirm Dobot as the Stage B robot |
 
 ## 2. Side line, outside the plan: similar tasks and language (closed for now)
