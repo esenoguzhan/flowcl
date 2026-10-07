@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Tue 6 Oct 2026, week W1 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Wed 7 Oct 2026, week W1 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -6,10 +6,12 @@ changes.
 
 **Deadline:** submission ~1 Mar 2027. Experiments freeze at W17 (25 Jan).
 
-**Right now:** a quick hardware demo on the **Dobot dual-arm** robot (hardware and data ready at
-the lab), run in a separate chat. It covers Workstream F's readiness check (F0) and, if it goes
-well, the single-task proof (F1), both pulled forward. Nothing is queued on the GPU; every tmux
-session is a finished queue.
+**Right now:** back on the plan.
+- **The Dobot demo was cancelled on Wed 7 Oct:** the robot is not available.
+- **AgileX stays the Stage B robot.**
+- **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
+  Its reusable pieces are listed in §3.
+- Nothing is queued on the GPU.
 
 ## 1. Plan progress
 
@@ -28,8 +30,8 @@ session is a finished queue.
 | **D** Track 2 (offline predictors) | **not started** | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct** |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
 | **E2** pilots | not started; angle A is off | D2 (end of W5) is angle B (only if Track 2 finds critical outputs) or the minimum thesis |
-| **F0** hardware readiness | **in progress** (Dobot demo, separate chat) | |
-| **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | also confirm Dobot as the Stage B robot |
+| **F0** hardware readiness | **not started on AgileX**. The Dobot try-out was cancelled before any robot time | branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
+| **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
 ## 2. Side line, outside the plan: similar tasks and language (closed for now)
 
@@ -58,7 +60,7 @@ Three studies, 4–6 Oct:
 instruction, single-task stages give the policy no reason to read it, and every method will appear
 to forget. Choose tasks that differ visually, or plan for joint/replay training.
 
-## 3. The hardware demo (separate chat): what it should establish
+## 3. The hardware gate (F0/F1 on AgileX): what it must establish
 
 The plan's gate (`thesis_plan.md`, Workstream F, F1):
 1. **The data format:**
@@ -77,8 +79,27 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 4. **Record:** what was learned (format, rates, measured cycle time, robot access including
    W12–W13) goes in `docs/runs/` and back into this page.
 
-The plan and README name an **AgileX** dual-arm robot. If the Dobot is the Stage B robot, update
-`thesis_plan.md` (file names `agilex_*` become the robot's) after confirming with the supervisor.
+**Reusable from the parked Dobot try-out** (branch `dobot-hw`; record
+`docs/runs/2026-10-06_dobot_hw_prep.md` on that branch):
+- **Code:**
+  - `TaskRef` suite dispatch for non-LIBERO tasks;
+  - a LeRobot v2.1 adapter with an HDF5 cache;
+  - `stats_std_floor` in the embodiment spec;
+  - `gate0 --no-eval`;
+  - a websocket policy server with a status page;
+  - a robot-side runner (probe without motion, stop test, replay with tracking metrics, operator
+    rollout loop with cycle time; safety checks on every chunk);
+  - an offline open-loop check.
+- **Lessons for AgileX F1:**
+  - Make the training state match exactly what the robot can send live (the Dobot's gripper state
+    was the last *command*).
+  - Frozen Task-1 stats can put later tasks' joints many stds out on a joint-position embodiment.
+  - A `--no-eval` `run_continual` writes no `result.json`, so non-seq_ft methods need
+    `--no-t1-check`.
+  - h5py step-sliced reads (`[::k]`) are very slow; read contiguously, then subsample.
+  - Measure demo joint speed against the robot's per-tick clip before choosing it.
+- **Disk:** `datasets/dobot/` (69 GB) and the Dobot runs in `results/` (about 6.7 GB) can be
+  deleted if space is needed.
 
 ## 4. Next, when back on the plan (priority order)
 
@@ -88,4 +109,4 @@ The plan and README name an **AgileX** dual-arm robot. If the Dobot is the Stage
    depends on it.
 4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).
 5. **ConSFT notes** (W5).
-6. **Hardware:** F1 engineering (adapter, `hw_env`, proof) continues in parallel to the GPU work.
+6. **Hardware:** F1 engineering on AgileX (adapter, `hw_env`, proof) continues in parallel to the GPU work; reuse the `dobot-hw` pieces (§3).
