@@ -82,6 +82,9 @@ class SGP(GPM):
     ) -> None:
         if not (isinstance(alpha, (int, float)) and math.isfinite(alpha) and alpha > 0):
             raise ValueError(f"alpha must be a positive finite number, got {alpha!r}")
+        if kwargs.get("eps_later") is not None:
+            # SGP is closed (docs/thesis_plan.md A7); its display name would not carry it.
+            raise ValueError("eps_later is not supported for SGP")
         super().__init__(eps=eps, projection=projection, **kwargs)
         self.alpha = float(alpha)
         # Layer -> λ (float64, CPU), one per memory column, registry order.

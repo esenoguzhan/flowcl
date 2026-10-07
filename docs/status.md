@@ -8,10 +8,14 @@ changes.
 
 **Right now:** back on the plan.
 - **The Dobot demo was cancelled on Wed 7 Oct:** the robot is not available.
-- **AgileX stays the Stage B robot.**
+- **AgileX stays the Stage B robot.** The user is setting up the arms in the lab; hardware
+  deployment comes later.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
-- Nothing is queued on the GPU.
+- **On the GPU since Wed 7 Oct (evening): C1, e99 × 3 seeds**
+  (`scripts/queue_high_protection.sh`, about 16 h). The rule is
+  `configs/analysis/high_protection.yaml`. Do not modify the working tree until the queue ends:
+  each run records `git_sha`. Write records in a separate worktree.
 
 ## 1. Plan progress
 
@@ -20,12 +24,12 @@ changes.
 | **A1** stage-boundary resume | done (confirmatory test passes) | `runs/2026-10-02_resume_check.md` |
 | **A2** `seq_hetero_t8`, Gate 0 T6–T8 | done (T6 microwave, T7, T8 pudding → drawer) | `runs/2026-10-02_gate0_t8*.md` |
 | **A3** seen-task-only evaluation (`eval_unseen: false`) | **not started** | |
-| **A4** ε schedule for GPM (`eps_later`, `gpm_projected_adam_e99`) | **not started** | blocks C1 |
+| **A4** ε schedule for GPM (`eps_later`, `gpm_projected_adam_e99`) | done | `configs/method/gpm_e99.yaml`; CPU test: stages 0–1 and T1 memory bitwise equal to plain |
 | **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | **not started** | |
 | **A6** metric naming (ACC, F_first) in tables and README | **not started** | |
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
 | **B** baselines: replay, EWC, LoRA, ConSFT | **not started** (no method code yet) | brackets planned for W3 |
-| **C1** high-protection control (e99 × 3 seeds) | **not started** | needs A4 |
+| **C1** high-protection control (e99 × 3 seeds) | **running** (queued Wed 7 Oct) | rule `configs/analysis/high_protection.yaml`; at T2, e99 is predicted to match adaptive's total protection to within 0.15 pp |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **not started** | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct** |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
@@ -104,7 +108,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 ## 4. Next, when back on the plan (priority order)
 
 1. **Baselines (B):** replay and EWC first, then LoRA. Brackets in W3 on seed 0, T1 → T2.
-2. **A4 + C1:** the ε schedule, then the e99 control × 3 seeds (~15 GPU h; good overnight work).
+2. **C1 records:** seed 0 lands at about 05:30–06:00 on Thu 8 Oct, the replication at about 16:00. Write
+   them in a worktree.
 3. **Track 2 (D):** manifest and measures, frozen by Fri 30 Oct at the latest. Angle B at D2
    depends on it.
 4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).

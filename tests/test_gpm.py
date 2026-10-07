@@ -313,14 +313,14 @@ def task_data(spec, key, seed):
     return episodes
 
 
-def run_three_tasks(spec, capture_yaml, monkeypatch=None):
+def run_three_tasks(spec, capture_yaml, monkeypatch=None, **method_kwargs):
     from flowcl.train import trainer as trainer_module
 
     keys = ["toy/one", "toy/two", "toy/three"]
     episodes = {k: task_data(spec, k, 10 * i) for i, k in enumerate(keys)}
     stats = compute_stats(episodes[keys[0]], embodiment=spec.name, task_id=keys[0])
     policy = fresh_policy(spec)
-    method = GPM(update_memory=True, capture_config=capture_yaml, log_interval=1)
+    method = GPM(update_memory=True, capture_config=capture_yaml, log_interval=1, **method_kwargs)
     optimizer_params: dict[int, set] = {}
     if monkeypatch is not None:
         real = trainer_module.build_optimizer
@@ -422,6 +422,62 @@ def test_adaptive_variant_name_config_and_method_yaml():
     assert kwargs.pop("new_energy_fraction") == 0.9
     assert kwargs == plain  # otherwise identical to the plain GPM config
     assert GPM(**load_method_config("gpm_ne90")[1]).display_name == "gpm_projected_adam_ne90"
+
+
+def test_eps_later_name_config_validation_and_method_yaml():
+    from flowcl.data.config import load_method_config
+    from flowcl.methods.sgp import SGP
+    from flowcl.train.continual import continual_run_id
+
+    assert "eps_later" not in GPM().config()  # unset: the metadata plain GPM always had
+    assert "eps_later" not in GPM(new_energy_fraction=0.9).config()
+    variant = GPM(eps_later=0.99)
+    assert variant.display_name == "gpm_projected_adam_e99"
+    assert variant.config()["eps_later"] == 0.99
+    assert [variant.eps_for(t) for t in range(4)] == [0.95, 0.99, 0.99, 0.99]
+    assert [GPM().eps_for(t) for t in range(4)] == [0.95] * 4
+    assert (continual_run_id(variant.display_name, "seq_hetero", 1)
+            == "seq_hetero__gpm_projected_adam_e99__seed1")
+    for bad in (0.0, -0.5, 1.01):
+        with pytest.raises(ValueError, match="eps_later"):
+            GPM(eps_later=bad)
+    with pytest.raises(ValueError, match="eps_later"):
+        SGP(eps_later=0.99)
+
+    name, kwargs = load_method_config("gpm_e99")
+    plain_name, plain = load_method_config("gpm")
+    assert name == plain_name == "gpm"
+    assert kwargs.pop("eps_later") == 0.99
+    assert kwargs == plain  # otherwise identical to the plain GPM config
+    assert GPM(**load_method_config("gpm_e99")[1]).display_name == "gpm_projected_adam_e99"
+
+
+def test_eps_later_keeps_task1_and_stages_0_1_and_raises_later_targets(spec, capture_yaml, tmp_path):
+    from flowcl.utils.run import file_sha256
+
+    _, plain, _, plain_snaps, keys = run_three_tasks(spec, capture_yaml)
+    _, e99, _, e99_snaps, _ = run_three_tasks(spec, capture_yaml, eps_later=0.99)
+    for stage in (0, 1):  # trained under no memory, then under T1's (0.95) memory
+        for n, t in plain_snaps[stage].items():
+            assert torch.equal(t, e99_snaps[stage][n]), (stage, n)
+    for n in plain.memory_history[0]:
+        assert plain.memory_history[0][n] == e99.memory_history[0][n]
+    for task, target in ((0, 0.95), (1, 0.99), (2, 0.99)):
+        for n, info in e99.memory_history[task].items():
+            assert info["target_fraction"] == target, (task, n)
+            assert info["captured_energy_fraction"] >= target - 1e-6, (task, n)
+    assert any(plain.memory_history[1][n]["k_after"] < e99.memory_history[1][n]["k_after"]
+               for n in plain.memory_history[1])
+
+    ctx = TaskContext(task_key=keys[2], dataset=None, device="cpu",
+                      seed_namespace_run_id="toy_ns", method_run_id="toy_run")
+    memory_path = e99.save_artifacts(tmp_path, 2, context=ctx)[0]
+    sha = file_sha256(memory_path)
+    GPM(eps_later=0.99).restore_memory(memory_path, sha, task_idx=2)
+    with pytest.raises(ValueError, match="eps_later"):
+        GPM().restore_memory(memory_path, sha)
+    with pytest.raises(ValueError, match="eps_later"):
+        GPM(eps_later=0.98).restore_memory(memory_path, sha)
 
 
 def test_memory_capture_seeds_depend_on_namespace_task_and_index(spec, monkeypatch):

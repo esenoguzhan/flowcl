@@ -1,0 +1,22 @@
+# gpm_e99: gpm_projected_adam with a higher, flat energy threshold from Task 2 on (A4); the
+# high-protection control C1 (docs/thesis_plan.md, Workstream C).
+#
+# Identical to configs/method/gpm.yaml except eps_later. Task 1's memory is extended to
+# eps = 0.95 as in plain GPM; every later task's to eps_later = 0.99 of its input energy,
+# whatever share is already in memory. Stage 0, T1's memory and stage 1 are therefore
+# bitwise identical to the gpm_projected_adam run of the same seed (checked fail-fast by the
+# runner's identity check). At T2 the protected parameter fraction is about that of
+# gpm_ne90 (offline prediction in the rule), allocated differently across layers.
+# Pre-registered outcome rule: configs/analysis/high_protection.yaml. Display name
+# gpm_projected_adam_e99; registry name gpm.
+name: gpm
+
+eps: 0.95
+projection: gradient_and_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+eps_later: 0.99

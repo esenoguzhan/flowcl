@@ -1,0 +1,159 @@
+# C1: the high-protection control (docs/thesis_plan.md, Workstream C). Locked by SHA before the
+# smoke run; committed before any registered (non-scratch) run. Evaluated by
+# scripts/high_protection.py; queued by scripts/queue_high_protection.sh.
+#
+# QUESTION. Does the adaptive allocation matter, or only more protection? Adaptive GPM
+# (gpm_projected_adam_ne90) kept Object across Goal, R[2][1] = 0.68 / 0.66 / 0.78 on seeds 0-2,
+# against plain GPM's 0.02 / 0.02 / 0.22. The control gpm_projected_adam_e99 (configs/method/
+# gpm_e99.yaml) extends T1's memory to eps = 0.95 like both, then every later task's to a flat
+# 0.99 of its input energy.
+#
+# WHY R[2][1] ISOLATES THE T2 ALLOCATION. Object after Goal depends only on the memory after T1
+# (equal in all three arms) and after T2 (Object's extension). e99's stage-1 weights and capture
+# seeds equal adaptive's (both bitwise equal to plain GPM at stages 0-1), so its T2 Gram is the same,
+# and its T2 ranks follow from the adaptive run's stored T2 residual spectra; the same procedure
+# reproduces adaptive's recorded T2 ranks on 91 of 91 layers on every seed. PREDICTION (made before
+# any e99 run), parameter-weighted protected fraction after T2, sum d_out k_in / sum d_out d_in:
+#     seed 0: e99 55.85%, adaptive 55.95%, plain 37.10%; trunk e99-adaptive +0.54 pp, decoder -1.06 pp
+#     seed 1: e99 57.06%, adaptive 57.20%, plain 37.49%; trunk +0.68 pp, decoder -1.39 pp
+#     seed 2: e99 56.31%, adaptive 56.19%, plain 36.88%; trunk +0.79 pp, decoder -0.88 pp
+# So at R[2][1] the arms have approximately matched total protection (globally within 0.15 pp) and a
+# different allocation: e99 protects more where p (the energy already in memory) is below 0.9, less
+# where it is above, a little more in the trunk and less in the decoder. After T2 the arms differ in
+# protection strength (adaptive's median targets 0.998 / 0.999 at T3 / T4 vs 0.99) and in training
+# history; every later cell is descriptive.
+#
+# RUNS, per seed S: the existing seq_hetero__seq_ft__seed{S} (reference, thresholds, namespace),
+# seq_hetero__gpm_projected_adam__seed{S} (plain), seq_hetero__gpm_projected_adam_ne90__seed{S}
+# (adaptive), and the new seq_hetero__gpm_projected_adam_e99__seed{S} (identity-checked against plain
+# at stages 0-1; T1 pairing against seq_ft). All paired episode for episode.
+# THRESHOLDS: theta_j from the sequence reports' threshold blocks (sequence_report.yaml: registered
+# for seeds 0-1, derived for seed 2), e99's and adaptive's blocks asserted equal.
+#
+# GATES, per seed, first match (missing evidence fails a gate; it is never skipped):
+#   invalid_comparison      identity: stages 0-1 state dicts bitwise equal to plain GPM (re-verified),
+#                           memory_task0 equal.
+#   invalid_implementation  energy (the final memory's history): tasks exactly 0-3, each covering
+#                           exactly plain's layer registry; on EVERY layer recorded target_fraction =
+#                           eps at task 0 and eps_later at tasks 1-3 (target_match_atol), captured >=
+#                           target - tol, every energy value finite; memory config eps_later = 0.99.
+#   invalid_run             for e99 AND each comparator: production (curriculum, seed, namespace,
+#                           train recipe, 50 episodes, method config equal to its configs/method file,
+#                           clean SHA); complete 4x4 matrices with 50 rollouts per cell; one stats
+#                           fingerprint across the four runs and their stage checkpoints; identical
+#                           episode seeds e99 vs seq_ft, plain and adaptive; the sequence reports of
+#                           e99, plain and adaptive carry every required_checks entry, each passed;
+#                           thresholds agree (e99 and adaptive blocks, current seq_ft result.json).
+#                           EXCUSED, recorded: seq_ft seed 0's config.yaml predates the
+#                           seed_namespace_run_id field (8132abc); for the seq_ft role only, an
+#                           absent field is accepted iff the run directory is the namespace.
+#   not_applicable          premise: plain GPM's R[2][1] is not below theta_Object (it did not forget).
+#   invalid_reference       adaptive lacks transition support here: G_adaptive = adaptive - plain at
+#                           R[2][1] >= min_improvement with paired CI low > 0, and adaptive R[2][2] >=
+#                           theta_Goal (recomputed here; seeds 0-2 all showed it).
+#   plasticity_failure      e99's R[2][2] < theta_Goal: Goal not learned under the 0.99 memory.
+# PRIMARY COMPARISONS at R[2][1], rollout-paired bootstrap (configs/eval/libero_eval.yaml):
+#   G = e99 - plain;     gain reproduced iff G >= min_improvement and CI low > 0 (the adaptive rule's).
+#   D = e99 - adaptive;  margin = noninferiority_margin.
+# PRACTICAL VERDICT (mutually exclusive, after the gates):
+#   protection_suffices     gain reproduced and D CI low > -margin.
+#   flat_control_inferior   D CI high < -margin.
+#   unresolved              otherwise.
+# FLAGS (independent of the verdict and of each other):
+#   adaptive_advantage (D CI high < 0), e99_advantage (D CI low > 0), gain_not_reproduced,
+#   within_margin_by_point_only (D >= -margin, CI low <= -margin).
+# Thresholds inclusive (k/50 rates; 1e-9 rounding allowance); CI bounds strict.
+#
+# REPLICATION: exactly seeds 0, 1, 2, each report non-smoke, with this rule's SHA-256 and the
+# expected runs (else refused). First match: any invalid_* -> inconclusive_invalid; any
+# not_applicable -> not_applicable; all protection_suffices -> protection_suffices_replicated; all
+# flat_control_inferior -> flat_control_inferior_replicated; all plasticity_failure ->
+# plasticity_failure_replicated; otherwise mixed. Each flag is listed with the seeds it held on.
+#
+# INTERPRETATION (pre-written, narrow).
+#   protection_suffices: "A flat 0.99 target reproduces the transition benefit within the
+#     pre-specified margin; adaptive targets are unnecessary for this cell under this protocol."
+#     No claim beyond R[2][1].
+#   flat_control_inferior, or the adaptive_advantage flag: supports adaptive's allocation relative to
+#     this flat schedule at approximately matched total protection. It does not establish that the
+#     new-energy rule is uniquely necessary or optimal.
+#   Every conclusion is stated beside the realised protection differences after T2 (global, trunk,
+#   decoder). "Approximately matched total protection" is used only if the realised global
+#   difference |e99 - adaptive| after T2 is <= matched_total_tolerance_pp (protection_matched);
+#   otherwise the performance verdict stands and the reading is qualified "protection not matched
+#   (delta = x pp)".
+#   Limits: matched only to ~0.15 pp globally, with a trunk/decoder shift; later cells compare
+#   different schedules and histories; rollout CIs describe these trained policies; three seeds give
+#   directional replication only. No forgetting diagnostics in this queue (descriptive; on demand).
+# DESCRIPTIVE (never changes a verdict): cells R[2][2], R[3][0..3] for e99 with CIs, paired vs plain
+# and vs adaptive; ACC (result.json's F_1 key; A6), NBT, AUC; per stage and arm: trunk/decoder median
+# rho and parameter-weighted protected fraction (global, per half); the T2 allocation (adaptive's
+# recorded targets vs 0.99 per half, k_added, realised vs predicted fraction, layers whose realised
+# e99 T2 rank equals the prediction).
+#
+# SMOKE (--smoke, scratch only): seed 2 (derived thresholds), 200 steps, 1 episode; production
+# relaxed to the smoke block and a dirty tree excused (clean_git_sha); the adaptive reference gate
+# and the verdict are computed but meaningless; everything else enforced. Replication refuses smoke.
+
+curriculum: seq_hetero
+seeds: [0, 1, 2]
+
+methods:                             # role -> configs/method/<file>
+  seq_ft: seq_ft
+  plain: gpm
+  adaptive: gpm_ne90
+  e99: gpm_e99
+
+identity_stages: [0, 1]
+
+energy:
+  eps: 0.95
+  eps_later: 0.99
+  tasks: [0, 1, 2, 3]
+  tol: 1.0e-6
+  target_match_atol: 1.0e-12
+
+cells:                               # [stage, task]; 0 Spatial, 1 Object, 2 Goal, 3 LIBERO-10
+  primary: [2, 1]                    # Object after Goal
+  t3: [2, 2]                         # Goal learned
+  descriptive:
+    goal_learned: [2, 2]
+    object_final: [3, 1]
+    goal_final: [3, 2]
+    t4: [3, 3]
+    spatial_final: [3, 0]
+
+min_improvement: 0.20                # the adaptive rule's (configs/analysis/adaptive_gpm.yaml)
+noninferiority_margin: 0.10          # docs/thesis_plan.md, Standing conventions
+matched_total_tolerance_pp: 0.5
+
+predicted_t2_protected_fraction:     # percent of registry weights, after T2 (see header)
+  0: {e99: 55.85, adaptive: 55.95}
+  1: {e99: 57.06, adaptive: 57.20}
+  2: {e99: 56.31, adaptive: 56.19}
+
+required_checks:                     # every one present and passed, in each of the three reports
+  - clean_git_sha
+  - seed_namespace
+  - t1_pairing
+  - occupancy_non_decreasing
+  - memory_chained
+  - residuals_within_bound
+  - artifact_hashes_match
+  - frozen_from_stage1
+
+production:
+  train: {steps: 30000, batch_size: 64, lr: 1.0e-4, amp: true}
+  n_episodes: 50
+
+smoke:
+  train: {steps: 200, amp: true}
+  n_episodes: 1
+
+reports:                             # sequence reports under the results root, per role and seed
+  e99: {0: gpm_seq_e99_seed0, 1: gpm_seq_e99_seed1, 2: gpm_seq_e99_seed2}
+  plain: {0: gpm_seq, 1: gpm_seq_seed1, 2: gpm_seq_seed2}
+  adaptive: {0: gpm_seq_ne90, 1: gpm_seq_ne90_seed1, 2: gpm_seq_ne90_seed2}
+
+out: high_protection/seed{seed}/report.json
+replication_out: high_protection/replication.json

@@ -30,6 +30,7 @@ Details inferred rather than taken from the paper (§11):
 
 * the memory is built from §7.1/§7.2 Gram captures (primary, gradient-reachable view) at
   one fixed ``eps`` for every layer and every task (the paper tunes and anneals ``eps``);
+  ``eps_later`` (the ``..._e99`` control) uses a second, fixed value from Task 2 on;
 * Task 1 trains unconstrained with every parameter trainable (paper Alg. 1); from Task 2
   on, projection acts on :meth:`~flowcl.models.policy.FlowPolicy.projectable_parameters`
   only and *every* other parameter is frozen (:func:`freeze_to_allowlist`): §7.4's list
@@ -212,12 +213,17 @@ class GPM(BaseMethod):
         update_memory: bool = False,
         capture_config: str = "subspace",
         new_energy_fraction: float | None = None,
+        eps_later: float | None = None,
     ) -> None:
         """``capture_config``: a ``configs/analysis/<name>.yaml`` name, or a YAML path.
 
         ``new_energy_fraction = f`` selects the adaptive memory target
         ``max(eps, p + f (1 - p))`` (:func:`flowcl.analysis.subspace.adaptive_target`), and
         a distinct display name (``..._ne90`` for ``f = 0.9``). ``None`` is plain eps.
+
+        ``eps_later`` replaces ``eps`` for every memory extension after Task 1 (task index
+        >= 1), with a distinct display name (``..._e99`` for 0.99). Task 1's memory, and so
+        stages 0-1, are those of plain eps. ``None`` is one eps for every task.
         """
         super().__init__()
         if projection not in self.projection_names:
@@ -233,6 +239,9 @@ class GPM(BaseMethod):
             raise ValueError(
                 f"new_energy_fraction must lie in (0, 1), got {new_energy_fraction}"
             )
+        if eps_later is not None and not 0.0 < eps_later <= 1.0:
+            raise ValueError(f"eps_later must lie in (0, 1], got {eps_later}")
+        self.eps_later = None if eps_later is None else float(eps_later)
         self.new_energy_fraction = (
             None if new_energy_fraction is None else float(new_energy_fraction)
         )
@@ -264,10 +273,12 @@ class GPM(BaseMethod):
         name = self.projection_names[self.projection]
         if self.new_energy_fraction is not None:
             name += f"_ne{round(100 * self.new_energy_fraction)}"
+        if self.eps_later is not None:
+            name += f"_e{round(100 * self.eps_later)}"
         return name
 
     def config(self) -> dict:
-        return {
+        config = {
             "eps": self.eps,
             "projection": self.projection,
             "residual_rtol": self.residual_rtol,
@@ -277,6 +288,16 @@ class GPM(BaseMethod):
             "capture_config": self.capture_config,
             "new_energy_fraction": self.new_energy_fraction,
         }
+        # Only when set: configurations without it keep the memory metadata they had before.
+        if self.eps_later is not None:
+            config["eps_later"] = self.eps_later
+        return config
+
+    def eps_for(self, task_idx: int) -> float:
+        """The energy threshold of the memory extension after task ``task_idx``."""
+        if task_idx == 0 or self.eps_later is None:
+            return self.eps
+        return self.eps_later
 
     # ---- memory ----------------------------------------------------------------
 
@@ -326,7 +347,7 @@ class GPM(BaseMethod):
             M_new, info = extend_basis(
                 M_old,
                 acc.gram[view],
-                self.eps,
+                self.eps_for(task_idx),
                 name,
                 neg_tol=cfg.neg_tol,
                 rank_tol=cfg.rank_tol,
@@ -382,6 +403,9 @@ class GPM(BaseMethod):
         stored_f = meta.get("config", {}).get("new_energy_fraction")
         if stored_f != self.new_energy_fraction:
             problems.append(f"new_energy_fraction {stored_f} != {self.new_energy_fraction}")
+        stored_later = meta.get("config", {}).get("eps_later")
+        if stored_later != self.eps_later:
+            problems.append(f"eps_later {stored_later} != {self.eps_later}")
         if method_run_id is not None and meta.get("method_run_id") != method_run_id:
             problems.append(f"method_run_id {meta.get('method_run_id')!r} != {method_run_id!r}")
         if task_idx is not None and meta.get("task_idx") != task_idx:
@@ -535,6 +559,8 @@ class GPM(BaseMethod):
         directory = Path(directory)
         paths: list[Path] = []
         if self._memory:
+            # The basis key is the constructor's eps (Task 1's). With new_energy_fraction or
+            # eps_later the later extensions used other targets; each is in the history.
             eps = self.eps
             bases = {}
             for name, M in self._memory.items():
