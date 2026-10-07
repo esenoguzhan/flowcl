@@ -17,12 +17,15 @@ run() {
   local name=$1; shift
   echo "[queue] $(date -Is) start $name: $*" | tee -a "$LOG/queue.log"
   .venv/bin/python "$@" > "$LOG/$name.log" 2>&1
-  echo "[queue] $(date -Is) end $name rc=$?" | tee -a "$LOG/queue.log"
+  local rc=$?  # captured before $(date) below can overwrite $?
+  echo "[queue] $(date -Is) end $name rc=$rc" | tee -a "$LOG/queue.log"
 }
 
 run single_red    scripts/gate0.py --tasks dobot/puzzle_red_retrieve --n-demos 110 "${COMMON[@]}"
 run seq_ft        scripts/run_continual.py --curriculum dobot_puzzle --method seq_ft "${COMMON[@]}"
-run gpm_ne90      scripts/run_continual.py --curriculum dobot_puzzle --method gpm_ne90 "${COMMON[@]}"
+# --no-t1-check: the T1 pairing check reads the seq_ft run's result.json, which a --no-eval run
+# never writes (no retention matrix).
+run gpm_ne90      scripts/run_continual.py --curriculum dobot_puzzle --method gpm_ne90 --no-t1-check "${COMMON[@]}"
 run single_green  scripts/gate0.py --tasks dobot/puzzle_green_retrieve --n-demos 114 "${COMMON[@]}"
 run single_yellow scripts/gate0.py --tasks dobot/puzzle_yellow_retrieve --n-demos 132 "${COMMON[@]}"
 echo "[queue] $(date -Is) all done" | tee -a "$LOG/queue.log"
