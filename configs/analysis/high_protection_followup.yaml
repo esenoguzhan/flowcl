@@ -1,0 +1,58 @@
+# C1 follow-up: resolve D = e99 - adaptive at Object after Goal, R[2][1], to the 10 pp margin.
+# Locked by SHA before the smoke run; committed before any rollout. Evaluated by
+# scripts/high_protection_followup.py; queued by scripts/queue_high_protection_followup.sh.
+#
+# WHY A FOLLOW-UP. C1 (configs/analysis/high_protection.yaml, docs/runs/2026-10-08_high_protection_
+# three_seeds.md) was `unresolved` on all three seeds: D = +0.04 [-0.10, +0.18], -0.02 [-0.18, +0.14],
+# -0.08 [-0.22, +0.06] at 50 rollouts, too wide for the 10 pp margin either way. This is a
+# SECOND-STAGE TEST OF THE SAME CELL, decided after C1's verdict was known, and is reported as such.
+# C1's own verdict and record stand unchanged.
+#
+# WHAT. The existing stage-2 checkpoints of gpm_projected_adam_e99 and gpm_projected_adam_ne90, seeds
+# 0-2, evaluated on Object only with n_episodes = 150 under the C1 namespace seq_hetero__seq_ft__seed{S}
+# (scripts/evaluate.py, configs/eval/libero_eval.yaml otherwise). Episode seeds derive from (run_id,
+# task_key, episode_idx) and not from the stage, so episodes 0-49 are C1's episodes and 50-149 are new.
+# No training.
+#
+# GATES, per seed (missing evidence fails; any failure -> invalid_followup):
+#   reproduction  for each arm, episodes 0..n_reproduce-1 equal the run's stored eval/stage2.json Object
+#                 cell exactly (successes, step counts, seeds): the same policy, a deterministic eval.
+#   provenance    each evaluated checkpoint records the expected run_id and stage 2 (its SHA-256 is pinned
+#                 in the report; the runs never recorded one); each eval report has the C1 namespace as
+#                 run_id and stage 2; n_episodes rollouts per arm; identical episode seeds in both arms.
+#   c1_report     the C1 seed report is non-smoke, under C1's rule SHA (c1_rule_sha256), names the same
+#                 runs, and every one of its checks is true.
+# VERDICT, per seed: high_protection.classify with C1's checks (G as reproduced in C1) and D recomputed
+# at n = 150 (rollout-paired bootstrap, libero_eval.yaml settings): protection_suffices (D CI low >
+# -margin), flat_control_inferior (D CI high < -margin), otherwise unresolved; C1's flags.
+# REPLICATION: exactly seeds 0, 1, 2, non-smoke, this rule's SHA (else refused). First match: any invalid
+# -> inconclusive_invalid; all protection_suffices -> protection_suffices_replicated; all
+# flat_control_inferior -> flat_control_inferior_replicated; all unresolved -> unresolved_replicated;
+# otherwise mixed. Each flag is listed with the seeds it held on.
+# REPORTED ONLY: D on episodes 0-49 (must equal C1's D; a further reproduction view), D on the new
+# episodes 50-149 alone, each arm's success at n = 150 with its CI.
+#
+# INTERPRETATION: as C1's (narrow): protection_suffices -> "A flat 0.99 target reproduces the transition
+# benefit within the pre-specified margin; adaptive targets are unnecessary for this cell under this
+# protocol"; an adaptive advantage supports adaptive's allocation relative to this flat schedule only.
+# The rollout CIs describe these trained policies; three seeds give directional replication only.
+#
+# SMOKE (--smoke, scratch outputs only): seed 0, 3 episodes; the reproduction gate applies to episodes
+# 0-2; the verdict is computed but meaningless; the replication refuses smoke reports.
+
+c1_rule: high_protection             # configs/analysis/<name>.yaml (run names, out paths, margin)
+c1_rule_sha256: baf871db487a8cf9ef122d333438809859c4078f04d959f69cd425e3ac2bb948
+seeds: [0, 1, 2]
+
+arms: [e99, adaptive]                # roles in the C1 rule
+cell: [2, 1]                         # [stage, task]: Object after Goal
+task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+
+n_episodes: 150
+n_reproduce: 50                      # C1's rollouts per cell
+smoke:
+  seed: 0
+  n_episodes: 3
+
+out_dir: high_protection_followup    # under the output root: seed{S}/{arm}.eval.json, seed{S}/report.json
+replication_out: high_protection_followup/replication.json
