@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# C1 follow-up: the stage-2 checkpoints of e99 and adaptive GPM, seeds 0-2, evaluated on Object with 150
-# rollouts each under the C1 namespace, then the pre-registered seed reports and the replication.
+# C1 follow-up: the stage-2 checkpoints of e99 and adaptive GPM, seeds 0-2, evaluated on Object's 50 fixed
+# initial states in 3 repetitions (rep 0 = the C1 namespace, i.e. C1's own episodes; rep r = namespace
+# __rep<r>, fresh sampling noise), then the pre-registered seed reports and the replication.
 # Orchestration only; the rule is configs/analysis/high_protection_followup.yaml. Run it only when no
 # other GPU job is running.
 #
 # Usage:    bash scripts/queue_high_protection_followup.sh [--from-step K] [--smoke DIR]
 #   --from-step K  resume: steps < K are not rerun (status from their outputs on disk).
-#   --smoke DIR    seed 0 only, 3 episodes, outputs into DIR (outside results/); runs and C1 reports are
-#                  read from results/. No replication.
+#   --smoke DIR    seed 0 only, repetitions 0-1, 3 episodes, outputs into DIR (outside results/); runs and
+#                  C1 reports are read from results/. No replication.
 #
-#   per seed S (k = 3 * index of S in 0 1 2):
-#   k+0  e99 evaluation       -> high_protection_followup/seed<S>/e99.eval.json      (~20 min)
-#   k+1  adaptive evaluation  -> high_protection_followup/seed<S>/adaptive.eval.json (~20 min)
-#   k+2  seed report          -> high_protection_followup/seed<S>/report.json
-#   9    replication          -> high_protection_followup/replication.json (all three reports exist)
+#   per seed S (k = 7 * index of S in 0 1 2), repetition r in 0 1 2:
+#   k+2r    e99 evaluation       -> high_protection_followup/seed<S>/e99.rep<r>.eval.json      (~6 min)
+#   k+2r+1  adaptive evaluation  -> high_protection_followup/seed<S>/adaptive.rep<r>.eval.json (~6 min)
+#   k+6     seed report          -> high_protection_followup/seed<S>/report.json
+#   21      replication          -> high_protection_followup/replication.json (all three reports exist)
 #
 # Status: the last line is "QUEUE DONE ok" (exit 0) or "QUEUE DONE FAILED: <steps>" (exit 1). A seed
 # report exits 3 for an invalid verdict, so it is listed as failed.
@@ -32,8 +33,8 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument '$1'; $USAGE" >&2; exit 2 ;;
     esac
 done
-case "$FROM" in ''|*[!0-9]*) echo "--from-step must be an integer 0..9, got '$FROM'" >&2; exit 2;; esac
-if [ "$FROM" -gt 9 ]; then echo "--from-step must be an integer 0..9, got '$FROM'" >&2; exit 2; fi
+case "$FROM" in ''|*[!0-9]*) echo "--from-step must be an integer 0..21, got '$FROM'" >&2; exit 2;; esac
+if [ "$FROM" -gt 21 ]; then echo "--from-step must be an integer 0..21, got '$FROM'" >&2; exit 2; fi
 
 cd "$(dirname "$0")/.." || { echo "cannot cd to repo root" >&2; exit 1; }
 export MUJOCO_GL=egl
@@ -47,13 +48,15 @@ if [ -n "$SMOKE" ]; then
     case "$SMOKE/" in "$(pwd)/results/"*) echo "--smoke must be outside results/" >&2; exit 2 ;; esac
     OUT="$SMOKE"
     mkdir -p "$OUT"
-    N=3
+    EP_ARGS=(--n-episodes 3)
+    REPS="0 1"
     SEEDS="0"
     REPORT_ARGS+=(--results-root "$OUT" --smoke)
     TAG="_smoke"
 else
     OUT="$RUNS"
-    N=150
+    EP_ARGS=()       # the protocol's 50 episodes = the task's 50 fixed initial states
+    REPS="0 1 2"
     SEEDS="0 1 2"
     TAG=""
 fi
@@ -101,21 +104,23 @@ PY="uv run python"
 note "QUEUE START high_protection_followup smoke='$SMOKE' from_step=$FROM git $(git rev-parse HEAD) status '$(git status --porcelain | wc -l) changes'"
 
 for S in $SEEDS; do
-    case "$S" in 0) K=0 ;; 1) K=3 ;; 2) K=6 ;; esac
-    NS=${CUR}__seq_ft__seed$S
+    case "$S" in 0) K=0 ;; 1) K=7 ;; 2) K=14 ;; esac
     D="$OUT/high_protection_followup/seed$S"   # evaluate.py creates it
     ok=1
-    for pair in "0 e99 ${CUR}__gpm_projected_adam_e99__seed$S" "1 adaptive ${CUR}__gpm_projected_adam_ne90__seed$S"; do
-        set -- $pair
-        run_or_prior $((K + $1)) "eval_${2}_s$S" "$D/$2.eval.json" \
-            $PY scripts/evaluate.py --checkpoint "$RUNS/$3/checkpoints/stage2.pt" --tasks "$TASK" \
-            --run-id "$NS" --n-episodes "$N" --out "$D/$2.eval.json" || ok=0
+    for R in $REPS; do
+        if [ "$R" = 0 ]; then NS=${CUR}__seq_ft__seed$S; else NS=${CUR}__seq_ft__seed${S}__rep$R; fi
+        for pair in "0 e99 ${CUR}__gpm_projected_adam_e99__seed$S" "1 adaptive ${CUR}__gpm_projected_adam_ne90__seed$S"; do
+            set -- $pair
+            run_or_prior $((K + 2 * R + $1)) "eval_${2}_rep${R}_s$S" "$D/$2.rep$R.eval.json" \
+                $PY scripts/evaluate.py --checkpoint "$RUNS/$3/checkpoints/stage2.pt" --tasks "$TASK" \
+                --run-id "$NS" "${EP_ARGS[@]}" --out "$D/$2.rep$R.eval.json" || ok=0
+        done
     done
     if [ $ok = 1 ]; then
-        run_or_prior $((K + 2)) "report_s$S" "$D/report.json" \
+        run_or_prior $((K + 6)) "report_s$S" "$D/report.json" \
             $PY scripts/high_protection_followup.py --seed "$S" "${REPORT_ARGS[@]}"
     else
-        note "SKIP $((K + 2))_report_s$S: an evaluation failed or is missing"
+        note "SKIP $((K + 6))_report_s$S: an evaluation failed or is missing"
     fi
 done
 
@@ -123,10 +128,10 @@ if [ -z "$SMOKE" ]; then
     reports=1
     for S in 0 1 2; do [ -e "$OUT/high_protection_followup/seed$S/report.json" ] || reports=0; done
     if [ $reports = 1 ]; then
-        step 9_replication $PY scripts/high_protection_followup.py --replication
+        step 21_replication $PY scripts/high_protection_followup.py --replication
     else
-        note "SKIP 9_replication: not every seed has a report"
-        FAILED="$FAILED 9_replication(skipped)"
+        note "SKIP 21_replication: not every seed has a report"
+        FAILED="$FAILED 21_replication(skipped)"
     fi
 fi
 

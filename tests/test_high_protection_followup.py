@@ -9,6 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -41,22 +42,22 @@ def successes(k, n):
     return [True] * k + [False] * (n - k)
 
 
-def world(root: Path, seed=0, *, e99=(36, 108), adaptive=(34, 100), checks=None, c1_rule=None,
-          ckpt_run=None, ns=None, n=150, drift=False):
-    """C1-shaped runs with stored stage-2 cells and follow-up evals; ``(k50, k150)`` successes."""
+def world(root: Path, seed=0, *, e99=(36, 36, 36), adaptive=(34, 34, 34), n=50, reps=3, checks=None,
+          c1_rule=None, ckpt_run=None, ns=None, drift=False, same_noise=False):
+    """C1-shaped runs with stored stage-2 cells and follow-up evals; successes per repetition."""
     names = hp.run_names(C1, seed)
-    namespace = ns or fu.namespace(C1, seed)
-    for arm, (k50, k150) in (("e99", e99), ("adaptive", adaptive)):
+    for arm, ks in (("e99", e99), ("adaptive", adaptive)):
         d = root / names[arm]
-        first = successes(k50, 50)
-        rest = successes(k150 - k50, n - 50) if n > 50 else []
-        write_eval(d / "eval" / "stage2.json", namespace, 2, [cell(first)])
+        write_eval(d / "eval" / "stage2.json", fu.namespace(C1, seed), 2, [cell(successes(ks[0], 50))])
         (d / "checkpoints").mkdir(parents=True, exist_ok=True)
         torch.save({"run_id": ckpt_run or names[arm], "stage": 2}, d / "checkpoints" / "stage2.pt")
-        new = first + rest
-        if drift and arm == "e99":
-            new = [not new[0]] + new[1:]
-        write_eval(fu.eval_path(root, CFG, seed, arm), namespace, 2, [cell(new[:n])])
+        for r in range(reps):
+            outcomes = successes(ks[r], 50)[:n]
+            if drift and arm == "e99" and r == 0:
+                outcomes = [not outcomes[0]] + outcomes[1:]
+            run_id = ns or fu.rep_namespace(C1, CFG, seed, r)
+            offset = 0 if (r == 0 or same_noise) else 1000 * r
+            write_eval(fu.eval_path(root, CFG, seed, arm, r), run_id, 2, [cell(outcomes, offset=offset)])
     report = {"seed": seed, "smoke": False, "runs": names,
               "inputs": {"rule": {"sha256": c1_rule or CFG["c1_rule_sha256"]}},
               "checks": checks or {k: True for k in ("identity", "energy", "valid", "premise", "reference",
@@ -76,40 +77,64 @@ def build(root, seed=0, **kw):
 def test_config_agrees_with_c1_and_the_queue():
     assert CFG["c1_rule_sha256"] == file_sha256(repo_root() / "configs" / "analysis" / "high_protection.yaml")
     i, j = CFG["cell"]
-    assert [i, j] == C1["cells"]["primary"] and CFG["n_reproduce"] == C1["production"]["n_episodes"]
+    assert [i, j] == C1["cells"]["primary"] and CFG["n_episodes"] == C1["production"]["n_episodes"] == 50
     from flowcl.data.curriculum import load_curriculum
     assert load_curriculum(C1["curriculum"]).stages[j].task_key == KEY
     queue = (repo_root() / "scripts" / "queue_high_protection_followup.sh").read_text()
-    assert f"TASK={KEY}" in queue and f"N={CFG['n_episodes']}" in queue
+    assert f"TASK={KEY}" in queue and f'REPS="{" ".join(map(str, range(CFG["repetitions"])))}"' in queue
+    assert fu.rep_namespace(C1, CFG, 1, 0) == "seq_hetero__seq_ft__seed1"
+    assert fu.rep_namespace(C1, CFG, 1, 2) == "seq_hetero__seq_ft__seed1__rep2"
+
+
+def test_state_paired_ci_keeps_repetitions_together_and_reduces_to_c1():
+    from flowcl.analysis.metrics import paired_difference_ci
+
+    rng = np.random.default_rng(0)
+    a, b = rng.random((3, 50)) < 0.7, rng.random((3, 50)) < 0.6
+    boot = {"seed": 0, "n_resamples": 2000, "confidence": 0.95}
+    one = fu.state_paired_ci(a[:1], b[:1], boot)
+    ref = paired_difference_ci(a[0], b[0], seed=0, n_bootstrap=2000, confidence=0.95)
+    assert (one["diff"], one["low"], one["high"]) == (ref.value, ref.low, ref.high)
+    three = fu.state_paired_ci(a, b, boot)
+    assert three["diff"] == pytest.approx(a.mean() - b.mean()) and three["n_states"] == 50
+    # identical repetitions carry no extra information: the CI equals one repetition's
+    same = fu.state_paired_ci(np.repeat(a[:1], 3, 0), np.repeat(b[:1], 3, 0), boot)
+    assert (same["low"], same["high"]) == pytest.approx((one["low"], one["high"]))
+    with pytest.raises(ValueError):
+        fu.state_paired_ci(a, b[:2], boot)
 
 
 def test_a_valid_seed_reaches_a_verdict_with_the_reported_views(tmp_path):
-    names = world(tmp_path)
+    names = world(tmp_path, e99=(36, 37, 35), adaptive=(34, 33, 36))
     r = build(tmp_path)
     assert all(g["passed"] for g in r["gates"].values())
     assert r["verdict"]["verdict"] in {"protection_suffices", "unresolved", "flat_control_inferior"}
     p = r["primary"]
-    assert p["n"] == 150 and p["D"]["diff"] == pytest.approx((108 - 100) / 150)
-    assert r["reported"]["D_first"]["diff"] == pytest.approx(2 / 50)
-    assert r["reported"]["D_new_only"]["n"] == 100
-    assert r["gates"]["provenance_e99"]["checkpoint_sha256"] == file_sha256(
+    assert (p["n_states"], p["repetitions"]) == (50, 3)
+    assert p["D"]["diff"] == pytest.approx((108 - 103) / 150)
+    assert r["reported"]["D_rep0"]["diff"] == pytest.approx(2 / 50)
+    assert r["reported"]["D_new_reps"]["repetitions"] == 2
+    assert r["reported"]["D_per_rep"] == pytest.approx([0.04, 0.08, -0.02])
+    assert 0.0 <= r["reported"]["states_same_outcome_every_rep"]["e99"] <= 1.0
+    assert r["gates"]["provenance_e99_rep0"]["checkpoint_sha256"] == file_sha256(
         tmp_path / names["e99"] / "checkpoints" / "stage2.pt")
     assert r["rule"]["sha256"] == file_sha256(fu.rule_path())
 
 
 def test_the_verdict_routes_through_c1_classify(tmp_path):
-    world(tmp_path / "a", e99=(36, 108), adaptive=(36, 108))  # identical arms: D = 0 [0, 0]
+    world(tmp_path / "a", e99=(36, 36, 36), adaptive=(36, 36, 36))  # identical arms: D = 0 [0, 0]
     assert build(tmp_path / "a")["verdict"]["verdict"] == "protection_suffices"
-    world(tmp_path / "b", e99=(20, 60), adaptive=(36, 108))   # e99 far behind on every new episode
+    world(tmp_path / "b", e99=(20, 20, 20), adaptive=(36, 36, 36))  # e99 behind on every repetition
     r = build(tmp_path / "b")
     assert r["verdict"]["verdict"] == "flat_control_inferior" and "adaptive_advantage" in r["verdict"]["flags"]
 
 
 @pytest.mark.parametrize("kw,gate", [
     ({"drift": True}, "reproduction_e99"),
-    ({"ckpt_run": "some_other_run"}, "provenance_e99"),
-    ({"ns": "seq_hetero__seq_ft__seed7"}, "provenance_e99"),
-    ({"n": 120}, "provenance_e99"),
+    ({"ckpt_run": "some_other_run"}, "provenance_e99_rep0"),
+    ({"ns": "seq_hetero__seq_ft__seed7"}, "provenance_e99_rep0"),
+    ({"n": 40}, "provenance_e99_rep1"),
+    ({"same_noise": True}, "fresh_noise"),
     ({"c1_rule": "0" * 64}, "c1_report"),
     ({"checks": {"identity": True, "energy": False}}, "c1_report"),
 ])
@@ -120,14 +145,14 @@ def test_each_gate_rejects_its_failure(tmp_path, kw, gate):
 
 
 def test_reproduction_check_catches_steps_and_seeds():
-    from flowcl.envs.evaluation import TaskEvaluation
     from flowcl.analysis.metrics import success_estimate
+    from flowcl.envs.evaluation import TaskEvaluation
 
     def te(succ, steps, seeds):
         return TaskEvaluation(task_key=KEY, successes=succ, n_steps=steps, seeds=seeds,
                               estimate=success_estimate(succ), wall_clock_s=0.0)
     base = te([True, False, True], [10, 600, 12], [1, 2, 3])
-    assert fu.reproduction_check(te([True, False, True, True], [10, 600, 12, 9], [1, 2, 3, 4]), base, 3)["passed"]
+    assert fu.reproduction_check(te([True, False, True], [10, 600, 12], [1, 2, 3]), base, 3)["passed"]
     assert not fu.reproduction_check(te([True, False, True], [10, 600, 13], [1, 2, 3]), base, 3)["passed"]
     assert not fu.reproduction_check(te([True, False, True], [10, 600, 12], [1, 2, 4]), base, 3)["passed"]
     assert not fu.reproduction_check(te([True, False], [10, 600], [1, 2]), base, 3)["passed"]
@@ -135,23 +160,22 @@ def test_reproduction_check_catches_steps_and_seeds():
 
 def test_missing_inputs_and_unpaired_arms_are_invalid(tmp_path):
     world(tmp_path / "a")
-    fu.eval_path(tmp_path / "a", CFG, 0, "adaptive").unlink()
+    fu.eval_path(tmp_path / "a", CFG, 0, "adaptive", 2).unlink()
     assert build(tmp_path / "a")["verdict"]["verdict"] == "invalid_followup"
-    names = world(tmp_path / "b")
-    p = fu.eval_path(tmp_path / "b", CFG, 0, "adaptive")
+    world(tmp_path / "b")
+    p = fu.eval_path(tmp_path / "b", CFG, 0, "adaptive", 1)
     data = json.loads(p.read_text())
     data["tasks"][0]["seeds"] = [s + 1 for s in data["tasks"][0]["seeds"]]
     p.write_text(json.dumps(data))
     r = build(tmp_path / "b")
     assert r["verdict"]["verdict"] == "invalid_followup" and not r["gates"]["episode_pairing"]["passed"]
-    assert names
 
 
-def test_smoke_compares_only_the_episodes_it_ran(tmp_path):
-    world(tmp_path, n=3, e99=(36, 36), adaptive=(34, 34))
+def test_smoke_uses_its_episodes_and_repetitions(tmp_path):
+    world(tmp_path, n=3, reps=2)
     r = build(tmp_path, smoke=True)
-    assert r["gates"]["reproduction_e99"]["n_compared"] == 3 and all(g["passed"] for g in r["gates"].values())
-    assert r["reported"]["D_new_only"] is None
+    assert all(g["passed"] for g in r["gates"].values())
+    assert r["gates"]["reproduction_e99"]["n_compared"] == 3 and r["primary"]["repetitions"] == 2
 
 
 @pytest.mark.parametrize("verdicts,outcome", [
@@ -215,26 +239,33 @@ def test_queue_order_commands_and_replication(tmp_path):
     assert subprocess.run(["bash", "-n", str(QUEUE)]).returncode == 0
     reports = [f"high_protection_followup/seed{s}/report.json" for s in (0, 1, 2)]
     rc, log, logdir = run_queue(tmp_path, present=reports)
-    steps = [f"{3 * i + k}_{name}_s{s}" for i, s in enumerate((0, 1, 2))
-             for k, name in ((0, "eval_e99"), (1, "eval_adaptive"), (2, "report"))] + ["9_replication"]
+    steps = []
+    for i, s in enumerate((0, 1, 2)):
+        for r in (0, 1, 2):
+            steps += [f"{7 * i + 2 * r}_eval_e99_rep{r}_s{s}", f"{7 * i + 2 * r + 1}_eval_adaptive_rep{r}_s{s}"]
+        steps.append(f"{7 * i + 6}_report_s{s}")
+    steps.append("21_replication")
     assert rc == 0 and log.rstrip().endswith("QUEUE DONE ok")
     assert [log.index(f"START {s}:") for s in steps] == sorted(log.index(f"START {s}:") for s in steps)
     res = str(tmp_path / "results")
-    cmd = (logdir / "3_eval_e99_s1.log").read_text()
-    assert f"--checkpoint {res}/seq_hetero__gpm_projected_adam_e99__seed1/checkpoints/stage2.pt" in cmd
-    assert f"--tasks {KEY} --run-id seq_hetero__seq_ft__seed1 --n-episodes 150" in cmd
-    assert f"--out {res}/high_protection_followup/seed1/e99.eval.json" in cmd
-    assert "seq_hetero__gpm_projected_adam_ne90__seed2/checkpoints/stage2.pt" in (logdir / "7_eval_adaptive_s2.log").read_text()
+    rep0 = (logdir / "7_eval_e99_rep0_s1.log").read_text()
+    assert f"--checkpoint {res}/seq_hetero__gpm_projected_adam_e99__seed1/checkpoints/stage2.pt" in rep0
+    assert f"--tasks {KEY} --run-id seq_hetero__seq_ft__seed1 --out" in rep0 and "--n-episodes" not in rep0
+    rep2 = (logdir / "12_eval_adaptive_rep2_s1.log").read_text()
+    assert "seq_hetero__gpm_projected_adam_ne90__seed1/checkpoints/stage2.pt" in rep2
+    assert "--run-id seq_hetero__seq_ft__seed1__rep2" in rep2
+    assert f"--out {res}/high_protection_followup/seed1/adaptive.rep2.eval.json" in rep2
 
 
 def test_queue_failures_resume_and_bad_arguments(tmp_path):
-    rc, log, _ = run_queue(tmp_path / "a", fail="1_eval_adaptive_s0")
-    assert rc == 1 and "START 2_report_s0" not in log and "START 3_eval_e99_s1" in log
-    prior = ["high_protection_followup/seed0/e99.eval.json", "high_protection_followup/seed0/adaptive.eval.json",
-             "high_protection_followup/seed0/report.json"]
-    rc, log, _ = run_queue(tmp_path / "b", ["--from-step", "3"], present=prior)
-    assert "PRIOR 0_eval_e99_s0 ok" in log and "PRIOR 2_report_s0 ok" in log and "START 3_eval_e99_s1" in log
-    for bad in (["--from-step", "10"], ["--bogus"], ["--smoke", "rel/dir"]):
+    rc, log, _ = run_queue(tmp_path / "a", fail="3_eval_adaptive_rep1_s0")
+    assert rc == 1 and "START 6_report_s0" not in log and "START 7_eval_e99_rep0_s1" in log
+    prior = [f"high_protection_followup/seed0/{arm}.rep{r}.eval.json" for arm in ("e99", "adaptive")
+             for r in (0, 1, 2)] + ["high_protection_followup/seed0/report.json"]
+    rc, log, _ = run_queue(tmp_path / "b", ["--from-step", "7"], present=prior)
+    assert "PRIOR 0_eval_e99_rep0_s0 ok" in log and "PRIOR 6_report_s0 ok" in log
+    assert "START 7_eval_e99_rep0_s1" in log
+    for bad in (["--from-step", "22"], ["--bogus"], ["--smoke", "rel/dir"]):
         assert subprocess.run(["bash", str(QUEUE), *bad], capture_output=True).returncode == 2
 
 
@@ -243,11 +274,13 @@ def test_queue_smoke_mode(tmp_path):
     rc, log, logdir = run_queue(tmp_path, ["--smoke", str(smoke)])
     assert rc == 0 and logdir.name.endswith("_smoke")
     names = {p.name[:-4] for p in logdir.glob("*.log")} - {"queue"}
-    assert names == {"0_eval_e99_s0", "1_eval_adaptive_s0", "2_report_s0"}
-    cmd = (logdir / "0_eval_e99_s0.log").read_text()
-    assert "--n-episodes 3" in cmd and f"--out {smoke}/high_protection_followup/seed0/e99.eval.json" in cmd
+    assert names == {"0_eval_e99_rep0_s0", "1_eval_adaptive_rep0_s0", "2_eval_e99_rep1_s0",
+                     "3_eval_adaptive_rep1_s0", "6_report_s0"}
+    cmd = (logdir / "2_eval_e99_rep1_s0.log").read_text()
+    assert "--run-id seq_hetero__seq_ft__seed0__rep1 --n-episodes 3" in cmd
+    assert f"--out {smoke}/high_protection_followup/seed0/e99.rep1.eval.json" in cmd
     assert f"--checkpoint {tmp_path}/results/seq_hetero__gpm_projected_adam_e99__seed0" in cmd
-    assert f"--seed 0 --results-root {smoke} --smoke" in (logdir / "2_report_s0.log").read_text()
+    assert f"--seed 0 --results-root {smoke} --smoke" in (logdir / "6_report_s0.log").read_text()
 
 
 @pytest.mark.parametrize("script, flags", [

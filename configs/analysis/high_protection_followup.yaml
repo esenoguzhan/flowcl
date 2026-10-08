@@ -2,6 +2,12 @@
 # Locked by SHA before the smoke run; committed before any rollout. Evaluated by
 # scripts/high_protection_followup.py; queued by scripts/queue_high_protection_followup.sh.
 #
+# REVISION 2 (Fri 9 Oct 2026, ~00:10), before any new rollout outcome existed. Revision 1 (33fcc2e)
+# asked for episodes 0-149 of one namespace. LIBERO provides only 50 fixed initial states per task, so
+# every evaluation of the first queue (results/logs/queue_20261008_232117_high_protection_followup)
+# stopped with IndexError at episode 50, before writing any file; the logs show only episodes 0-49,
+# which are C1's own. Revision 2 repeats the 50 initial states under fresh sampling noise instead.
+#
 # WHY A FOLLOW-UP. C1 (configs/analysis/high_protection.yaml, docs/runs/2026-10-08_high_protection_
 # three_seeds.md) was `unresolved` on all three seeds: D = +0.04 [-0.10, +0.18], -0.02 [-0.18, +0.14],
 # -0.08 [-0.22, +0.06] at 50 rollouts, too wide for the 10 pp margin either way. This is a
@@ -9,36 +15,46 @@
 # C1's own verdict and record stand unchanged.
 #
 # WHAT. The existing stage-2 checkpoints of gpm_projected_adam_e99 and gpm_projected_adam_ne90, seeds
-# 0-2, evaluated on Object only with n_episodes = 150 under the C1 namespace seq_hetero__seq_ft__seed{S}
-# (scripts/evaluate.py, configs/eval/libero_eval.yaml otherwise). Episode seeds derive from (run_id,
-# task_key, episode_idx) and not from the stage, so episodes 0-49 are C1's episodes and 50-149 are new.
-# No training.
+# 0-2, evaluated on Object only (scripts/evaluate.py, configs/eval/libero_eval.yaml, 50 episodes = the
+# 50 fixed initial states) in `repetitions` = 3 repetitions. A rollout's initial state is
+# init_states[episode_idx]; derive_seed(run_id, task_key, episode_idx) seeds the env and the policy's
+# sampling noise. Repetition 0 uses the C1 namespace seq_hetero__seq_ft__seed{S} (C1's own episodes);
+# repetition r >= 1 uses run_id seq_hetero__seq_ft__seed{S}__rep{r}: the same initial states, fresh
+# noise. Both arms share every (initial state, repetition) seed. No training.
+# ESTIMAND AND CI. Success on LIBERO's fixed 50 initial states, averaged over sampling noise. D is the
+# mean over initial states of the per-state mean difference across repetitions; its CI resamples the 50
+# initial states (bootstrap_ci on the per-state differences, libero_eval.yaml settings), keeping each
+# state's repetitions together. With one repetition this is exactly C1's paired CI. Repetitions of a
+# state are correlated, so the precision gained over C1 is not known in advance; it is reported.
 #
 # GATES, per seed (missing evidence fails; any failure -> invalid_followup):
-#   reproduction  for each arm, episodes 0..n_reproduce-1 equal the run's stored eval/stage2.json Object
-#                 cell exactly (successes, step counts, seeds): the same policy, a deterministic eval.
+#   reproduction  for each arm, repetition 0 equals the run's stored eval/stage2.json Object cell exactly
+#                 (successes, step counts, seeds) on every episode: the same policy, a deterministic eval.
 #   provenance    each evaluated checkpoint records the expected run_id and stage 2 (its SHA-256 is pinned
-#                 in the report; the runs never recorded one); each eval report has the C1 namespace as
-#                 run_id and stage 2; n_episodes rollouts per arm; identical episode seeds in both arms.
+#                 in the report; the runs never recorded one); each eval report has its repetition's
+#                 namespace as run_id and stage 2 and n_episodes rollouts; identical episode seeds in both
+#                 arms within a repetition; different seeds across repetitions (the noise really changed).
 #   c1_report     the C1 seed report is non-smoke, under C1's rule SHA (c1_rule_sha256), names the same
 #                 runs, and every one of its checks is true.
-# VERDICT, per seed: high_protection.classify with C1's checks (G as reproduced in C1) and D recomputed
-# at n = 150 (rollout-paired bootstrap, libero_eval.yaml settings): protection_suffices (D CI low >
+# VERDICT, per seed: high_protection.classify with C1's checks (G as reproduced in C1) and D from all
+# repetitions (the initial-state bootstrap above): protection_suffices (D CI low >
 # -margin), flat_control_inferior (D CI high < -margin), otherwise unresolved; C1's flags.
 # REPLICATION: exactly seeds 0, 1, 2, non-smoke, this rule's SHA (else refused). First match: any invalid
 # -> inconclusive_invalid; all protection_suffices -> protection_suffices_replicated; all
 # flat_control_inferior -> flat_control_inferior_replicated; all unresolved -> unresolved_replicated;
 # otherwise mixed. Each flag is listed with the seeds it held on.
-# REPORTED ONLY: D on episodes 0-49 (must equal C1's D; a further reproduction view), D on the new
-# episodes 50-149 alone, each arm's success at n = 150 with its CI.
+# REPORTED ONLY: D from repetition 0 alone (must equal C1's D and CI exactly), D from repetitions 1-2
+# alone, each arm's success over all repetitions with its initial-state CI, and per arm the share of
+# initial states whose outcome is the same in every repetition (how much the state, not the noise,
+# decides an episode).
 #
 # INTERPRETATION: as C1's (narrow): protection_suffices -> "A flat 0.99 target reproduces the transition
 # benefit within the pre-specified margin; adaptive targets are unnecessary for this cell under this
 # protocol"; an adaptive advantage supports adaptive's allocation relative to this flat schedule only.
 # The rollout CIs describe these trained policies; three seeds give directional replication only.
 #
-# SMOKE (--smoke, scratch outputs only): seed 0, 3 episodes; the reproduction gate applies to episodes
-# 0-2; the verdict is computed but meaningless; the replication refuses smoke reports.
+# SMOKE (--smoke, scratch outputs only): seed 0, 3 episodes, repetitions 0-1; reproduction applies to
+# episodes 0-2; the verdict is computed but meaningless; the replication refuses smoke reports.
 
 c1_rule: high_protection             # configs/analysis/<name>.yaml (run names, out paths, margin)
 c1_rule_sha256: baf871db487a8cf9ef122d333438809859c4078f04d959f69cd425e3ac2bb948
@@ -48,11 +64,13 @@ arms: [e99, adaptive]                # roles in the C1 rule
 cell: [2, 1]                         # [stage, task]: Object after Goal
 task_key: libero_object/pick_up_the_milk_and_place_it_in_the_basket
 
-n_episodes: 150
-n_reproduce: 50                      # C1's rollouts per cell
+n_episodes: 50                       # the fixed initial states of a LIBERO task (= C1's rollouts per cell)
+repetitions: 3                       # repetition 0 = C1's episodes; r >= 1 uses namespace + rep_suffix
+rep_suffix: "__rep{rep}"
 smoke:
   seed: 0
   n_episodes: 3
+  repetitions: 2
 
-out_dir: high_protection_followup    # under the output root: seed{S}/{arm}.eval.json, seed{S}/report.json
+out_dir: high_protection_followup    # under the output root: seed{S}/{arm}.rep{r}.eval.json, seed{S}/report.json
 replication_out: high_protection_followup/replication.json

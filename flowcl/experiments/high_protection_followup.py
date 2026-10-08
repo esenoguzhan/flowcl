@@ -1,14 +1,17 @@
-"""C1 follow-up: D = e99 − adaptive at Object after Goal, resolved with 150 rollouts per arm.
+"""C1 follow-up: D = e99 − adaptive at Object after Goal, resolved with repeated initial states.
 
 C1 (:mod:`flowcl.experiments.high_protection`) was ``unresolved`` on every seed: at 50 rollouts the
-paired CIs were too wide for the 10 pp margin. This second-stage test re-evaluates the same stage-2
-checkpoints on Object under the C1 namespace with ``n_episodes = 150`` (``scripts/evaluate.py``), so
-episodes 0-49 are C1's own and 50-149 are new. The rule is
+paired CIs were too wide for the 10 pp margin. LIBERO has only 50 fixed initial states per task, so this
+second-stage test re-evaluates the same stage-2 checkpoints on Object in several repetitions of those
+states (``scripts/evaluate.py``): repetition 0 under the C1 namespace (C1's own episodes), repetition
+``r >= 1`` under ``<namespace>__rep<r>`` (same states, fresh sampling noise). The rule is
 ``configs/analysis/high_protection_followup.yaml``:
 
-* **gates** — the first 50 episodes reproduce C1's stored cell exactly, the checkpoints and eval
-  reports are the expected ones, and the C1 seed report is valid;
-* **verdict** — :func:`flowcl.experiments.high_protection.classify` with C1's checks and D at n = 150;
+* **gates** — repetition 0 reproduces C1's stored cell exactly, the checkpoints and eval reports are
+  the expected ones, the arms are paired within a repetition and the noise differs across them, and
+  the C1 seed report is valid;
+* **verdict** — :func:`flowcl.experiments.high_protection.classify` with C1's checks and D whose CI
+  resamples initial states (:func:`state_paired_ci`);
 * **replication** — :func:`classify_replication`, which has the all-``unresolved`` row C1 lacked.
 """
 
@@ -52,8 +55,33 @@ def namespace(c1: dict, seed: int) -> str:
     return f"{c1['curriculum']}__seq_ft__seed{seed}"
 
 
-def eval_path(out_root: Path, cfg: dict, seed: int, arm: str) -> Path:
-    return out_root / cfg["out_dir"] / f"seed{seed}" / f"{arm}.eval.json"
+def rep_namespace(c1: dict, cfg: dict, seed: int, rep: int) -> str:
+    """Repetition 0 is the C1 namespace itself; ``r >= 1`` appends the rule's suffix."""
+    base = namespace(c1, seed)
+    return base if rep == 0 else base + cfg["rep_suffix"].format(rep=rep)
+
+
+def eval_path(out_root: Path, cfg: dict, seed: int, arm: str, rep: int) -> Path:
+    return out_root / cfg["out_dir"] / f"seed{seed}" / f"{arm}.rep{rep}.eval.json"
+
+
+def state_paired_ci(a, b, bootstrap: dict) -> dict:
+    """``mean(a) − mean(b)`` over ``(repetitions, states)`` outcome arrays; the CI resamples states.
+
+    Each state's mean difference across repetitions is one observation, so repetitions of a state
+    stay together; with one repetition this is :func:`~flowcl.analysis.metrics.paired_difference_ci`.
+    """
+    import numpy as np
+
+    from flowcl.analysis.metrics import bootstrap_ci
+
+    left, right = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    if left.shape != right.shape or left.ndim != 2:
+        raise ValueError(f"expected equal (repetitions, states) arrays, got {left.shape} and {right.shape}")
+    est = bootstrap_ci((left - right).mean(axis=0), seed=bootstrap["seed"],
+                       n_bootstrap=bootstrap["n_resamples"], confidence=bootstrap["confidence"])
+    return {"diff": est.value, "low": est.low, "high": est.high, "n_states": left.shape[1],
+            "repetitions": left.shape[0]}
 
 
 # ---- gates ---------------------------------------------------------------------------------------
@@ -135,16 +163,10 @@ def classify_replication(verdicts: dict[str, str]) -> dict:
 # ---- the report ----------------------------------------------------------------------------------
 
 
-def _paired(a, b, bootstrap: dict) -> dict:
-    from flowcl.analysis.metrics import paired_difference_ci
-
-    est = paired_difference_ci(a, b, seed=bootstrap["seed"], n_bootstrap=bootstrap["n_resamples"],
-                               confidence=bootstrap["confidence"])
-    return {"diff": est.value, "low": est.low, "high": est.high, "n": len(a)}
-
-
 def build_report(cfg: dict, seed: int, *, runs_root: Path | None = None, out_root: Path | None = None,
                  smoke: bool = False, rule: Path | None = None) -> dict:
+    import numpy as np
+
     from flowcl.envs.evaluation import EvaluationReport
     from flowcl.experiments.high_protection import classify, run_names
 
@@ -152,11 +174,10 @@ def build_report(cfg: dict, seed: int, *, runs_root: Path | None = None, out_roo
     out_root = Path(out_root) if out_root else runs_root
     c1 = c1_config(cfg)
     names = run_names(c1, seed)
-    ns = namespace(c1, seed)
     stage, _ = cfg["cell"]
     key = cfg["task_key"]
     n_episodes = cfg["smoke"]["n_episodes"] if smoke else cfg["n_episodes"]
-    n_reproduce = min(cfg["n_reproduce"], n_episodes)
+    reps = list(range(cfg["smoke"]["repetitions"] if smoke else cfg["repetitions"]))
     bootstrap = OmegaConf.to_container(
         OmegaConf.load(repo_root() / "configs" / "eval" / "libero_eval.yaml"), resolve=True)["bootstrap"]
     c1_path = runs_root / c1["out"].format(seed=seed)
@@ -166,47 +187,62 @@ def build_report(cfg: dict, seed: int, *, runs_root: Path | None = None, out_roo
                     "c1_report": {"path": str(c1_path),
                                   "sha256": file_sha256(c1_path) if c1_path.is_file() else None},
                     "bootstrap": bootstrap, "gates": {}}
-    gates, cells, stored_cells = report["gates"], {}, {}
+    gates = report["gates"]
+    cells: dict[str, dict[int, object]] = {arm: {} for arm in cfg["arms"]}
     for arm in cfg["arms"]:
-        path = eval_path(out_root, cfg, seed, arm)
-        try:
-            new = EvaluationReport.load(path)
-            stored = EvaluationReport.load(runs_root / names[arm] / "eval" / f"stage{stage}.json")
-            cells[arm], stored_cells[arm] = _cell(new, key), _cell(stored, key)
-            gates[f"reproduction_{arm}"] = reproduction_check(cells[arm], stored_cells[arm], n_reproduce)
-            gates[f"provenance_{arm}"] = provenance_check(
-                runs_root / names[arm] / "checkpoints" / f"stage{stage}.pt", names[arm], new, ns, stage,
-                n_episodes, key)
-            gates[f"provenance_{arm}"]["eval_sha256"] = file_sha256(path)
-        except (OSError, ValueError, KeyError) as exc:
-            gates[f"inputs_{arm}"] = {"passed": False, "error": f"{type(exc).__name__}: {exc}"}
-    if len(cells) == len(cfg["arms"]):
-        a, b = (cells[arm] for arm in cfg["arms"])
-        gates["episode_pairing"] = {"passed": list(a.seeds) == list(b.seeds)}
+        checkpoint = runs_root / names[arm] / "checkpoints" / f"stage{stage}.pt"
+        for r in reps:
+            path = eval_path(out_root, cfg, seed, arm, r)
+            try:
+                new = EvaluationReport.load(path)
+                cells[arm][r] = _cell(new, key)
+                gates[f"provenance_{arm}_rep{r}"] = {
+                    **provenance_check(checkpoint, names[arm], new, rep_namespace(c1, cfg, seed, r), stage,
+                                       n_episodes, key),
+                    "eval_sha256": file_sha256(path)}
+                if r == 0:
+                    stored = EvaluationReport.load(runs_root / names[arm] / "eval" / f"stage{stage}.json")
+                    gates[f"reproduction_{arm}"] = reproduction_check(cells[arm][0], _cell(stored, key), n_episodes)
+            except (OSError, ValueError, KeyError) as exc:
+                gates[f"inputs_{arm}_rep{r}"] = {"passed": False, "error": f"{type(exc).__name__}: {exc}"}
+    complete = all(len(cells[arm]) == len(reps) for arm in cfg["arms"])
+    if complete:
+        a_arm, b_arm = cfg["arms"]
+        gates["episode_pairing"] = {"passed": all(list(cells[a_arm][r].seeds) == list(cells[b_arm][r].seeds)
+                                                  for r in reps)}
+        gates["fresh_noise"] = {"passed": all(
+            len({tuple(cells[arm][r].seeds) for r in reps}) == len(reps) for arm in cfg["arms"])}
     try:
         c1_report = json.loads(c1_path.read_text())
         gates["c1_report"] = c1_report_check(c1_report, cfg["c1_rule_sha256"], names)
     except (OSError, ValueError) as exc:
         c1_report, gates["c1_report"] = None, {"passed": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    valid = all(g.get("passed") for g in gates.values()) and len(cells) == len(cfg["arms"])
-    if not valid:
+    if not (complete and all(g.get("passed") for g in gates.values())):
         report["verdict"] = {"verdict": "invalid_followup", "flags": [],
                              "text": "Invalid follow-up: a gate failed or lacks evidence."}
         return report
-    e99, adaptive = cells["e99"], cells["adaptive"]
-    D = _paired(e99.successes, adaptive.successes, bootstrap)
+    outcomes = {arm: np.array([cells[arm][r].successes for r in reps], dtype=np.float64) for arm in cfg["arms"]}
+    e99, adaptive = outcomes["e99"], outcomes["adaptive"]
+    D = state_paired_ci(e99, adaptive, bootstrap)
     report["verdict"] = classify(c1_report["checks"], D, c1["noninferiority_margin"])
-    report["primary"] = {
-        "cell": cfg["cell"], "n": len(e99.successes), "D": D,
-        "G_from_c1": c1_report["primary"]["G"], "D_c1": c1_report["primary"]["D"],
-        "e99": e99.estimate.value, "e99_ci": [e99.estimate.low, e99.estimate.high],
-        "adaptive": adaptive.estimate.value, "adaptive_ci": [adaptive.estimate.low, adaptive.estimate.high],
-    }
+
+    def arm_estimate(x):
+        from flowcl.analysis.metrics import bootstrap_ci
+
+        est = bootstrap_ci(x.mean(axis=0), seed=bootstrap["seed"], n_bootstrap=bootstrap["n_resamples"],
+                           confidence=bootstrap["confidence"])
+        return {"value": est.value, "low": est.low, "high": est.high}
+
+    report["primary"] = {"cell": cfg["cell"], "n_states": n_episodes, "repetitions": len(reps), "D": D,
+                         "G_from_c1": c1_report["primary"]["G"], "D_c1": c1_report["primary"]["D"],
+                         "e99": arm_estimate(e99), "adaptive": arm_estimate(adaptive)}
     report["reported"] = {
-        "D_first": _paired(e99.successes[:n_reproduce], adaptive.successes[:n_reproduce], bootstrap),
-        "D_new_only": (_paired(e99.successes[n_reproduce:], adaptive.successes[n_reproduce:], bootstrap)
-                       if n_episodes > n_reproduce else None),
+        "D_rep0": state_paired_ci(e99[:1], adaptive[:1], bootstrap),
+        "D_new_reps": state_paired_ci(e99[1:], adaptive[1:], bootstrap) if len(reps) > 1 else None,
+        "D_per_rep": [state_paired_ci(e99[r:r + 1], adaptive[r:r + 1], bootstrap)["diff"] for r in reps],
+        "states_same_outcome_every_rep": {arm: float((x.min(axis=0) == x.max(axis=0)).mean())
+                                          for arm, x in outcomes.items()},
     }
     return report
 
@@ -221,8 +257,9 @@ def print_report(report: dict) -> None:
     p = report.get("primary")
     if p:
         d, d1 = p["D"], p["D_c1"]
-        print(f"  n={p['n']}: e99 {p['e99']:.3f} adaptive {p['adaptive']:.3f}; D {d['diff']:+.3f} "
-              f"[{d['low']:+.3f}, {d['high']:+.3f}] (C1 at 50: {d1['diff']:+.2f} [{d1['low']:+.2f}, {d1['high']:+.2f}])")
+        print(f"  {p['n_states']} states x {p['repetitions']} reps: e99 {p['e99']['value']:.3f} adaptive "
+              f"{p['adaptive']['value']:.3f}; D {d['diff']:+.3f} [{d['low']:+.3f}, {d['high']:+.3f}] "
+              f"(C1, one rep: {d1['diff']:+.2f} [{d1['low']:+.2f}, {d1['high']:+.2f}])")
 
 
 def run_report(cfg: dict | None = None, seed: int = 0, *, runs_root: Path | None = None,
