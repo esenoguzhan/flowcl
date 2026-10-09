@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Thu 8 Oct 2026, week W1 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Fri 9 Oct 2026, week W1 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -12,8 +12,8 @@ changes.
   deployment comes later.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
-- **C1 finished Thu 8 Oct, 13:39:** `unresolved` on all three seeds (record
-  `runs/2026-10-08_high_protection_three_seeds.md`). Nothing is queued on the GPU.
+- **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
+  `runs/2026-10-09_high_protection_followup.md`). Nothing is queued on the GPU.
 
 ## 1. Plan progress
 
@@ -27,7 +27,7 @@ changes.
 | **A6** metric naming (ACC, F_first) in tables and README | **not started** | |
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
 | **B** baselines: replay, EWC, LoRA, ConSFT | **not started** (no method code yet) | brackets planned for W3 |
-| **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md` |
+| **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **not started** | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct** |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
@@ -106,10 +106,9 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 ## 4. Next, when back on the plan (priority order)
 
 1. **Baselines (B):** replay and EWC first, then LoRA. Brackets in W3 on seed 0, T1 → T2.
-2. **C1 follow-up (not decided):** an evaluation-only resolution of `R[2][1]` (about 150 rollouts per
-   arm on the existing stage-2 checkpoints, 3 seeds, about 1–2 GPU h, own rule first). The thesis
-   wording changes either way: the Object effect comes from raising T2 protection, not shown to
-   need the new-energy allocation (record §4).
+2. **Thesis wording from C1:** raising T2 protection removes the Object forgetting; the new-energy
+   allocation adds at most a small, seed-dependent amount at that cell (significant on one seed of
+   three). Its consistent edge is final Object retention at about 15 pp more capacity (E3's frontier).
 3. **Track 2 (D):** manifest and measures, frozen by Fri 30 Oct at the latest. Angle B at D2
    depends on it.
 4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).
