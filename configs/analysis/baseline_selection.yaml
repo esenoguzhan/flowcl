@@ -50,4 +50,14 @@ ewc:
   stage1_loss_key: mean_last_50_loss
   object_tolerance: 0.10
   edge_extension_factor: 10
-  calibration: null                  # filled after the calibration: {file, sha256, lambdas: {ratio: λ}}
+  # Filled from the calibration (Fri 9 Oct 2026, 22:27, at 2c2b827, before any arm): D = 1.2196e-4,
+  # L = 0.0075858106359373775, T1 Fisher fingerprint 320120a7..., n = 1024, seed 4030082706.
+  calibration:
+    file: baseline_selection/ewc_calibration.json    # under the results root
+    sha256: b8e79779418b1fbdfac5fad23430f3f6e0379b4b723e527f779ce804c0adfa3c
+    lambdas:
+      "0.01": 1.2439615682657392
+      "0.1": 12.439615682657394
+      "1": 124.39615682657391
+      "10": 1243.9615682657393
+      "100": 12439.615682657392
