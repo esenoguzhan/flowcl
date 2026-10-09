@@ -1,0 +1,53 @@
+# Baseline selection (docs/thesis_plan.md, Workstream B): EWC's λ, bracketed on the development seed
+# at T1 -> T2 (LoRA's rank is added here before its own bracket). Committed in two steps, both before
+# any bracket arm: (1) this rule with the ratio grid and `calibration: null`; (2) after the
+# calibration (no EWC-arm outcome is used), the five λ values and the calibration file's SHA-256.
+# Evaluated by scripts/baseline_selection.py; queued by scripts/queue_ewc_bracket.sh.
+#
+# THE METHOD (configs/method/ewc.yaml, flowcl/methods/ewc.py). Online EWC (γ = 1): after each task a
+# diagonal Fisher over every trainable parameter, F = mean over n samples of the squared per-sample
+# gradient of the masked flow-matching loss (batch size 1, fp32, its own seeds), summed across tasks,
+# anchored at the post-task weights; penalty (λ/2) Σ F (θ - θ*)^2 in fp32. This is an EMPIRICAL-FISHER
+# SURROGATE for that loss, not the Fisher information of the action distribution; a weak result is a
+# result about this specified EWC baseline. The full sequence (not spec §6's two-task probe) is a
+# recorded deviation.
+#
+# THE ARMS. Seed 0, from results/seq_hetero__seq_ft__seed0/checkpoints/stage0.pt (EWC's stage 0 is
+# bitwise seq_ft's), T2 (Object) trained with the standard recipe through low_update.train_stage with
+# the runner's text-cache state (warm_cache "runner": T1 encoded under AMP). Each arm's setup computes the
+# T1 Fisher at the stage-0 weights with the seeds a production EWC run uses at its task-0 end, through the
+# same function as the calibration (baseline_selection.ewc_t1_setup). Rollouts are paired with seq_ft's
+# stage 1 (same episodes).
+#
+# THE GRID (pre-registered as ratios). r = (λ/2) D / L, i.e. λ_r = 2 r L / D, for r in `ratios`, where
+#   D = Σ F_T1 (θ_seqft,stage1 - θ_stage0)^2 over the trainable parameters (unregularised drift),
+#   L = seq_ft seed 0's stage-1 `mean_last_50_loss` (full precision, from its result.json).
+# r describes the penalty AT THE SEQ_FT ENDPOINT relative to its training loss, not throughout an EWC
+# run. The calibration refuses non-finite F, D, L or D <= 0, and records both checkpoints' SHA-256, the
+# Fisher's provenance and fingerprint, D, L and the λ values (results/baseline_selection/ewc_calibration.json).
+#
+# THE RULE. Cells R[1][0] (Spatial retention) and R[1][1] (Object). Eligible: Object >= seq_ft's stage-1
+# Object - object_tolerance (point estimates, inclusive to 1e-9). Selected: the highest Spatial among the
+# eligible; ties -> the smaller λ. None eligible -> the smallest λ, flagged no_qualifying_setting. If the
+# largest grid λ is selected, ONE extension arm at edge_extension_factor x that λ runs first, and the rule
+# is re-applied over all arms; if the extension is selected it is flagged optimum_at_boundary. The choice
+# is frozen in an immutable bundle (results/baseline_selection/ewc/selection/) carrying this rule's and the
+# calibration's SHA-256; a bundle or a published arm under another rule or calibration is refused.
+# DISCLOSED: one transition, on the development seed, which also enters the final evaluation.
+#
+# TRACK 2. Every bracket cell is excluded from Track 2's held-out test set, and so is any production cell
+# that reproduces one: EWC seed 0's stage 1 if its identity with the selected arm holds (checked with
+# run_continual --identity-reference-checkpoint 1=<arm>/checkpoints/final.pt), and the T1 cells shared
+# with seq_ft.
+
+bracket_seed: 0
+out: baseline_selection              # under the output root
+
+ewc:
+  recipe: {steps: 30000, lr: 1.0e-4}
+  fisher_samples: 1024
+  ratios: [0.01, 0.1, 1, 10, 100]
+  stage1_loss_key: mean_last_50_loss
+  object_tolerance: 0.10
+  edge_extension_factor: 10
+  calibration: null                  # filled after the calibration: {file, sha256, lambdas: {ratio: λ}}

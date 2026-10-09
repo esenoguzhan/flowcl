@@ -1,0 +1,9 @@
+# replay: experience replay with a fixed demo buffer (spec §6 item 2; docs/thesis_plan.md,
+# Workstream B). Fixed a priori, no bracket. The first 10 demos of each finished task are kept
+# under the frozen T1 stats; from T2 on each batch is half current task, half buffer, the buffer
+# half split equally across the finished tasks. At T1 the runner's DataLoader is used, so stage 0
+# is bitwise seq_ft. Not exemplar-free. See flowcl/methods/replay.py.
+name: replay
+
+buffer_demos: 10
+replay_fraction: 0.5

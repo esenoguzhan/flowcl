@@ -70,14 +70,34 @@ def compare_evaluations(source: dict, resumed: dict) -> dict:
     return {"passed": all(v["passed"] for v in per_task.values()), "per_task": per_task}
 
 
-def compare_resume(source_run: Path, resumed_run: Path, stage: int) -> dict:
-    """The resumed run's stage ``stage`` against the source's (see the module docstring)."""
+def _checkpoint_artifacts(run: Path, stage: int) -> list[str]:
+    """The ``method_artifacts`` paths a stage checkpoint names (relative to the run)."""
+    payload = torch.load(run / "checkpoints" / f"stage{stage}.pt", map_location="cpu", weights_only=False)
+    return sorted(a["path"] for a in (payload.get("extra") or {}).get("method_artifacts") or [])
+
+
+def compare_resume(source_run: Path, resumed_run: Path, stage: int, all_artifacts: bool = False) -> dict:
+    """The resumed run's stage ``stage`` against the source's (see the module docstring).
+
+    ``all_artifacts``: compare every artifact the source's stage checkpoint names (e.g. replay's
+    buffer files of earlier tasks), not only the ``*_task{stage}.*`` files; the two checkpoints
+    must name the same set.
+    """
     from flowcl.train.continual import stage_identity_check
 
     source_run, resumed_run = Path(source_run), Path(resumed_run)
     identity = stage_identity_check(resumed_run / "checkpoints" / f"stage{stage}.pt", source_run, stage)
     memories = {}
-    for name in sorted(p.name for p in (source_run / "method").glob(f"*_task{stage}.*")):
+    if all_artifacts:
+        named = _checkpoint_artifacts(source_run, stage)
+        resumed_named = _checkpoint_artifacts(resumed_run, stage)
+        if named != resumed_named:
+            memories["method_artifacts"] = {"passed": False, "reason": "the checkpoints name different "
+                                            f"artifacts: {named} vs {resumed_named}"}
+        names = [Path(n).name for n in named]
+    else:
+        names = sorted(p.name for p in (source_run / "method").glob(f"*_task{stage}.*"))
+    for name in names:
         a, b = source_run / "method" / name, resumed_run / "method" / name
         if not b.is_file():
             memories[name] = {"passed": False, "reason": "missing in the resumed run"}

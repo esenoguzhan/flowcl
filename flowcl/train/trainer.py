@@ -214,6 +214,7 @@ def train_one_task(
             task_key=task_ids[0] if len(task_ids) == 1 else None,
             dataset=dataset,
             device=str(device),
+            batch_size=int(cfg.batch_size),
         )
 
     # Before the optimiser is built: a method may freeze parameters here (GPM's §7.4

@@ -368,15 +368,24 @@ def method_label(method, method_name: str) -> str:
     return getattr(method, "display_name", None) or method_name
 
 
-def stage_identity_check(checkpoint: Path, reference_run: Path, stage: int) -> dict:
+def stage_identity_check(checkpoint: Path, reference_run: Path | None, stage: int,
+                         reference_checkpoint: Path | None = None) -> dict:
     """Every state-dict tensor of this stage must equal the reference run's, bit for bit.
 
     For a variant that is identical to a reference run up to some stage by construction
     (e.g. the adaptive GPM target equals eps at T1, so stages 0-1 match the plain GPM
     run). Unlike :func:`t1_pairing_check` this is exact: training here is deterministic
     (a crashed and rerun GPM run reproduced its checkpoints bitwise). Method-agnostic.
+
+    ``reference_checkpoint`` names the reference file explicitly (e.g. a bracket arm's
+    ``checkpoints/final.pt``); otherwise it is ``reference_run/checkpoints/stage{stage}.pt``.
     """
-    ref_path = Path(reference_run) / "checkpoints" / f"stage{stage}.pt"
+    if reference_checkpoint is not None:
+        ref_path = Path(reference_checkpoint)
+    elif reference_run is not None:
+        ref_path = Path(reference_run) / "checkpoints" / f"stage{stage}.pt"
+    else:
+        raise ValueError("stage_identity_check needs a reference run or a reference checkpoint")
     if not ref_path.is_file():
         raise FileNotFoundError(f"identity reference checkpoint missing: {ref_path}")
     mine = torch.load(checkpoint, map_location="cpu", weights_only=False)["state_dict"]
@@ -386,7 +395,7 @@ def stage_identity_check(checkpoint: Path, reference_run: Path, stage: int) -> d
     missing, extra = sorted(set(ref) - set(mine)), sorted(set(mine) - set(ref))
     return {
         "stage": stage,
-        "reference_run": str(reference_run),
+        "reference_run": str(reference_run) if reference_run is not None else None,
         "reference_checkpoint": str(ref_path),
         "reference_sha256": file_sha256(ref_path),
         "n_tensors": len(shared),
@@ -476,6 +485,7 @@ def run_continual(
     t1_pairing_max_rel_diff: float = T1_PAIRING_MAX_REL_DIFF,
     identity_reference_run: Path | None = None,
     identity_stages: tuple[int, ...] = (),
+    identity_reference_checkpoints: dict[int, Path] | None = None,
     resume_run: Path | None = None,
     start_stage: int = 0,
     resume_sha256: str | None = None,
@@ -501,6 +511,9 @@ def run_continual(
             exactly at ``identity_stages`` (:func:`stage_identity_check`); checked right
             after each listed stage's checkpoint, before evaluation, and the run stops
             on a mismatch.
+        identity_reference_checkpoints: ``stage -> checkpoint file`` this run must equal
+            exactly at that stage (e.g. a bracket arm's ``final.pt``); checked like
+            ``identity_reference_run``, and takes precedence for a stage listed in both.
         resume_run, start_stage: Resume at a stage boundary: start from
             ``resume_run/checkpoints/stage{start_stage-1}.pt`` (verified by
             :func:`load_resume_source`, against ``resume_sha256`` if given), restore the
@@ -570,6 +583,9 @@ def run_continual(
                     str(identity_reference_run) if identity_reference_run else None
                 ),
                 "identity_stages": list(identity_stages),
+                "identity_reference_checkpoints": {
+                    str(k): str(v) for k, v in (identity_reference_checkpoints or {}).items()
+                },
                 "resume": source.record() if source else None,
             },
             "curriculum": {
@@ -689,6 +705,7 @@ def run_continual(
             device=train_cfg.device,
             seed_namespace_run_id=seed_ns,
             method_run_id=run_id,
+            batch_size=int(train_cfg.batch_size),
         )
         generator = torch.Generator(device="cpu").manual_seed(
             derive_seed(seed_ns, stage.task_key, stage_idx)
@@ -754,14 +771,19 @@ def run_continual(
                     "before 5 h of dependent work (details in t1_pairing.json)."
                 )
 
-        if identity_reference_run is not None and stage_idx in identity_stages:
-            check = stage_identity_check(checkpoint, identity_reference_run, stage_idx)
+        explicit_reference = (identity_reference_checkpoints or {}).get(stage_idx)
+        if explicit_reference is not None or (
+            identity_reference_run is not None and stage_idx in identity_stages
+        ):
+            check = stage_identity_check(checkpoint, identity_reference_run, stage_idx,
+                                         reference_checkpoint=explicit_reference)
+            reference_label = explicit_reference or identity_reference_run
             result.identity_checks[str(stage_idx)] = check
             atomic_write_text(
                 run.artifact(f"identity_stage{stage_idx}.json"), json.dumps(check, indent=2) + "\n"
             )
             print(
-                f"[flowcl] identity vs {identity_reference_run} stage {stage_idx}: "
+                f"[flowcl] identity vs {reference_label} stage {stage_idx}: "
                 f"{check['n_different']} of {check['n_tensors']} tensors differ",
                 flush=True,
             )
@@ -769,7 +791,7 @@ def run_continual(
                 raise RuntimeError(
                     f"identity check failed at stage {stage_idx}: {check['n_different']} "
                     f"tensors differ (missing {len(check['missing'])}, extra "
-                    f"{len(check['extra'])}) from {identity_reference_run}. The run is not "
+                    f"{len(check['extra'])}) from {reference_label}. The run is not "
                     "the paired variant it claims to be; stopping before evaluation "
                     f"(details in identity_stage{stage_idx}.json)."
                 )

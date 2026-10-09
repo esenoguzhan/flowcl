@@ -70,6 +70,8 @@ class TaskContext:
             (training, rollouts, memory capture). ``None`` outside a continual run, and a
             method that needs it must raise rather than invent one.
         method_run_id: This run's own id, for artifact provenance.
+        batch_size: The recipe's batch size, for a method that builds its own batches
+            (replay). ``None`` when the caller does not know it.
     """
 
     task_key: str | None
@@ -77,6 +79,7 @@ class TaskContext:
     device: str
     seed_namespace_run_id: str | None = None
     method_run_id: str | None = None
+    batch_size: int | None = None
 
 
 @runtime_checkable

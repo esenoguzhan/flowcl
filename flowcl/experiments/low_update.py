@@ -288,7 +288,8 @@ def stage_setup(ctx: SeedContext, stage: int, steps: int, lr: float, start_check
         seed=ctx.seed, results_root=attempt_parent(out_dir),
     )
     context = TaskContext(task_key=stages[stage].task_key, dataset=datasets[stage], device=device,
-                          seed_namespace_run_id=ctx.namespace, method_run_id=run_id)
+                          seed_namespace_run_id=ctx.namespace, method_run_id=run_id,
+                          batch_size=int(train_cfg.batch_size))
     generator = torch.Generator(device="cpu").manual_seed(
         stage_seed(ctx.namespace, stages[stage].task_key, stage))
     if warm_cache == "runner":
@@ -320,12 +321,15 @@ def train_stage(
     dataset_dir: Path | None = None,
     build_datasets: Callable | None = None,
     warm_cache: bool | str = False,
+    setup_method_with_data: bool = False,
 ) -> dict:
     """Train task ``stage`` from ``start_checkpoint``; evaluate tasks ``0..stage``; publish.
 
     ``train_overrides`` (optional) replaces further ``TrainConfig`` fields (batch size, weight
     decay, schedule) and becomes part of the recipe a published run must match;
     ``setup_method(policy) -> method`` (optional) runs before training (freezing or projection);
+    with ``setup_method_with_data`` it is called as ``setup_method(policy, datasets)`` with the
+    stage's datasets for tasks ``0..stage`` (e.g. EWC's Fisher on an earlier task's data);
     ``extra_row(policy, method, start_state) -> dict`` adds fields before ``row.json``;
     ``warm_cache`` (recorded) trains from the runner's text-cache state (:func:`warm_text_cache`).
     """
@@ -351,7 +355,12 @@ def train_stage(
                      dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache=warm_cache)
     policy, spec, stats, datasets, run = st.start.policy, st.start.spec, st.start.stats, st.datasets, st.run
     stages = ctx.curriculum.stages
-    method = setup_method(policy) if setup_method else None
+    if setup_method is None:
+        method = None
+    elif setup_method_with_data:
+        method = setup_method(policy, datasets)
+    else:
+        method = setup_method(policy)
     start_state = ({k: v.detach().cpu().clone() for k, v in policy.state_dict().items()}
                    if extra_row else None)
     started = time.perf_counter()

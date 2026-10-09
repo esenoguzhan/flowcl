@@ -1,0 +1,11 @@
+# ewc: online EWC with a diagonal empirical-Fisher surrogate (spec §6 item 4; docs/thesis_plan.md,
+# Workstream B). See flowcl/methods/ewc.py.
+#
+# lam is UNSET on purpose: it is filled from the frozen selection bundle of the λ bracket
+# (configs/analysis/baseline_selection.yaml -> results/baseline_selection/ewc/selection/), in a
+# commit of its own, before any 4-task EWC run. A run with lam: null refuses to start.
+name: ewc
+
+lam: null
+fisher_samples: 1024
+log_interval: 100

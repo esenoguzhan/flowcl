@@ -24,6 +24,19 @@ from flowcl.train.trainer import TrainConfig
 from flowcl.utils.libero_paths import repo_root
 
 
+def parse_identity_checkpoints(parser, values: list[str]) -> dict[int, Path]:
+    """``["1=path", ...]`` -> ``{1: Path("path")}``; a malformed or repeated stage is an error."""
+    out: dict[int, Path] = {}
+    for value in values:
+        stage, sep, path = value.partition("=")
+        if not sep or not stage.strip().isdigit() or not path:
+            parser.error(f"--identity-reference-checkpoint expects STAGE=PATH, got {value!r}")
+        if int(stage) in out:
+            parser.error(f"--identity-reference-checkpoint gives stage {stage} twice")
+        out[int(stage)] = Path(path)
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--curriculum", required=True)
@@ -103,6 +116,14 @@ def main() -> None:
         help="Run whose checkpoints this run must equal bitwise at --identity-stages.",
     )
     parser.add_argument("--identity-stages", type=int, nargs="*", default=[])
+    parser.add_argument(
+        "--identity-reference-checkpoint",
+        action="append",
+        default=[],
+        metavar="STAGE=PATH",
+        help="A checkpoint file this run's stage STAGE must equal bitwise (e.g. a bracket arm's "
+             "checkpoints/final.pt). Repeatable.",
+    )
     parser.add_argument(
         "--results-root",
         type=Path,
@@ -205,6 +226,9 @@ def main() -> None:
         ),
         identity_reference_run=args.identity_reference_run,
         identity_stages=tuple(args.identity_stages),
+        identity_reference_checkpoints=parse_identity_checkpoints(
+            parser, args.identity_reference_checkpoint
+        ),
         results_root=args.results_root,
         resume_run=args.resume_run,
         start_stage=args.start_stage,
