@@ -323,3 +323,47 @@ def test_identity_checkpoint_cli_parsing():
     for bad in (["1"], ["a=/x"], ["1="], ["1=/x", "1=/y"]):
         with pytest.raises(SystemExit):
             mod.parse_identity_checkpoints(parser, bad)
+
+
+def test_review_fixes_rule_path_inputs_and_fingerprint_precheck(spec, tmp_path):
+    """(1) An alternative --config is the rule that is hashed: arms published under the default rule
+    are not reused under it. (2) A calibration made from other inputs (Fisher sample count, seed, a
+    replaced reference checkpoint) is refused, and an arm whose T1 Fisher differs from the
+    calibration's stops before training."""
+    cfg, kw, payload = calibrated_world(tmp_path, spec)
+    train = dict(kw, evaluator=stub_evaluator, bootstrap=BOOT, allow_dirty=True)
+    bs.run_arm(cfg, 0.01, **train)
+    alt = tmp_path / "alt_rule.yaml"
+    alt.write_text(bs.rule_path().read_text() + "\n# an alternative rule\n")
+    for r in cfg["ewc"]["ratios"][1:]:
+        bs.run_arm(cfg, r, **train)
+    with pytest.raises(ValueError, match="incompatible"):
+        bs.run_select(cfg, results_root=tmp_path, rule=alt)  # rows carry the default rule's SHA
+    with pytest.raises(ValueError, match="incompatible"):
+        bs.run_arm(cfg, 0.01, rule=alt, **train)
+    assert bs.run_select(cfg, results_root=tmp_path)["status"] == "selected"
+
+    for mutate, match in ((lambda c: c["ewc"].__setitem__("fisher_samples", 4), "Fisher samples"),
+                          (lambda c: c.__setitem__("bracket_seed", 1), "seed")):
+        bad = copy.deepcopy(cfg)
+        mutate(bad)
+        with pytest.raises(ValueError, match=match):
+            bs.validate_calibration(bad, tmp_path)
+    stage1 = tmp_path / "seq_hetero__seq_ft__seed0" / "checkpoints" / "stage1.pt"
+    original = stage1.read_bytes()
+    stage1.write_bytes(original + b"x")
+    with pytest.raises(ValueError, match="no longer has the calibrated SHA-256"):
+        bs.validate_calibration(cfg, tmp_path)
+    stage1.write_bytes(original)
+    bs.validate_calibration(cfg, tmp_path)
+
+    from flowcl.train.checkpoint import load_checkpoint
+    from flowcl.experiments.low_update import seed_context
+
+    ctx = seed_context(kw["low_update_cfg"], 0, tmp_path)
+    start = load_checkpoint(ctx.ref_dir / "checkpoints" / "stage0.pt")
+    datasets = {j: kw["build_datasets"](ctx.curriculum.stages[j]) for j in (0, 1)}
+    with pytest.raises(RuntimeError, match="differs from the calibration"):
+        bs.ewc_t1_setup(ctx, 1.0, 3, "cpu", expected_fingerprint="0" * 64)(start.policy, datasets)
+    ok = bs.ewc_t1_setup(ctx, 1.0, 3, "cpu", expected_fingerprint=payload["fisher_t1"]["fingerprint"])
+    assert ok(start.policy, datasets).fisher_tasks[0]["fingerprint"] == payload["fisher_t1"]["fingerprint"]

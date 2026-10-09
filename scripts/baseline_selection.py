@@ -48,7 +48,7 @@ def main() -> None:
     if args.smoke_arm is not None and (args.out_root is None or args.out_root.resolve() == results
                                        or results in args.out_root.resolve().parents):
         parser.error("--smoke-arm needs --out-root outside the repository's results/")
-    roots = {"results_root": args.results_root, "out_root": args.out_root}
+    roots = {"results_root": args.results_root, "out_root": args.out_root, "rule": args.config}
     train = {**roots, "device": args.device, "dataset_dir": args.dataset_dir, "allow_dirty": args.allow_dirty}
 
     if args.calibrate:

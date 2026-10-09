@@ -61,11 +61,12 @@ def calibration_path(cfg: dict, out_root: Path) -> Path:
 # ---- the shared setup -----------------------------------------------------------------------------
 
 
-def ewc_t1_setup(ctx, lam: float, fisher_samples: int, device: str):
+def ewc_t1_setup(ctx, lam: float, fisher_samples: int, device: str, expected_fingerprint: str | None = None):
     """``setup(policy, datasets) -> EWC`` with the T1 Fisher computed at the current weights.
 
     Used by the calibration and by every arm, so both compute the same Fisher: T1's dataset, the
-    production seeds ``derive_seed(namespace, "ewc_fisher::<T1>", 0)``, ``train()`` mode."""
+    production seeds ``derive_seed(namespace, "ewc_fisher::<T1>", 0)``, ``train()`` mode. With
+    ``expected_fingerprint`` (an arm: the calibration's), a different Fisher raises before training."""
     from flowcl.methods.base import TaskContext
     from flowcl.methods.ewc import EWC
 
@@ -75,6 +76,10 @@ def ewc_t1_setup(ctx, lam: float, fisher_samples: int, device: str):
         context = TaskContext(task_key=t1.task_key, dataset=datasets[0], device=device,
                               seed_namespace_run_id=ctx.namespace)
         method.on_task_end(policy, 0, context=context)
+        got = method.fisher_tasks[0]["fingerprint"]
+        if expected_fingerprint is not None and got != expected_fingerprint:
+            raise RuntimeError(f"the T1 Fisher ({got[:12]}) differs from the calibration's "
+                               f"({expected_fingerprint[:12]}); refusing to train against another grid")
         return method
 
     return setup
@@ -94,7 +99,7 @@ def calibration_lambdas(ratios: list[float], D: float, L: float) -> dict[str, fl
 
 
 def calibrate(cfg: dict, *, results_root=None, out_root=None, device: str = "cuda", dataset_dir=None,
-              build_datasets=None, low_update_cfg: dict | None = None) -> dict:
+              build_datasets=None, low_update_cfg: dict | None = None, rule: Path | None = None) -> dict:
     """Compute D, L and the λ grid (no EWC-arm outcome) and write the calibration file."""
     from flowcl.experiments.low_update import seed_context, warm_runner_cache
     from flowcl.methods.ewc import trainable_parameters
@@ -128,7 +133,7 @@ def calibrate(cfg: dict, *, results_root=None, out_root=None, device: str = "cud
     lambdas = calibration_lambdas(cfg["ewc"]["ratios"], D, L)
     payload = {
         "git_sha": git_sha(), "seed": seed, "namespace": ctx.namespace,
-        "rule": {"path": str(rule_path()), "sha256": file_sha256(rule_path())},
+        "rule": {"path": str(rule_path(rule)), "sha256": file_sha256(rule_path(rule))},
         "stage0": {"path": str(stage0), "sha256": file_sha256(stage0)},
         "stage1": {"path": str(stage1), "sha256": file_sha256(stage1)},
         "result_json": {"path": str(result_path), "sha256": file_sha256(result_path)},
@@ -161,6 +166,23 @@ def validate_calibration(cfg: dict, out_root: Path) -> tuple[dict, dict, str]:
         raise ValueError(f"registered λ {registered} differ from the calibration's {recomputed}")
     if [float(r) for r in payload["ratios"]] != [float(r) for r in cfg["ewc"]["ratios"]]:
         raise ValueError("the calibration's ratios differ from the rule's")
+    problems = []
+    if payload.get("seed") != int(cfg["bracket_seed"]):
+        problems.append(f"seed {payload.get('seed')} != {cfg['bracket_seed']}")
+    if (payload.get("fisher_t1") or {}).get("n_samples") != int(cfg["ewc"]["fisher_samples"]):
+        problems.append(f"Fisher samples {(payload.get('fisher_t1') or {}).get('n_samples')} != "
+                        f"{cfg['ewc']['fisher_samples']}")
+    ref = Path(out_root) / payload.get("namespace", "")
+    expected = {"stage0": ref / "checkpoints" / "stage0.pt", "stage1": ref / "checkpoints" / "stage1.pt",
+                "result_json": ref / "result.json"}
+    for key, want in expected.items():
+        rec = payload.get(key) or {}
+        if Path(rec.get("path", "")).resolve() != want.resolve():
+            problems.append(f"{key} path {rec.get('path')} is not {want}")
+        elif not want.is_file() or file_sha256(want) != rec.get("sha256"):
+            problems.append(f"{key} {want} no longer has the calibrated SHA-256")
+    if problems:
+        raise ValueError(f"the calibration was made from other inputs: {problems}")
     return recomputed, payload, sha
 
 
@@ -185,7 +207,8 @@ def arm_dir(cfg: dict, out_root: Path, ratio: float, seed: int) -> Path:
 def run_arm(cfg: dict, ratio: float, *, results_root=None, out_root=None, device: str = "cuda",
             evaluator=None, bootstrap=None, dataset_dir=None, build_datasets=None,
             low_update_cfg: dict | None = None, allow_dirty: bool = False, extension: bool = False,
-            smoke_stop_after: int | None = None, smoke_episodes: int | None = None) -> dict:
+            smoke_stop_after: int | None = None, smoke_episodes: int | None = None,
+            rule: Path | None = None) -> dict:
     """Train and publish one arm (reused if already published under this rule and calibration)."""
     from flowcl.experiments.hparam_study import default_evaluator
     from flowcl.experiments.low_update import seed_context, train_stage
@@ -206,6 +229,8 @@ def run_arm(cfg: dict, ratio: float, *, results_root=None, out_root=None, device
         raise ValueError(f"ratio {ratio} is not in the rule's grid {sorted(lambdas)}")
     seed = int(cfg["bracket_seed"])
     ctx = seed_context(low_update_cfg or load_low_update_config(), seed, root)
+    if ctx.namespace != payload["namespace"]:
+        raise ValueError(f"the calibration's namespace {payload['namespace']} is not {ctx.namespace}")
     if smoke:  # 1-episode cells cannot be paired with the 50-episode references
         ctx = dataclasses.replace(ctx, evals={role: {} for role in ctx.evals})
     if evaluator is None:
@@ -221,9 +246,10 @@ def run_arm(cfg: dict, ratio: float, *, results_root=None, out_root=None, device
         ctx, 1, cfg["ewc"]["recipe"]["steps"], cfg["ewc"]["recipe"]["lr"],
         ctx.ref_dir / "checkpoints" / "stage0.pt", arm_dir(cfg, out_root, ratio, seed),
         arm_run_id(ratio, seed),
-        method_spec=method_spec(cfg, ratio, lam, file_sha256(rule_path()), cal_sha),
+        method_spec=method_spec(cfg, ratio, lam, file_sha256(rule_path(rule)), cal_sha),
         train_overrides={"stop_after": int(smoke_stop_after)} if smoke_stop_after is not None else None,
-        setup_method=ewc_t1_setup(ctx, lam, n, device), setup_method_with_data=True,
+        setup_method=ewc_t1_setup(ctx, lam, n, device, expected_fingerprint=payload["fisher_t1"]["fingerprint"]),
+        setup_method_with_data=True,
         extra_row=extra_row, evaluator=evaluator, bootstrap=bootstrap, device=device,
         dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache="runner",
     )
@@ -317,14 +343,14 @@ def _floor(arms: list[dict], tolerance: float) -> tuple[float, float]:
     return ref, ref - tolerance
 
 
-def run_select(cfg: dict, *, results_root=None, out_root=None) -> dict:
+def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = None) -> dict:
     """Apply the rule. Returns ``{"status": "needs_extension"}`` (nothing published) or the bundle."""
     from flowcl.experiments.sgp_sensitivity import publish_selection
 
     root = _root(results_root)
     out_root = Path(out_root) if out_root else root
     lambdas, payload, cal_sha = validate_calibration(cfg, root)
-    rule_sha = file_sha256(rule_path())
+    rule_sha = file_sha256(rule_path(rule))
     arms = _arm_table(cfg, out_root, rule_sha, cal_sha, lambdas, payload)
     seq_ft_object, floor = _floor(arms, float(cfg["ewc"]["object_tolerance"]))
     choice = select_lambda(arms, floor)
@@ -368,7 +394,7 @@ def run_extension(cfg: dict, **kw) -> dict:
     root = _root(kw.get("results_root"))
     out_root = Path(kw.get("out_root") or root)
     lambdas, payload, cal_sha = validate_calibration(cfg, root)
-    arms = _arm_table(cfg, out_root, file_sha256(rule_path()), cal_sha, lambdas, payload)
+    arms = _arm_table(cfg, out_root, file_sha256(rule_path(kw.get("rule"))), cal_sha, lambdas, payload)
     grid = [a for a in arms if not a["extension"]]
     _, floor = _floor(grid, float(cfg["ewc"]["object_tolerance"]))
     if select_lambda(grid, floor)["status"] != "needs_extension":
@@ -376,7 +402,7 @@ def run_extension(cfg: dict, **kw) -> dict:
     return run_arm(cfg, extension_ratio(cfg), extension=True, **kw)
 
 
-def verify(cfg: dict, *, results_root=None, out_root=None) -> dict:
+def verify(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = None) -> dict:
     """Every required arm published under this rule and calibration, and the bundle intact."""
     from flowcl.experiments.sgp_sensitivity import load_selection
 
@@ -385,7 +411,7 @@ def verify(cfg: dict, *, results_root=None, out_root=None) -> dict:
     problems = []
     try:
         lambdas, payload, cal_sha = validate_calibration(cfg, root)
-        rule_sha = file_sha256(rule_path())
+        rule_sha = file_sha256(rule_path(rule))
         bundle, sha = load_selection(_out(cfg, out_root) / "ewc")
         check_bundle(bundle, rule_sha, cal_sha)
         arms = _arm_table(cfg, out_root, rule_sha, cal_sha, lambdas, payload,
