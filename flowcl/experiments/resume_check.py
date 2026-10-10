@@ -76,12 +76,19 @@ def _checkpoint_artifacts(run: Path, stage: int) -> list[str]:
     return sorted(a["path"] for a in (payload.get("extra") or {}).get("method_artifacts") or [])
 
 
-def compare_resume(source_run: Path, resumed_run: Path, stage: int, all_artifacts: bool = False) -> dict:
+def _method_state(run: Path, stage: int) -> dict:
+    payload = torch.load(run / "checkpoints" / f"stage{stage}.pt", map_location="cpu", weights_only=False)
+    return (payload.get("extra") or {}).get("method_state") or {}
+
+
+def compare_resume(source_run: Path, resumed_run: Path, stage: int, all_artifacts: bool = False,
+                   method_state: bool = False) -> dict:
     """The resumed run's stage ``stage`` against the source's (see the module docstring).
 
     ``all_artifacts``: compare every artifact the source's stage checkpoint names (e.g. replay's
     buffer files of earlier tasks), not only the ``*_task{stage}.*`` files; the two checkpoints
-    must name the same set.
+    must name the same set. ``method_state``: the two stage checkpoints' recorded method state
+    (e.g. LoRA's per-task history, restored on resume) must be equal too.
     """
     from flowcl.train.continual import stage_identity_check
 
@@ -113,6 +120,9 @@ def compare_resume(source_run: Path, resumed_run: Path, stage: int, all_artifact
             memories[name] = {"passed": True, "reported_only": True, "differences": diffs}
     evaluation = compare_evaluations(json.loads((source_run / "eval" / f"stage{stage}.json").read_text()),
                                      json.loads((resumed_run / "eval" / f"stage{stage}.json").read_text()))
+    if method_state:
+        diffs = deep_differences(_method_state(source_run, stage), _method_state(resumed_run, stage))
+        memories["method_state"] = {"passed": not diffs, "differences": diffs}
     resume = json.loads((resumed_run / "resume.json").read_text())
     passed = identity["passed"] and all(m["passed"] for m in memories.values()) and evaluation["passed"]
     return {"source": str(source_run), "resumed": str(resumed_run), "stage": stage, "passed": bool(passed),

@@ -71,6 +71,8 @@ class StageRecord:
             "mean_last_50_loss": self.train_log.mean_last(50),
             "steps": self.train_log.steps,
             "train_wall_clock_s": self.train_log.wall_clock_s,
+            "trainable_params": self.train_log.trainable_params,
+            "train_config": self.train_log.config,
             "checkpoint": str(self.checkpoint),
             "method_artifacts": self.method_artifacts,
             "evaluation": self.evaluation.as_dict(),
@@ -353,6 +355,14 @@ def stage_train_config(train_cfg: TrainConfig, stage) -> TrainConfig:
     if stage.steps_factor == 1:
         return train_cfg
     return dataclasses.replace(train_cfg, steps=int(train_cfg.steps) * int(stage.steps_factor))
+
+
+def method_stage_config(train_cfg: TrainConfig, method, stage_idx: int) -> TrainConfig:
+    """The stage's recipe with the method's own learning rate for it, if it sets one (``stage_lr``;
+    LoRA's adapters from Task 2 on). A method without the hook, or returning ``None``, keeps the recipe's."""
+    hook = getattr(method, "stage_lr", None)
+    lr = hook(stage_idx) if hook is not None else None
+    return train_cfg if lr is None else dataclasses.replace(train_cfg, lr=float(lr))
 
 
 def task_samples(dataset) -> dict[str, int]:
@@ -713,7 +723,7 @@ def run_continual(
         train_log = train_one_task(
             policy,
             dataset,
-            stage_train_config(train_cfg, stage),
+            method_stage_config(stage_train_config(train_cfg, stage), method, stage_idx),
             method=method,
             task_idx=stage_idx,
             generator=generator,
@@ -839,8 +849,13 @@ def run_continual(
         # host memory proportional to one task rather than the whole curriculum.
         del dataset
 
+    by_stage = {str(d["stage"]): d.get("trainable_params") for d in result.imported_stages}
+    by_stage.update({str(r.stage): r.train_log.trainable_params for r in result.stages})
     result.systems = {
+        # The policy's count before training (Task 1's); later stages may train fewer (GPM's
+        # allowlist, LoRA's adapters): see trainable_params_by_stage.
         "trainable_params": parameter_report["trainable"],
+        "trainable_params_by_stage": by_stage,
         "frozen_params": parameter_report["frozen"],
         "registry_layers": parameter_report["registry_layers"],
         "method_stored_mb": getattr(method, "stored_bytes", lambda: 0)() / 1e6,

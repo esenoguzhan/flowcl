@@ -301,7 +301,21 @@ def test_systems_table_reports_params_and_wall_clock():
     row = table.rows[0]
     assert row[0] == "seq_ft"
     assert row[1] == "30.0"  # 30M trainable
-    assert row[4] == "9.0"  # 540 s of training -> 9 min
+    assert row[2] == "n/a (T1 only)"  # recorded before per-stage counts
+    assert row[5] == "9.0"  # 540 s of training -> 9 min
+
+
+def test_systems_table_separates_t1_and_later_trainable_counts():
+    payload = make_payload("lora", "seq_hetero", 0, FORGET)
+    payload["systems"] = {**payload["systems"], "trainable_params": 139_000_000,
+                          "trainable_params_by_stage": {"0": 120_000_000, "1": 2_000_000,
+                                                        "2": 2_000_000, "3": 2_000_000}}
+    other = make_payload("lora", "seq_hetero", 1, FORGET)
+    other["systems"] = {**other["systems"], "trainable_params_by_stage": {"0": 120_000_000, "1": 8_000_000}}
+    table = systems_table([loaded(payload), loaded(other)], "seq_hetero")
+    (row,) = table.rows
+    assert table.columns[1:3] == ["trainable params T1 (M)", "trainable params T2+ (M)"]
+    assert row[1] == "120.0" and row[2] == "3.5 (2.0–8.0)"
 
 
 def test_markdown_and_csv_round_trip(tmp_path):

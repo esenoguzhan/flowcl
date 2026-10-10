@@ -11,8 +11,9 @@ slot for the Gate 3 feasibility pilot only.
 from flowcl.methods.allowlist_ft import AllowlistFT
 from flowcl.methods.ewc import EWC
 from flowcl.methods.gpm import GPM
+from flowcl.methods.lora import LoRA
 from flowcl.methods.replay import Replay
 from flowcl.methods.seq_ft import SeqFT
 from flowcl.methods.sgp import SGP
 
-__all__ = ["SeqFT", "GPM", "SGP", "AllowlistFT", "Replay", "EWC"]
+__all__ = ["SeqFT", "GPM", "SGP", "AllowlistFT", "Replay", "EWC", "LoRA"]

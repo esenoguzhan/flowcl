@@ -1,0 +1,12 @@
+# lora: sequential merged LoRA (docs/thesis_plan.md, Workstream B; Hu et al. 2022). See
+# flowcl/methods/lora.py: full fine-tuning on Task 1, then a frozen base with fresh rank-`rank` adapters
+# on every registry layer per task, trained at `lr` and merged at the task's end.
+#
+# rank and lr are UNSET on purpose: they are filled from the LoRA bracket's frozen selection bundle
+# (results/baseline_selection_lora/lora/selection/; rule configs/analysis/baseline_selection_lora.yaml),
+# in a commit of their own, before any 4-task LoRA run. A run with rank or lr null refuses to start.
+name: lora
+
+rank: null
+lr: null
+alpha: 16

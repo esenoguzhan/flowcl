@@ -14,6 +14,7 @@ attributable to their mechanism and not to a different code path through the tra
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
@@ -59,6 +60,11 @@ class TrainLog:
     losses: list[float] = field(default_factory=list)
     steps: int = 0
     wall_clock_s: float = 0.0
+    # Counted right after ``on_task_start`` (where a method freezes parameters or attaches
+    # adapters), so a stage reports what it actually trained.
+    trainable_params: int | None = None
+    # The stage's effective TrainConfig (after any per-stage learning rate).
+    config: dict | None = None
 
     @property
     def final_loss(self) -> float:
@@ -220,6 +226,7 @@ def train_one_task(
     # Before the optimiser is built: a method may freeze parameters here (GPM's §7.4
     # allowlist), and a frozen parameter must never enter AdamW.
     method.on_task_start(policy, task_idx, context=context)
+    trainable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
 
     optimizer = build_optimizer(policy, cfg)
     scheduler = build_scheduler(optimizer, cfg)
@@ -233,7 +240,7 @@ def train_one_task(
     batches = _cycle(loader)
 
     scaler = torch.amp.GradScaler(device.type, enabled=cfg.amp and device.type == "cuda")
-    log = TrainLog()
+    log = TrainLog(trainable_params=trainable_params, config=dataclasses.asdict(cfg))
     started = time.perf_counter()
 
     for step in range(n_steps):

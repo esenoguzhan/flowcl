@@ -332,7 +332,8 @@ def systems_table(runs: list[LoadedRun], curriculum: str) -> Table:
         title=f"{curriculum}: system cost (§8.2)",
         columns=[
             "method",
-            "trainable params (M)",
+            "trainable params T1 (M)",
+            "trainable params T2+ (M)",
             "frozen params (M)",
             "stored bases/buffers (MB)",
             "train wall clock (min)",
@@ -345,7 +346,8 @@ def systems_table(runs: list[LoadedRun], curriculum: str) -> Table:
         table.rows.append(
             [
                 method,
-                f"{np.mean([s.get('trainable_params', 0) for s in systems]) / 1e6:.1f}",
+                f"{np.mean([_t1_trainable(s) for s in systems]) / 1e6:.1f}",
+                _later_trainable(systems),
                 f"{np.mean([s.get('frozen_params', 0) for s in systems]) / 1e6:.1f}",
                 f"{np.mean([s.get('method_stored_mb', 0.0) for s in systems]):.2f}",
                 f"{np.mean([s.get('train_wall_clock_s', 0.0) for s in systems]) / 60:.1f}",
@@ -355,8 +357,33 @@ def systems_table(runs: list[LoadedRun], curriculum: str) -> Table:
     table.notes = [
         "Means over seeds. Inference latency and ODE integration time are measured "
         "separately by scripts/measure_latency.py, since they do not vary by seed.",
+        "Trainable params are counted per stage after the method's setup (GPM trains its "
+        "allowlist from T2, LoRA its adapters); T2+ is the mean over stages >= 1, with the "
+        "range when they differ. Runs recorded before per-stage counts show T1's count only.",
     ]
     return table
+
+
+def _t1_trainable(systems: dict) -> float:
+    by_stage = systems.get("trainable_params_by_stage") or {}
+    value = by_stage.get("0")
+    return value if value is not None else systems.get("trainable_params", 0)
+
+
+def _later_trainable(systems: list[dict]) -> str:
+    """Mean (and range) of the stages >= 1's trainable counts, in M; "n/a (T1 only)" for old runs."""
+    values = []
+    for s in systems:
+        by_stage = s.get("trainable_params_by_stage") or {}
+        later = [v for k, v in by_stage.items() if int(k) >= 1 and v is not None]
+        if not later:
+            return "n/a (T1 only)"
+        values.extend(later)
+    if not values:
+        return "n/a (T1 only)"
+    mean = f"{np.mean(values) / 1e6:.1f}"
+    lo, hi = min(values) / 1e6, max(values) / 1e6
+    return mean if f"{lo:.1f}" == f"{hi:.1f}" else f"{mean} ({lo:.1f}–{hi:.1f})"
 
 
 # ---- plots ---------------------------------------------------------------------

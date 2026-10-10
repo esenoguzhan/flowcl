@@ -1,0 +1,87 @@
+# LoRA rank × learning-rate bracket (docs/thesis_plan.md, Workstream B). Committed before any arm; no
+# calibration. Evaluated by scripts/lora_selection.py --config <this file>; queued by
+# scripts/queue_lora_bracket.sh. The method is flowcl/methods/lora.py (sequential merged LoRA).
+#
+# THE METHOD, checked against Hu et al. (ICLR 2022, arXiv 2106.09685v2) and the authors' loralib:
+#   followed as written: h = W0 x + (alpha/r) B A x with W0 frozen (§4.1, Eq. 3); B = 0 at the start;
+#     the merge W = W0 + (alpha/r) B A (§4.1); AdamW; no adapter dropout (loralib's default); biases and
+#     LayerNorms frozen (§4.2).
+#   A's initialisation is the released implementation's, exactly: kaiming_uniform_(A, a=sqrt(5)),
+#     U(+-1/sqrt(d_in)), from its own generator (derive_seed(namespace, "lora_init::<task>", stage)). The
+#     paper's text says only "random Gaussian" without a scale; disclosed as "the released
+#     implementation's initialisation".
+#   alpha = 16, constant in r and not tuned (§4.1), so alpha/r is 4, 1, 0.25 across the grid. The paper
+#     calls tuning alpha "roughly" tuning the learning rate "if we scale the initialization
+#     appropriately"; no claim is made that the lr axis substitutes for tuning alpha.
+#   Adapted layers: all 91 registry nn.Linear weights, not attention-only as in the paper's main
+#     experiments. This is the same weight support GPM trains from T2 (gpm.allowlist), so LoRA and GPM
+#     are two training procedures on the same weights (a low-rank, merged reparametrisation with its own
+#     lr, AdamW geometry and weight decay, against projected dense updates); a difference does not
+#     isolate rank alone. allowlist_ft is LoRA's expressive limit (§4.1), not an equivalent procedure.
+#   Differences from the paper's own setting (disclosed): adapters are merged sequentially and never
+#     unmerged (the paper swaps per-task adapters, which needs the task identity at inference); the
+#     recipe keeps warmup + cosine and weight decay 1e-4 on A and B, as for every method (the paper:
+#     linear decay, 0.01-0.1).
+#
+# DEVIATION FROM THE THESIS PLAN (disclosed): the plan bracketed r only. The bracket is r × lr: Hu et al.
+# tune the learning rate per method and dataset (App. D), and LoRA's tuned rates differ from full
+# fine-tuning's (Table 12); LoRA at our fine-tuning lr alone could be a poorly tuned baseline.
+#
+# ARMS: seed 0, from results/seq_hetero__seq_ft__seed0/checkpoints/stage0.pt; T2 (Object) with the
+# reference recipe (lora.recipe.steps steps, warmup + cosine) at the arm's lr, through
+# low_update.train_stage with the runner's text-cache state; cells R[1][0] (Spatial) and R[1][1]
+# (Object) paired with seq_ft's stage 1. Grid: rank in lora.ranks × lr in lora.lrs (9 arms).
+#
+# SELECTION (pure: lora_selection.select_lora):
+#   eligible iff Object >= seq_ft's stage-1 Object - object_tolerance (0.68 on seed 0; inclusive).
+#   Among eligible arms: the highest Spatial success, then the lower Spatial probe loss, then the
+#     smaller rank (the declared preference: lower adapter capacity; with alpha fixed a smaller rank
+#     raises alpha/r, so it does not mean weaker updates), then the smaller lr. Flag
+#     all_eligible_spatial_zero when the best eligible success is 0.
+#   None eligible: the highest Object success, then the lower Object probe loss, then the smaller rank,
+#     then the smaller lr; flagged no_qualifying_setting; NO extension in this fallback.
+#   EDGE EXTENSION (only when an eligible arm is selected by the grid, under the full ordering above):
+#     for each axis on which the selected arm lies at an end, one arm beyond that end at the selected
+#     value of the other axis (rank 4 -> 1 or 64 -> 256; lr 1e-4 -> 3e-5 or 1e-3 -> 3e-3). A corner
+#     gives 2 arms; the combined outer corner is not tested. The rule is then re-applied once over all
+#     arms (flags edge_extension, and optimum_at_boundary if an extension is selected). The result
+#     means "the best among tested settings", never a resolved optimum.
+#   Nothing is published while a required arm or extension is missing.
+# INPUTS BOUND in every row and the bundle: shared (identical in every row, equal to the current
+# files): the start checkpoint's SHA-256, seq_ft's result.json and the reference runs' stage-1
+# evaluation SHA-256s, the evaluation config (configs/eval/libero_eval.yaml) and its SHA-256, the
+# probe spec, the seed namespace, the init spec, alpha, the recipe steps and this rule's SHA-256;
+# arm-specific (equal to what this rule implies for the row's rank and lr): rank, lr, the effective
+# TrainConfig and its hash (also equal to the arm's config.yaml). Each arm's checkpoint SHA-256 and its
+# tensor-content fingerprint (ewc.tensor_fingerprint over the state dict; independent of file
+# metadata). The git SHA is provenance (clean at execution), not required to equal HEAD.
+# VERIFY recomputes the selection, flags and owed extensions from the validated rows and compares them
+# with the bundle's.
+#
+# INTERPRETATIONS (pre-written):
+#   The selected (rank, lr) is "the best among tested settings" on seed 0; it becomes
+#     configs/method/lora.yaml's rank and lr in a commit of its own.
+#   Spatial > 0 at an eligible arm: observed retention on the development seed at that setting; broader
+#     claims wait for the replication seeds.
+#   all_eligible_spatial_zero: "0/50 Spatial successes at every tested eligible (rank, lr) on seed 0".
+#   A difference from GPM compares two procedures on the same weight support (above).
+#   Limits: one transition on the development seed (which also enters the final evaluation); merged
+#     adapters, so per-task adapters are not kept (by definition); all registry weights adapted.
+# TRACK 2 (by tensor-content fingerprint, not file SHA): excluded from the held-out set are the T1 cells
+# shared with seq_ft, every bracket cell, any production cell whose fingerprint equals a bracket arm's
+# (production LoRA seed 0's stage 1 is identity-checked with run_continual
+# --identity-reference-checkpoint 1=<arm>/checkpoints/final.pt), and scratch smoke outputs (never under
+# results/).
+
+bracket_seed: 0
+out: baseline_selection_lora         # under the output root
+
+lora:
+  recipe: {steps: 30000}
+  alpha: 16
+  ranks: [4, 16, 64]
+  lrs: [1.0e-4, 3.0e-4, 1.0e-3]
+  object_tolerance: 0.10
+  extension:
+    rank: {low: 1, high: 256}
+    lr: {low: 3.0e-5, high: 3.0e-3}

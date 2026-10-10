@@ -1,7 +1,8 @@
 """Thin CLI: a resumed run's stage K against the uninterrupted source's (exit 1 unless equal).
 
 See :func:`flowcl.experiments.resume_check.compare_resume`. ``--all-artifacts`` compares every
-artifact the stage checkpoint names (e.g. replay's earlier buffer files), not only ``*_task{K}``.
+artifact the stage checkpoint names (e.g. replay's earlier buffer files), not only ``*_task{K}``;
+``--method-state`` also requires the two stage checkpoints' method state to be equal (LoRA's history).
 
     uv run python scripts/compare_resume.py --source DIR --resumed DIR --stage 3 --all-artifacts
 """
@@ -22,9 +23,11 @@ def main() -> None:
     parser.add_argument("--resumed", type=Path, required=True)
     parser.add_argument("--stage", type=int, required=True)
     parser.add_argument("--all-artifacts", action="store_true")
+    parser.add_argument("--method-state", action="store_true")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
-    report = compare_resume(args.source, args.resumed, args.stage, all_artifacts=args.all_artifacts)
+    report = compare_resume(args.source, args.resumed, args.stage, all_artifacts=args.all_artifacts,
+                            method_state=args.method_state)
     text = json.dumps(report, indent=2, default=str)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
