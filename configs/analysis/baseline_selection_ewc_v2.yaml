@@ -76,4 +76,17 @@ ewc:
   flag_all_eligible_spatial_zero: true
   edge_extension_factor: 10
   v1_t1_fingerprint: 320120a7d9816bc4fed5ac68593d19ee4ee6be8a4af3a1b491df9a783a22c5e0
-  calibration: null                  # filled after the calibration: {file, sha256, lambdas: {ratio: λ}}
+  # Filled from the calibration (Sat 10 Oct 2026, 15:40, at 5f1d124, before any arm): D = 1236.44 on the
+  # mean-normalized sampled F_T1 (divisor 0.0015514), L = 0.0075858106359373775; T1 Fisher fingerprint
+  # e16b00c7... (raw) / be10c73d... (normalized), n = 1024, seed 4030082706, eps seed 97512238.
+  calibration:
+    file: baseline_selection_v2/ewc_calibration.json    # under the results root
+    sha256: cc1f370fe0ebbebad9b396c3fc17b238a94953e526a648db6d5224fef895a64d
+    lambdas:
+      "0.01": 1.2270405152822336e-07
+      "0.1": 1.2270405152822337e-06
+      "1": 1.2270405152822336e-05
+      "10": 0.00012270405152822335
+      "100": 0.0012270405152822335
+      "1000": 0.012270405152822336
+      "10000": 0.12270405152822336
