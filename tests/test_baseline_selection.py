@@ -483,6 +483,7 @@ def test_v2_pipeline_on_a_fake_world(spec, tmp_path):
                     stats=stats, run_id=ref.name, stage=1, task_key=KEYS[1])
     (ref / "result.json").write_text(json.dumps({"run_id": ref.name, "stages": [{}, {"mean_last_50_loss": L_SEQFT}]}))
     cfg = copy.deepcopy(bs.load_config(V2))
+    cfg["ewc"]["calibration"] = None   # the committed rule is calibrated; this world calibrates its own
     cfg["ewc"]["fisher_samples"] = 3
     cfg["ewc"]["recipe"] = {"steps": 2, "lr": 1e-4}
     kw = dict(results_root=tmp_path, device="cpu", build_datasets=build, low_update_cfg=luc, rule=V2)
