@@ -1,6 +1,10 @@
 # EWC λ bracket (seed 0, T1 → T2): Spatial retention is 0/50 at every λ up to r = 100, so all five arms tie, and the rule selects the smallest λ (1.244, r = 0.01), which leaves EWC effectively seq_ft. The penalty cuts Spatial's probe loss fourfold but never reaches a level that rollouts reward
 
 **Status: the pre-registered bracket, complete.**
+
+**Follow-up:** `runs/2026-10-11_ewc_bracket_v2.md` (sampled Fisher, per-task normalization, r up to
+10000, probe-loss tie-break). Spatial is still 0/50 at every eligible λ. Its selection, r = 100
+(λ = 0.001227 on the normalized Fisher), replaces this one for the 4-task EWC runs.
 - The queue ended `QUEUE DONE ok`, the verification passed, and the bundle is published.
 - **The registered selection is λ = 1.2439615682657392 (r = 0.01).** It is a **degenerate tie**:
   Spatial success is 0.00 at every λ.
