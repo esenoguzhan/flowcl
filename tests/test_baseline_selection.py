@@ -367,3 +367,200 @@ def test_review_fixes_rule_path_inputs_and_fingerprint_precheck(spec, tmp_path):
         bs.ewc_t1_setup(ctx, 1.0, 3, "cpu", expected_fingerprint="0" * 64)(start.policy, datasets)
     ok = bs.ewc_t1_setup(ctx, 1.0, 3, "cpu", expected_fingerprint=payload["fisher_t1"]["fingerprint"])
     assert ok(start.policy, datasets).fisher_tasks[0]["fingerprint"] == payload["fisher_t1"]["fingerprint"]
+
+
+# ---- v2: sampled Fisher, mean normalization, probe tie-break, diagnostics, queue -----------------
+
+V2 = repo_root() / "configs" / "analysis" / "baseline_selection_ewc_v2.yaml"
+
+
+def test_bracket_path_equals_runner_path_bitwise_v2(spec):
+    """The same equivalence with the sampled estimator and mean normalization."""
+    from flowcl.data.dataset import ChunkedActionDataset
+    from flowcl.data.stats import compute_stats
+
+    eps = {t: demos(spec, t, offset=10 * j) for j, t in enumerate(TASKS[:2])}
+    stats = compute_stats(eps[TASKS[0]], embodiment=spec.name, task_id=TASKS[0])
+    data = {j: ChunkedActionDataset(eps[t], spec, stats) for j, t in enumerate(TASKS[:2])}
+    ns, cfg = "seq_hetero__seq_ft__seed0", small_cfg(steps=3)
+    opts = {"fisher_estimator": "sampled", "fisher_normalization": "mean"}
+
+    def context(j):
+        return TaskContext(task_key=TASKS[j], dataset=data[j], device="cpu", seed_namespace_run_id=ns,
+                           batch_size=cfg.batch_size)
+
+    runner_policy, runner = fresh_policy(spec), EWC(lam=50.0, fisher_samples=4, **opts)
+    train_one_task(runner_policy, data[0], cfg, method=runner, task_idx=0,
+                   generator=torch.Generator().manual_seed(0), context=context(0))
+    stage0 = {k: v.clone() for k, v in runner_policy.state_dict().items()}
+    t1 = dict(runner.fisher_tasks[0])
+    train_one_task(runner_policy, data[1], cfg, method=runner, task_idx=1,
+                   generator=torch.Generator().manual_seed(1), context=context(1))
+    bracket_policy = fresh_policy(spec)
+    bracket_policy.load_state_dict(stage0)
+    bracket_policy.eval()
+    ctx = SimpleNamespace(namespace=ns, curriculum=SimpleNamespace(stages=[SimpleNamespace(task_key=t) for t in TASKS[:2]]))
+    bracket = bs.ewc_t1_setup(ctx, 50.0, 4, "cpu", expected_fingerprint=t1["fingerprint"], **opts)(bracket_policy, data)
+    assert bracket.fisher_tasks[0]["normalized_fingerprint"] == t1["normalized_fingerprint"]
+    train_one_task(bracket_policy, data[1], cfg, method=bracket, task_idx=1,
+                   generator=torch.Generator().manual_seed(1), context=context(1))
+    a, b = dict(runner_policy.named_parameters()), dict(bracket_policy.named_parameters())
+    assert all(torch.equal(a[n], b[n]) for n in a)
+    assert all(torch.equal(runner.fisher[n], bracket.fisher[n]) for n in runner.fisher)
+
+
+def parm(ratio, lam, spatial, obj, probe, extension=False):
+    return {**arm(ratio, lam, spatial, obj, extension), "spatial_probe": probe}
+
+
+def test_v2_tie_break_zero_flag_and_extension_through_the_tie_break():
+    v2 = {"tie_break": "spatial_probe_loss", "flag_zero": True}
+    grid = [parm(0.01, 1, 0.0, 0.84, 0.73), parm(1, 100, 0.0, 0.86, 0.56), parm(100, 1e4, 0.0, 0.70, 0.17),
+            parm(1e4, 1e6, 0.0, 0.40, 0.02)]                       # the strongest is ineligible
+    out = bs.select_lambda(grid, 0.68, **v2)
+    assert out["selected"]["ratio"] == 100 and out["flags"] == ["all_eligible_spatial_zero"]
+    v1 = bs.select_lambda(grid, 0.68)                               # v1's rule on the same arms
+    assert v1["selected"]["ratio"] == 0.01 and v1["flags"] == []
+    edge = [parm(0.01, 1, 0.0, 0.84, 0.73), parm(1e4, 1e6, 0.0, 0.70, 0.05)]
+    owed = bs.select_lambda(edge, 0.68, **v2)                      # largest selected via the probe tie-break
+    assert owed["status"] == "needs_extension" and "all_eligible_spatial_zero" in owed["flags"]
+    done = bs.select_lambda(edge + [parm(1e5, 1e7, 0.0, 0.69, 0.01, extension=True)], 0.68, **v2)
+    assert done["selected"]["ratio"] == 1e5 and done["flags"] == ["all_eligible_spatial_zero", "edge_extension",
+                                                                   "optimum_at_boundary"]
+    success = [parm(0.01, 1, 0.0, 0.84, 0.73), parm(1, 100, 0.10, 0.80, 0.56), parm(10, 1e3, 0.10, 0.75, 0.30),
+               parm(100, 1e4, 0.0, 0.72, 0.17)]                    # r = 10 is not the boundary here
+    out = bs.select_lambda(success, 0.68, **v2)
+    assert out["selected"]["ratio"] == 10 and out["flags"] == []  # tied successes -> lower probe loss
+    with pytest.raises(ValueError):
+        bs.select_lambda(success, 0.68, tie_break="bogus")
+
+
+def test_v1_spec_unchanged_and_v2_spec_names_the_estimator():
+    v1, v2 = bs.load_config(), bs.load_config(V2)
+    assert set(bs.method_spec(v1, 1, 1.0, "r", "c")) == {"family", "ratio", "lam", "fisher_samples",
+                                                          "rule_sha256", "calibration_sha256"}
+    spec2 = bs.method_spec(v2, 1, 1.0, "r", "c")
+    assert spec2["fisher_estimator"] == "sampled" and spec2["fisher_normalization"] == "mean"
+    assert bs.fisher_options(v1) == {"fisher_estimator": "empirical", "fisher_normalization": "none"}
+    assert bs.selection_options(v1) == {"tie_break": "smaller_lambda", "flag_zero": False}
+    assert bs.selection_options(v2) == {"tie_break": "spatial_probe_loss", "flag_zero": True}
+    assert v2["ewc"]["ratios"] == [0.01, 0.1, 1, 10, 100, 1000, 10000] and v2["out"] != v1["out"]
+    assert bs.extension_ratio(v2) == 1e5
+    assert v2["ewc"]["v1_t1_fingerprint"].startswith("320120a7")
+    queue = (repo_root() / "scripts" / "queue_ewc_bracket_v2.sh").read_text()
+    assert 'RATIOS="' + " ".join(bs.ratio_tag(r) for r in v2["ewc"]["ratios"]) + '"' in queue
+
+
+def test_diagnostics_helpers():
+    g = torch.Generator().manual_seed(0)
+    a = torch.rand(20000, generator=g, dtype=torch.float64) ** 4
+    assert bs.log_correlation(a, a) == pytest.approx(1.0)
+    assert abs(bs.log_correlation(a, torch.rand(20000, generator=g, dtype=torch.float64) ** 4)) < 0.05
+    assert bs.topk_jaccard(a, a) == 1.0
+    b = torch.zeros(1000, dtype=torch.float64)
+    b[:10] = 1.0
+    c = torch.zeros(1000, dtype=torch.float64)
+    c[-10:] = 1.0
+    assert bs.topk_jaccard(b, c) == 0.0
+    con = bs.concentration(b + 1e-12)
+    assert con["top_0.01_share"] == pytest.approx(1.0, rel=1e-6) and con["near_zero_importance_fraction"] == 0.99
+    shares = bs.module_shares({"trunk.a": torch.ones(3), "trunk.b": torch.ones(1), "flow_head.c": torch.ones(4)})
+    assert shares == {"flow_head": 0.5, "trunk": 0.5}
+
+
+def test_v2_pipeline_on_a_fake_world(spec, tmp_path):
+    from flowcl.train.checkpoint import load_checkpoint, save_checkpoint
+
+    luc, build = fake_world(tmp_path, spec, seeds=(0,))
+    ref = tmp_path / "seq_hetero__seq_ft__seed0"
+    stats = load_checkpoint(ref / "checkpoints" / "stage0.pt").stats
+    moved = tiny_policy(spec)
+    with torch.no_grad():
+        for p in moved.parameters():
+            if p.requires_grad:
+                p.add_(0.01)
+    save_checkpoint(ref / "checkpoints" / "stage1.pt", policy=moved, policy_config=TINY_POLICY, spec=spec,
+                    stats=stats, run_id=ref.name, stage=1, task_key=KEYS[1])
+    (ref / "result.json").write_text(json.dumps({"run_id": ref.name, "stages": [{}, {"mean_last_50_loss": L_SEQFT}]}))
+    cfg = copy.deepcopy(bs.load_config(V2))
+    cfg["ewc"]["fisher_samples"] = 3
+    cfg["ewc"]["recipe"] = {"steps": 2, "lr": 1e-4}
+    kw = dict(results_root=tmp_path, device="cpu", build_datasets=build, low_update_cfg=luc, rule=V2)
+    payload = bs.calibrate(cfg, **kw)
+    assert payload["fisher_estimator"] == "sampled" and payload["fisher_normalization"] == "mean"
+    assert payload["fisher_t1"]["estimator"] == "sampled" and payload["fisher_t1"]["mean_normalized_by"] > 0
+    cfg["ewc"]["calibration"] = {"file": "baseline_selection_v2/ewc_calibration.json",
+                                 "sha256": file_sha256(bs.calibration_path(cfg, tmp_path)),
+                                 "lambdas": payload["lambdas"]}
+    diag = bs.fisher_diagnostics(cfg, **kw)
+    assert set(diag["reliability"]) == {"sampled", "empirical"}
+    assert diag["reproduction"]["sampled_A_equals_calibration"] is True
+    assert diag["reproduction"]["empirical_A_equals_v1"] is False  # a fake world, not v1's model
+    train = dict(kw, evaluator=stub_evaluator, bootstrap=BOOT, allow_dirty=True)
+    rows = [bs.run_arm(cfg, r, **train) for r in cfg["ewc"]["ratios"]]
+    assert all(r["method"]["fisher_estimator"] == "sampled" for r in rows)
+    sel = bs.run_select(cfg, results_root=tmp_path, rule=V2)
+    if sel["status"] == "needs_extension":
+        bs.run_extension(cfg, **train)
+        sel = bs.run_select(cfg, results_root=tmp_path, rule=V2)
+        assert "edge_extension" in sel["flags"]
+    assert sel["status"] == "selected"
+    assert all("spatial_probe" in a for a in sel["arms"].values())
+    assert bs.verify(cfg, results_root=tmp_path, rule=V2)["passed"]
+    bad = copy.deepcopy(cfg)
+    bad["ewc"]["fisher_normalization"] = "none"
+    with pytest.raises(ValueError, match="fisher_normalization"):
+        bs.validate_calibration(bad, tmp_path)
+
+
+QUEUE2 = repo_root() / "scripts" / "queue_ewc_bracket_v2.sh"
+
+
+def run_queue2(tmp_path, args=(), fail="", step_rc="", present=()):
+    results = tmp_path / "results"
+    for rel in present:
+        p = results / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}")
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_FAIL_STEP": fail, "QUEUE_STEP_RC": step_rc,
+           "QUEUE_LOG_ROOT": str(tmp_path / "logs"), "QUEUE_RESULTS_ROOT": str(results)}
+    done = subprocess.run(["bash", str(QUEUE2), *args], env=env, capture_output=True, text=True, timeout=120)
+    (logdir,) = list((tmp_path / "logs").glob("queue_*"))
+    return done.returncode, (logdir / "queue.log").read_text(), logdir
+
+
+ARMS2 = [f"{k}_arm_r{r}" for k, r in enumerate(["0.01", "0.1", "1", "10", "100", "1000", "10000"], start=1)]
+
+
+def test_v2_queue_order_extension_failures_and_resume(tmp_path):
+    assert subprocess.run(["bash", "-n", str(QUEUE2)]).returncode == 0
+    rc, log, logdir = run_queue2(tmp_path / "a")
+    assert rc == 0 and order(log, ["0_diagnostics"] + ARMS2 + ["8_select", "11_verify"])
+    assert "START 9_extension" not in log
+    assert all("--config configs/analysis/baseline_selection_ewc_v2.yaml" in (logdir / f"{s}.log").read_text()
+               for s in ["0_diagnostics", "7_arm_r10000", "8_select", "11_verify"])
+    rc, log, _ = run_queue2(tmp_path / "b", step_rc="8_select=10")
+    assert rc == 0 and order(log, ARMS2 + ["8_select", "9_extension", "10_select", "11_verify"])
+    rc, log, _ = run_queue2(tmp_path / "c", fail="0_diagnostics")   # descriptive: never blocks the arms
+    assert rc == 1 and "START 1_arm_r0.01" in log and "START 8_select" in log and "FAILED: 0_diagnostics" in log
+    rc, log, _ = run_queue2(tmp_path / "d", fail="3_arm_r1")
+    assert rc == 1 and "START 4_arm_r10" in log and "SKIP 8-11" in log
+    rows = [f"baseline_selection_v2/ewc/seed0/ewcb__r{r}__seed0/row.json" for r in ("0.01", "0.1")]
+    rc, log, _ = run_queue2(tmp_path / "e", ["--from-step", "3"], present=rows)
+    assert rc == 0 and "SKIP 0_diagnostics" in log and "PRIOR 2_arm_r0.1 ok" in log and "START 3_arm_r1" in log
+    for bad in (["--from-step", "9"], ["--bogus"], ["--smoke", "rel/dir"]):
+        assert subprocess.run(["bash", str(QUEUE2), *bad], capture_output=True).returncode == 2
+
+
+def test_v2_queue_smoke_mode(tmp_path):
+    smoke = tmp_path / "scratch"
+    rc, log, logdir = run_queue2(tmp_path, ["--smoke", str(smoke)])
+    steps = ["s0_smoke_method", "s1_seqft", "s2_ewc", "s3_ewc_resume", "s4_ewc_compare", "s5_diagnostics",
+             "s6_bracket_arm"]
+    assert rc == 0 and order(log, steps)
+    cmd = {s: (logdir / f"{s}.log").read_text() for s in steps}
+    assert f"--method {smoke}/ewc_smoke.yaml" in cmd["s2_ewc"] and "--identity-stages 0" in cmd["s2_ewc"]
+    assert "--stage 3 --all-artifacts" in cmd["s4_ewc_compare"]
+    assert f"--diagnostics --diag-samples 64 --out-root {smoke}/bracket" in cmd["s5_diagnostics"]
+    assert all("--config configs/analysis/baseline_selection_ewc_v2.yaml" in cmd[s]
+               for s in ("s0_smoke_method", "s5_diagnostics", "s6_bracket_arm"))

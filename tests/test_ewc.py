@@ -159,3 +159,129 @@ def test_the_penalty_pulls_toward_the_anchor(spec, world):
         drift[lam] = sum(float((m.fisher[n] * (params[n].detach() - anchor[n]) ** 2).sum()) for n in anchor)
     assert drift[1e6] < drift[1e-12]
     assert np.isfinite(list(drift.values())).all()
+
+
+# ---- v2: the sampled (Gaussian velocity) Fisher, normalization, migration --------------------------
+
+
+class ToyFlow(nn.Module):
+    """velocity[h, :] = state @ W for every chunk step h; it draws s and A_0 from the generator like the
+    policy does, and records them, so the two estimators' shared draws can be compared."""
+
+    def __init__(self, d_state, d_action):
+        super().__init__()
+        self.W = nn.Parameter(torch.linspace(-0.5, 0.5, d_state * d_action).reshape(d_state, d_action))
+        self.draws = []
+
+    def forward(self, batch, generator=None):
+        actions, mask = batch["actions"], batch["action_mask"]
+        s = torch.rand((actions.shape[0],), generator=generator)
+        noise = torch.randn(tuple(actions.shape), generator=generator)
+        self.draws.append((s.clone(), noise.clone()))
+        v = (batch["state"] @ self.W)[:, None, :].expand_as(actions)
+        target = actions - noise
+        loss = (((v - target) ** 2) * mask[..., None]).sum() / (mask.sum() * actions.shape[-1])
+        return {"loss": loss, "velocity": v}
+
+
+@pytest.fixture(scope="module")
+def short(spec):
+    """One 3-step episode: with H = 16 every sample is padded, with 3, 2 and 1 valid steps."""
+    from test_replay import demos as make
+    eps = make(spec, TASKS[0], n=1, length=3)
+    stats = compute_stats(eps, embodiment=spec.name, task_id=TASKS[0])
+    return ChunkedActionDataset(eps, spec, stats)
+
+
+def test_sampled_fisher_exact_per_sample_gradient_with_unequal_valid_lengths(spec, short):
+    from flowcl.methods.ewc import sampled_fisher
+
+    H, D = short.horizon, spec.d_action
+    for seed, eps_seed in ((1, 2), (5, 9), (7, 3)):
+        toy = ToyFlow(spec.d_state, D)
+        fisher, prov = sampled_fisher(toy, short, n_samples=1, seed=seed, eps_seed=eps_seed, device="cpu")
+        i = torch.randint(len(short), (1,), generator=torch.Generator().manual_seed(seed)).item()
+        eps = torch.randn((1, H, D), generator=torch.Generator().manual_seed(eps_seed))
+        sample = short[i]
+        x, m = sample["state"], sample["action_mask"]
+        grad = -torch.outer(x, (eps[0] * m[:, None]).sum(0))   # d/dW 0.5 Σ_valid (v - y)^2 = -x ⊗ Σ_valid ε_h
+        torch.testing.assert_close(fisher["W"], grad.pow(2))
+        assert prov["estimator"] == "sampled" and prov["eps_seed"] == eps_seed
+
+
+def test_sampled_fisher_expectation_has_no_per_sample_weighting(spec, short):
+    """E[g_i^2] = diag(J_i^T J_i) = n_valid_i * x_i^2 per entry: no 1/N_i^2 factor."""
+    from flowcl.methods.ewc import sampled_fisher
+
+    toy = ToyFlow(spec.d_state, spec.d_action)
+    n = 6000
+    fisher, _ = sampled_fisher(toy, short, n_samples=n, seed=3, eps_seed=4, device="cpu")
+    idx = torch.randint(len(short), (n,), generator=torch.Generator().manual_seed(3)).tolist()
+    expected = torch.zeros_like(toy.W)
+    for i in idx:
+        s = short[i]
+        expected += torch.outer(s["state"] ** 2, torch.ones(spec.d_action)) * s["action_mask"].sum()
+    expected /= n
+    rel = ((fisher["W"] - expected).abs() / expected).max()
+    assert rel < 0.08, float(rel)
+    valid = sorted({int(short[i]["action_mask"].sum()) for i in range(len(short))})
+    assert valid == [1, 2, 3]  # the samples really have different valid lengths
+
+
+def test_both_estimators_share_indices_s_and_noise(spec, short):
+    from flowcl.methods.ewc import empirical_fisher, sampled_fisher
+
+    a, b = ToyFlow(spec.d_state, spec.d_action), ToyFlow(spec.d_state, spec.d_action)
+    empirical_fisher(a, short, n_samples=5, seed=11, device="cpu")
+    sampled_fisher(b, short, n_samples=5, seed=11, eps_seed=99, device="cpu")
+    assert len(a.draws) == len(b.draws) == 5
+    for (sa, na), (sb, nb) in zip(a.draws, b.draws):
+        assert torch.equal(sa, sb) and torch.equal(na, nb)
+    c = ToyFlow(spec.d_state, spec.d_action)
+    f1, p1 = sampled_fisher(c, short, n_samples=5, seed=11, eps_seed=99, device="cpu")
+    f2, p2 = sampled_fisher(c, short, n_samples=5, seed=11, eps_seed=99, device="cpu")
+    assert p1["fingerprint"] == p2["fingerprint"] and torch.equal(f1["W"], f2["W"])
+
+
+def test_mean_normalization_and_the_online_sum(world, spec):
+    toy = ToyFlow(spec.d_state, spec.d_action)
+    m = EWC(lam=1.0, fisher_samples=5, fisher_estimator="sampled", fisher_normalization="mean")
+    m.on_task_end(toy, 0, context=ctx(world, 0))
+    assert float(m.fisher["W"].mean()) == pytest.approx(1.0)
+    assert m.fisher_tasks[0]["mean_normalized_by"] > 0 and "normalized_fingerprint" in m.fisher_tasks[0]
+    m.on_task_end(toy, 1, context=ctx(world, 1))
+    assert float(m.fisher["W"].mean()) == pytest.approx(2.0)  # two tasks, each of mean 1
+
+
+def test_estimator_options_validation_config_and_legacy_restore(world, spec, tmp_path):
+    for kw in ({"fisher_estimator": "true"}, {"fisher_normalization": "max"}):
+        with pytest.raises(ValueError):
+            EWC(lam=1.0, **kw)
+    assert EWC(lam=1.0).config()["fisher_estimator"] == "empirical"
+    toy = Toy(spec.d_state, spec.d_action)
+    m = EWC(lam=2.0, fisher_samples=4)
+    m.on_task_end(toy, 0, context=ctx(world, 0))
+    run = tmp_path / "run"
+    (path,) = m.save_artifacts(run / "method", 0, context=ctx(world, 0))
+    payload = torch.load(path, weights_only=False)
+    for key in ("fisher_estimator", "fisher_normalization"):
+        del payload["config"][key]          # an artifact written before the two options existed
+    torch.save(payload, path)
+    extra = {"method_artifacts": [{"path": "method/ewc_task0.pt", "sha256": file_sha256(path)}]}
+    assert EWC(lam=2.0, fisher_samples=4).restore_state(extra, run, 0)["fisher_tasks"] == [0]
+    with pytest.raises(ValueError, match="config"):
+        EWC(lam=2.0, fisher_samples=4, fisher_estimator="sampled").restore_state(extra, run, 0)
+    with pytest.raises(ValueError, match="config"):
+        EWC(lam=2.0, fisher_samples=4, fisher_normalization="mean").restore_state(extra, run, 0)
+
+
+def test_sampled_fisher_restores_train_mode(spec, short):
+    from flowcl.methods.ewc import sampled_fisher
+
+    toy = ToyFlow(spec.d_state, spec.d_action)
+    toy.eval()
+    seen = []
+    orig = toy.forward
+    toy.forward = lambda batch, generator=None: (seen.append(toy.training), orig(batch, generator))[1]
+    sampled_fisher(toy, short, n_samples=2, seed=1, eps_seed=2, device="cpu")
+    assert seen == [True, True] and not toy.training

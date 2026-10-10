@@ -11,6 +11,7 @@ Spec §1: no logic in scripts/. See :mod:`flowcl.experiments.baseline_selection`
     --smoke-arm R                one arm at smoke settings into --out-root; exit 1 if its T1 Fisher differs
                                  from the calibration's
     --write-smoke-method PATH    a scratch EWC method YAML with the calibrated λ for r = 1 (smoke runs)
+    --diagnostics                the T1 Fisher under both estimators and two seeds (descriptive)
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ def main() -> None:
     action.add_argument("--verify", action="store_true")
     action.add_argument("--smoke-arm", type=float, metavar="R")
     action.add_argument("--write-smoke-method", type=Path, metavar="PATH")
+    action.add_argument("--diagnostics", action="store_true")
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--results-root", type=Path, default=None, help="runs and references (default results/)")
     parser.add_argument("--out-root", type=Path, default=None, help="arm outputs (default: the results root)")
@@ -42,6 +44,7 @@ def main() -> None:
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--smoke-stop-after", type=int, default=200)
     parser.add_argument("--smoke-episodes", type=int, default=1)
+    parser.add_argument("--diag-samples", type=int, default=None, help="Fisher samples for --diagnostics (smoke)")
     args = parser.parse_args()
     cfg = bs.load_config(args.config)
     results = (repo_root() / "results").resolve()
@@ -51,7 +54,10 @@ def main() -> None:
     roots = {"results_root": args.results_root, "out_root": args.out_root, "rule": args.config}
     train = {**roots, "device": args.device, "dataset_dir": args.dataset_dir, "allow_dirty": args.allow_dirty}
 
-    if args.calibrate:
+    if args.diagnostics:
+        bs.fisher_diagnostics(cfg, device=args.device, dataset_dir=args.dataset_dir, n_samples=args.diag_samples,
+                              **roots)
+    elif args.calibrate:
         bs.calibrate(cfg, device=args.device, dataset_dir=args.dataset_dir, **roots)
     elif args.arm is not None:
         bs.run_arm(cfg, args.arm, **train)

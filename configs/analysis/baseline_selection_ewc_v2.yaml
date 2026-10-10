@@ -1,0 +1,79 @@
+# EWC λ bracket v2 (docs/thesis_plan.md, Workstream B). A follow-up decided AFTER v1's outcome
+# (configs/analysis/baseline_selection.yaml; docs/runs/2026-10-10_ewc_bracket.md: Spatial 0/50 at every
+# λ for r = 0.01-100, the rule's tie-break then selecting the weakest λ). v1's rule, rows, bundle and
+# record stand unchanged. Committed in two steps before any arm: (1) this rule with `calibration: null`;
+# (2) after the calibration (no EWC-arm outcome used), the λ values and the calibration file's SHA-256.
+# Evaluated by scripts/baseline_selection.py --config <this file>; queued by
+# scripts/queue_ewc_bracket_v2.sh.
+#
+# WHAT CHANGES FROM v1, and why (checked against Kirkpatrick et al. PNAS 2017 and Schwarz et al. ICML 2018):
+# (1) THE FISHER ESTIMATOR: `sampled`. v1 used the empirical Fisher (squared per-sample gradients of the
+#     masked-mean flow-matching loss against the data targets), which for flow matching weights each
+#     gradient by a mostly irreducible residual (the target A - A_0 is stochastic) and each sample by
+#     4/N_i^2 (its valid count). v2 uses the Fisher of a unit-variance Gaussian velocity model,
+#     diag E[J^T J]: per sample, 0.5 * sum_valid (v - y)^2 with the pseudo-target y = v.detach() + eps
+#     drawn from the model (eps from its own generator, so indices, s and A_0 are v1's), every valid
+#     element weighted equally. This is the Fisher information EWC uses; its proportionality to the
+#     training loss's Gauss-Newton matrix is approximate (training normalizes by each batch's valid count).
+# (2) PER-TASK NORMALIZATION: `mean` (Schwarz et al. §4: each task's Fisher normalized so tasks are
+#     protected equally; the normalizer, the mean over all trainable parameters, is our choice). It does
+#     not change a T1 -> T2 arm (the calibration absorbs F_T1's scale) and fixes λ's meaning for 4-task runs.
+# (3) THE GRID: r in {0.01, 0.1, 1, 10, 100, 1000, 10000}, calibrated as in v1 (λ_r = 2 r L / D, D the
+#     normalized sampled F_T1-weighted drift of seq_ft stage 0 -> 1, L seq_ft's stage-1 mean_last_50_loss).
+# (4) THE TIE-BREAK (adopted after v1's outcome, disclosed as such): among eligible arms tied on Spatial
+#     success, the lower Spatial probe loss wins, then the smaller λ (projection_pilot's convention). The
+#     flag all_eligible_spatial_zero marks a best eligible success of 0.
+#
+# UNCHANGED FROM v1: seed 0; from results/seq_hetero__seq_ft__seed0/checkpoints/stage0.pt; T2 (Object)
+# with the standard recipe through low_update.train_stage with the runner's text cache; each arm's T1
+# Fisher computed through the calibration's own setup function and checked against its fingerprint
+# before training; cells R[1][0] (Spatial) and R[1][1] (Object) paired with seq_ft's stage 1; eligible
+# iff Object >= seq_ft's stage-1 Object - object_tolerance (0.68 on seed 0; point estimates, inclusive);
+# none eligible -> the smallest λ, flagged no_qualifying_setting. EDGE EXTENSION: if r = 10000 is the arm
+# SELECTED under the full ordering (Spatial success, then Spatial probe loss, then λ) -- including
+# selection through the probe tie-break when every eligible arm has 0 successes -- one arm at
+# edge_extension_factor x its λ (r = 1e5) runs before anything is published, and the rule is re-applied
+# once; if the extension is selected, the flag is optimum_at_boundary. The bundle is bound to this rule's
+# and the calibration's SHA-256.
+#
+# DIAGNOSTICS (descriptive, never gate; results/baseline_selection_v2/ewc_fisher_diagnostics.json): the T1
+# Fisher at stage0.pt under both estimators and two seeds (A = the production seeds, B = derive_seed(ns,
+# "ewc_fisher_diag::<T1>", 0) and its eps seed): reliability (Pearson correlation of log10(F + 1e-12 mean)
+# and top-1% Jaccard between A and B), agreement sampled vs empirical, concentration (share of ΣF in the
+# top 1% / 0.1%, the near-zero importance fraction -- descriptive, not Kirkpatrick's perturbation test),
+# shares per top-level module; reproduction checks: the empirical seed-A fingerprint equals v1's
+# (v1_t1_fingerprint) and the sampled seed-A fingerprint equals this calibration's.
+#
+# INTERPRETATIONS (pre-written).
+#   Selected arm with Spatial > 0 at r <= 100: compare v1 and v2 at that r; where v1 had 0 there, the
+#     changed estimator (with normalization) made the difference.
+#   Selected arm with Spatial > 0 only at r >= 1000: a COMBINED change of estimator and grid; attributing
+#     it needs an empirical-Fisher control at that r (a separate follow-up, not run here).
+#   all_eligible_spatial_zero: "0/50 Spatial successes at every tested eligible setting on seed 0",
+#     ranges reported separately: v1 (empirical) r in [0.01, 100]; v2 (sampled) r in [0.01, 10000] (1e5 if
+#     extended), up to the largest eligible. No wording implies both estimators covered the wider range.
+#     The tie-break selects the eligible arm with the lowest Spatial probe loss, which need not be the
+#     strongest λ. No claim beyond the tested grid and seed.
+#   Limits: one transition on the development seed (which also enters the final evaluation); AdamW, not
+#   the papers' SGD/RMSProp; the diagonal Fisher's known blind spots (Kirkpatrick et al. Fig. 4C).
+# TRACK 2: every bracket cell is excluded from Track 2's held-out set, and so is any production cell that
+# reproduces one (EWC seed 0's stage 1 if its identity with the selected arm holds, checked with
+# run_continual --identity-reference-checkpoint 1=<arm>/checkpoints/final.pt), and the T1 cells shared with
+# seq_ft.
+
+bracket_seed: 0
+out: baseline_selection_v2           # under the output root
+
+ewc:
+  recipe: {steps: 30000, lr: 1.0e-4}
+  fisher_samples: 1024
+  fisher_estimator: sampled
+  fisher_normalization: mean
+  ratios: [0.01, 0.1, 1, 10, 100, 1000, 10000]
+  stage1_loss_key: mean_last_50_loss
+  object_tolerance: 0.10
+  tie_break: spatial_probe_loss
+  flag_all_eligible_spatial_zero: true
+  edge_extension_factor: 10
+  v1_t1_fingerprint: 320120a7d9816bc4fed5ac68593d19ee4ee6be8a4af3a1b491df9a783a22c5e0
+  calibration: null                  # filled after the calibration: {file, sha256, lambdas: {ratio: λ}}

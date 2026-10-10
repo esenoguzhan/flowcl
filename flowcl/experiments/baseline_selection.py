@@ -38,6 +38,12 @@ def load_config(path: str | Path | None = None) -> dict:
     return OmegaConf.to_container(OmegaConf.load(rule_path(path)), resolve=True)
 
 
+def fisher_options(cfg: dict) -> dict:
+    """The rule's Fisher estimator and normalization; v1's rule names neither (empirical / none)."""
+    return {"fisher_estimator": cfg["ewc"].get("fisher_estimator", "empirical"),
+            "fisher_normalization": cfg["ewc"].get("fisher_normalization", "none")}
+
+
 def ratio_tag(ratio: float) -> str:
     return f"{float(ratio):g}"
 
@@ -61,7 +67,8 @@ def calibration_path(cfg: dict, out_root: Path) -> Path:
 # ---- the shared setup -----------------------------------------------------------------------------
 
 
-def ewc_t1_setup(ctx, lam: float, fisher_samples: int, device: str, expected_fingerprint: str | None = None):
+def ewc_t1_setup(ctx, lam: float, fisher_samples: int, device: str, expected_fingerprint: str | None = None,
+                 fisher_estimator: str = "empirical", fisher_normalization: str = "none"):
     """``setup(policy, datasets) -> EWC`` with the T1 Fisher computed at the current weights.
 
     Used by the calibration and by every arm, so both compute the same Fisher: T1's dataset, the
@@ -71,7 +78,8 @@ def ewc_t1_setup(ctx, lam: float, fisher_samples: int, device: str, expected_fin
     from flowcl.methods.ewc import EWC
 
     def setup(policy, datasets):
-        method = EWC(lam=lam, fisher_samples=fisher_samples)
+        method = EWC(lam=lam, fisher_samples=fisher_samples, fisher_estimator=fisher_estimator,
+                     fisher_normalization=fisher_normalization)
         t1 = ctx.curriculum.stages[0]
         context = TaskContext(task_key=t1.task_key, dataset=datasets[0], device=device,
                               seed_namespace_run_id=ctx.namespace)
@@ -119,7 +127,8 @@ def calibrate(cfg: dict, *, results_root=None, out_root=None, device: str = "cud
                                                        dataset_dir=dataset_dir))
     datasets = {j: make(stages[j]) for j in (0, 1)}  # what train_stage builds for stage 1
     cache = warm_runner_cache(start.policy, datasets, device, amp=bool(ctx.ref_config["train"].get("amp")))
-    method = ewc_t1_setup(ctx, 1.0, int(cfg["ewc"]["fisher_samples"]), device)(start.policy, datasets)
+    method = ewc_t1_setup(ctx, 1.0, int(cfg["ewc"]["fisher_samples"]), device,
+                          **fisher_options(cfg))(start.policy, datasets)
     fisher = method.fisher
     theta0 = dict(trainable_parameters(start.policy))
     state1 = torch.load(stage1, map_location="cpu", weights_only=False)["state_dict"]
@@ -139,7 +148,7 @@ def calibrate(cfg: dict, *, results_root=None, out_root=None, device: str = "cud
         "result_json": {"path": str(result_path), "sha256": file_sha256(result_path)},
         "L": {"value": L, "key": cfg["ewc"]["stage1_loss_key"]},
         "D": D, "ratios": [float(r) for r in cfg["ewc"]["ratios"]], "lambdas": lambdas,
-        "fisher_t1": method.fisher_tasks[0], "text_cache": cache,
+        "fisher_t1": method.fisher_tasks[0], "text_cache": cache, **fisher_options(cfg),
         "n_trainable_parameters": int(sum(f.numel() for f in fisher.values())),
     }
     path = calibration_path(cfg, out_root)
@@ -169,6 +178,10 @@ def validate_calibration(cfg: dict, out_root: Path) -> tuple[dict, dict, str]:
     problems = []
     if payload.get("seed") != int(cfg["bracket_seed"]):
         problems.append(f"seed {payload.get('seed')} != {cfg['bracket_seed']}")
+    for key, value in fisher_options(cfg).items():
+        recorded = payload.get(key, {"fisher_estimator": "empirical", "fisher_normalization": "none"}[key])
+        if recorded != value:
+            problems.append(f"{key} {recorded} != {value}")
     if (payload.get("fisher_t1") or {}).get("n_samples") != int(cfg["ewc"]["fisher_samples"]):
         problems.append(f"Fisher samples {(payload.get('fisher_t1') or {}).get('n_samples')} != "
                         f"{cfg['ewc']['fisher_samples']}")
@@ -195,9 +208,13 @@ def extension_lambda(payload: dict, cfg: dict) -> float:
 
 
 def method_spec(cfg: dict, ratio: float, lam: float, rule_sha: str, calibration_sha: str) -> dict:
-    return {"family": FAMILY, "ratio": float(ratio), "lam": float(lam),
+    spec = {"family": FAMILY, "ratio": float(ratio), "lam": float(lam),
             "fisher_samples": int(cfg["ewc"]["fisher_samples"]),
             "rule_sha256": rule_sha, "calibration_sha256": calibration_sha}
+    for key in ("fisher_estimator", "fisher_normalization"):
+        if key in cfg["ewc"]:
+            spec[key] = cfg["ewc"][key]
+    return spec
 
 
 def arm_dir(cfg: dict, out_root: Path, ratio: float, seed: int) -> Path:
@@ -248,7 +265,8 @@ def run_arm(cfg: dict, ratio: float, *, results_root=None, out_root=None, device
         arm_run_id(ratio, seed),
         method_spec=method_spec(cfg, ratio, lam, file_sha256(rule_path(rule)), cal_sha),
         train_overrides={"stop_after": int(smoke_stop_after)} if smoke_stop_after is not None else None,
-        setup_method=ewc_t1_setup(ctx, lam, n, device, expected_fingerprint=payload["fisher_t1"]["fingerprint"]),
+        setup_method=ewc_t1_setup(ctx, lam, n, device, expected_fingerprint=payload["fisher_t1"]["fingerprint"],
+                                  **fisher_options(cfg)),
         setup_method_with_data=True,
         extra_row=extra_row, evaluator=evaluator, bootstrap=bootstrap, device=device,
         dataset_dir=dataset_dir, build_datasets=build_datasets, warm_cache="runner",
@@ -285,11 +303,17 @@ def published_arms(cfg: dict, out_root: Path, rule_sha: str, cal_sha: str, lambd
 # ---- the rule (pure) ------------------------------------------------------------------------------
 
 
-def select_lambda(arms: list[dict], floor: float) -> dict:
-    """The selection rule over ``[{"ratio", "lam", "spatial", "object", "extension"}]``.
+def select_lambda(arms: list[dict], floor: float, tie_break: str = "smaller_lambda",
+                  flag_zero: bool = False) -> dict:
+    """The selection rule over ``[{"ratio", "lam", "spatial", "object", "extension", "spatial_probe"?}]``.
 
-    ``status`` is ``"needs_extension"`` when the largest grid λ wins and no extension arm is given;
-    otherwise ``"selected"`` with the chosen arm and its flags."""
+    Among eligible arms the highest Spatial success wins; ``tie_break`` orders the tied ones:
+    ``"smaller_lambda"`` (v1) or ``"spatial_probe_loss"`` (v2: the lower Spatial probe loss, then the
+    smaller λ). ``status`` is ``"needs_extension"`` when the largest grid λ is the one selected under
+    that full ordering and no extension arm is given; otherwise ``"selected"`` with the chosen arm and
+    its flags. ``flag_zero`` adds ``all_eligible_spatial_zero`` when the best eligible success is 0."""
+    if tie_break not in ("smaller_lambda", "spatial_probe_loss"):
+        raise ValueError(f"unknown tie_break {tie_break!r}")
     grid = [a for a in arms if not a.get("extension")]
     ext = [a for a in arms if a.get("extension")]
     if not grid:
@@ -301,10 +325,16 @@ def select_lambda(arms: list[dict], floor: float) -> dict:
         flags.append("no_qualifying_setting")
     else:
         best = max(a["spatial"] for a in eligible)
-        chosen = min((a for a in eligible if a["spatial"] >= best - TOL), key=lambda a: a["lam"])
+        tied = [a for a in eligible if a["spatial"] >= best - TOL]
+        if tie_break == "spatial_probe_loss":
+            chosen = min(tied, key=lambda a: (a["spatial_probe"], a["lam"]))
+        else:
+            chosen = min(tied, key=lambda a: a["lam"])
+        if flag_zero and best <= TOL:
+            flags.append("all_eligible_spatial_zero")
     largest_grid = max(grid, key=lambda a: a["lam"])
     if not ext and eligible and chosen is largest_grid:
-        return {"status": "needs_extension", "selected": None, "flags": ["edge_extension_owed"],
+        return {"status": "needs_extension", "selected": None, "flags": flags + ["edge_extension_owed"],
                 "eligible": [a["ratio"] for a in eligible]}
     if ext:
         flags.append("edge_extension")
@@ -314,10 +344,17 @@ def select_lambda(arms: list[dict], floor: float) -> dict:
             "eligible": [a["ratio"] for a in eligible]}
 
 
+def selection_options(cfg: dict) -> dict:
+    """The rule's tie-break and zero flag; v1's rule names neither (smaller λ, no flag)."""
+    return {"tie_break": cfg["ewc"].get("tie_break", "smaller_lambda"),
+            "flag_zero": bool(cfg["ewc"].get("flag_all_eligible_spatial_zero", False))}
+
+
 def _arm_summary(ratio: float, lam: float, row: dict, extension: bool) -> dict:
     cells = row["cells"]
     return {"ratio": float(ratio), "lam": float(lam), "extension": extension, "run_id": row["run_id"],
             "spatial": cells["0"]["success"], "object": cells["1"]["success"],
+            "spatial_probe": cells["0"]["probe_loss"],
             "cells": cells, "checkpoint_sha256": row["checkpoint_sha256"]}
 
 
@@ -353,7 +390,7 @@ def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None
     rule_sha = file_sha256(rule_path(rule))
     arms = _arm_table(cfg, out_root, rule_sha, cal_sha, lambdas, payload)
     seq_ft_object, floor = _floor(arms, float(cfg["ewc"]["object_tolerance"]))
-    choice = select_lambda(arms, floor)
+    choice = select_lambda(arms, floor, **selection_options(cfg))
     if choice["status"] == "needs_extension":
         print(f"[flowcl] EWC selection: the largest λ wins; the edge extension "
               f"(r = {extension_ratio(cfg):g}) runs before anything is published", flush=True)
@@ -364,7 +401,7 @@ def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None
         "rule_sha256": rule_sha, "calibration_sha256": cal_sha,
         "seq_ft_object": seq_ft_object, "object_floor": floor,
         "arms": {ratio_tag(a["ratio"]): {k: a[k] for k in ("ratio", "lam", "extension", "run_id", "spatial",
-                                                           "object", "checkpoint_sha256")} |
+                                                           "object", "spatial_probe", "checkpoint_sha256")} |
                  {"paired_vs_seq_ft": {j: a["cells"][j].get("paired", {}).get("seq_ft") for j in ("0", "1")}}
                  for a in arms},
         "eligible": choice["eligible"],
@@ -397,7 +434,7 @@ def run_extension(cfg: dict, **kw) -> dict:
     arms = _arm_table(cfg, out_root, file_sha256(rule_path(kw.get("rule"))), cal_sha, lambdas, payload)
     grid = [a for a in arms if not a["extension"]]
     _, floor = _floor(grid, float(cfg["ewc"]["object_tolerance"]))
-    if select_lambda(grid, floor)["status"] != "needs_extension":
+    if select_lambda(grid, floor, **selection_options(cfg))["status"] != "needs_extension":
         raise RuntimeError("no edge extension is owed: the largest λ does not win the grid")
     return run_arm(cfg, extension_ratio(cfg), extension=True, **kw)
 
@@ -432,5 +469,124 @@ def write_smoke_method(cfg: dict, path: Path, *, results_root=None, ratio: float
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(OmegaConf.create({"name": "ewc", "lam": lambdas[ratio_tag(ratio)],
-                                     "fisher_samples": int(fisher_samples), "log_interval": 100}), path)
+                                     "fisher_samples": int(fisher_samples), "log_interval": 100,
+                                     **fisher_options(cfg)}), path)
     return path
+
+
+# ---- Fisher diagnostics (descriptive; never gate) -------------------------------------------------
+
+
+def _flat(fisher: dict[str, torch.Tensor]) -> torch.Tensor:
+    return torch.cat([fisher[n].reshape(-1).to(torch.float64) for n in sorted(fisher)])
+
+
+def log_correlation(a: torch.Tensor, b: torch.Tensor, rel_floor: float = 1e-12) -> float:
+    """Pearson correlation of ``log10(x + rel_floor * mean(x))`` between two flat Fishers."""
+    la = torch.log10(a + rel_floor * a.mean())
+    lb = torch.log10(b + rel_floor * b.mean())
+    la, lb = la - la.mean(), lb - lb.mean()
+    return float((la * lb).sum() / (la.norm() * lb.norm()))
+
+
+def topk_jaccard(a: torch.Tensor, b: torch.Tensor, fraction: float = 0.01) -> float:
+    """Jaccard overlap of the two Fishers' top-``fraction`` parameter sets."""
+    k = max(1, int(round(fraction * a.numel())))
+    ia = torch.zeros(a.numel(), dtype=torch.bool, device=a.device)
+    ib = torch.zeros_like(ia)
+    ia[torch.topk(a, k).indices] = True
+    ib[torch.topk(b, k).indices] = True
+    return float((ia & ib).sum()) / float((ia | ib).sum())
+
+
+def concentration(a: torch.Tensor) -> dict:
+    """Share of ΣF in the top 1% / 0.1% of parameters, and the near-zero importance fraction (the share
+    of parameters below 1e-6 of the mean; descriptive only, not Kirkpatrick's perturbation test)."""
+    total = float(a.sum())
+    out = {}
+    for fraction in (0.01, 0.001):
+        k = max(1, int(round(fraction * a.numel())))
+        out[f"top_{fraction:g}_share"] = float(torch.topk(a, k).values.sum()) / total
+    out["near_zero_importance_fraction"] = float((a < 1e-6 * a.mean()).double().mean())
+    return out
+
+
+def module_shares(fisher: dict[str, torch.Tensor]) -> dict[str, float]:
+    """Share of ΣF per top-level module (``trunk``, ``flow_head``, ...)."""
+    totals: dict[str, float] = {}
+    for name, f in fisher.items():
+        totals[name.split(".")[0]] = totals.get(name.split(".")[0], 0.0) + float(f.double().sum())
+    grand = sum(totals.values())
+    return {k: v / grand for k, v in sorted(totals.items())}
+
+
+def fisher_diagnostics(cfg: dict, *, results_root=None, out_root=None, device: str = "cuda", dataset_dir=None,
+                       build_datasets=None, low_update_cfg: dict | None = None, rule: Path | None = None,
+                       n_samples: int | None = None) -> dict:
+    """The T1 Fisher under both estimators and two seeds at seq_ft seed 0's stage 0 (runner cache):
+    reliability, concentration, agreement, and two reproduction checks. Descriptive; never gates."""
+    from flowcl.experiments.low_update import seed_context, warm_runner_cache
+    from flowcl.methods.ewc import empirical_fisher, sampled_fisher
+    from flowcl.train.checkpoint import load_checkpoint
+    from flowcl.train.pipeline import build_dataset
+    from flowcl.utils.seeding import derive_seed
+
+    root = _root(results_root)
+    out_root = Path(out_root) if out_root else root
+    seed = int(cfg["bracket_seed"])
+    ctx = seed_context(low_update_cfg or load_low_update_config(), seed, root)
+    stage0 = ctx.ref_dir / "checkpoints" / "stage0.pt"
+    start = load_checkpoint(stage0, device=device)
+    stages = ctx.curriculum.stages
+    make = build_datasets or (lambda st: build_dataset([st.ref], start.spec, start.stats, n_demos=st.n_demos,
+                                                       dataset_dir=dataset_dir))
+    datasets = {j: make(stages[j]) for j in (0, 1)}
+    warm_runner_cache(start.policy, datasets, device, amp=bool(ctx.ref_config["train"].get("amp")))
+    key = stages[0].task_key
+    n = int(n_samples or cfg["ewc"]["fisher_samples"])
+    seeds = {"A": (derive_seed(ctx.namespace, f"ewc_fisher::{key}", 0),
+                   derive_seed(ctx.namespace, f"ewc_fisher_eps::{key}", 0)),
+             "B": (derive_seed(ctx.namespace, f"ewc_fisher_diag::{key}", 0),
+                   derive_seed(ctx.namespace, f"ewc_fisher_eps_diag::{key}", 0))}
+    fishers, provenance = {}, {}
+    for tag, (s, e) in seeds.items():
+        fishers[f"sampled_{tag}"], provenance[f"sampled_{tag}"] = sampled_fisher(
+            start.policy, datasets[0], n, s, e, device)
+        fishers[f"empirical_{tag}"], provenance[f"empirical_{tag}"] = empirical_fisher(
+            start.policy, datasets[0], n, s, device)
+    flat = {k: _flat(f) for k, f in fishers.items()}
+    production = n == int(cfg["ewc"]["fisher_samples"])
+    reproduction = {
+        "empirical_A_equals_v1": (provenance["empirical_A"]["fingerprint"] == cfg["ewc"].get("v1_t1_fingerprint")
+                                  if production else None),
+    }
+    cal = cfg["ewc"].get("calibration")
+    if production and cal:
+        try:
+            _, payload, _ = validate_calibration(cfg, root)
+            reproduction["sampled_A_equals_calibration"] = (
+                provenance["sampled_A"]["fingerprint"] == payload["fisher_t1"]["fingerprint"])
+        except (OSError, ValueError, RuntimeError) as exc:
+            reproduction["sampled_A_equals_calibration"] = f"not checked: {exc}"
+    report = {
+        "git_sha": git_sha(), "seed": seed, "namespace": ctx.namespace, "task_key": key, "n_samples": n,
+        "stage0": {"path": str(stage0), "sha256": file_sha256(stage0)},
+        "rule": {"path": str(rule_path(rule)), "sha256": file_sha256(rule_path(rule))},
+        "provenance": provenance,
+        "reliability": {est: {"log_correlation": log_correlation(flat[f"{est}_A"], flat[f"{est}_B"]),
+                              "top1pct_jaccard": topk_jaccard(flat[f"{est}_A"], flat[f"{est}_B"])}
+                        for est in ("sampled", "empirical")},
+        "agreement_sampled_vs_empirical": {"log_correlation": log_correlation(flat["sampled_A"], flat["empirical_A"]),
+                                           "top1pct_jaccard": topk_jaccard(flat["sampled_A"], flat["empirical_A"])},
+        "concentration": {k: concentration(v) for k, v in flat.items() if k.endswith("_A")},
+        "module_shares": {k: module_shares(fishers[k]) for k in ("sampled_A", "empirical_A")},
+        "reproduction": reproduction,
+        "note": ("descriptive only; v1 weights sample i by 4/N_i^2 (per-sample mean loss), the sampled "
+                 "estimator weights every valid element equally"),
+    }
+    path = _out(cfg, out_root) / "ewc_fisher_diagnostics.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(report, indent=2, default=str) + "\n")
+    print(f"[flowcl] EWC Fisher diagnostics -> {path}: reliability {report['reliability']}, "
+          f"agreement {report['agreement_sampled_vs_empirical']}, reproduction {reproduction}", flush=True)
+    return report
