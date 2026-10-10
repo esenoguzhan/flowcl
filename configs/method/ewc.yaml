@@ -4,12 +4,13 @@
 # task's Fisher normalized to mean 1 before the online sum (Kirkpatrick et al. 2017; Schwarz et al.
 # 2018), as bracketed in configs/analysis/baseline_selection_ewc_v2.yaml.
 #
-# lam is UNSET on purpose: it is filled from that bracket's frozen selection bundle
-# (results/baseline_selection_v2/ewc/selection/), in a commit of its own, before any 4-task EWC run.
-# A run with lam: null refuses to start.
+# lam is the v2 bracket's registered selection: r = 100 (Spatial probe-loss tie-break, flagged
+# all_eligible_spatial_zero), from the frozen bundle results/baseline_selection_v2/ewc/selection/
+# (selection.json SHA-256 f09bc3ee...; record docs/runs/2026-10-11_ewc_bracket_v2.md). Production EWC
+# seed 0's stage 1 is identity-checked against that arm's checkpoint.
 name: ewc
 
-lam: null
+lam: 0.0012270405152822335
 fisher_samples: 1024
 log_interval: 100
 fisher_estimator: sampled
