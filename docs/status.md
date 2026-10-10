@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Fri 9 Oct 2026, week W1 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Sat 10 Oct 2026, week W1 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -13,7 +13,11 @@ changes.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
-  `runs/2026-10-09_high_protection_followup.md`). Nothing is queued on the GPU.
+  `runs/2026-10-09_high_protection_followup.md`).
+- **Replay and EWC are implemented. The EWC λ bracket finished on Sat 10 Oct at 04:59**
+  (`runs/2026-10-10_ewc_bracket.md`). Its outcome is degenerate: Spatial is 0/50 at every λ, and the
+  rule's tie-break selects the weakest λ. **A decision is open:** keep the selection, or
+  pre-register a follow-up labelled post hoc. Nothing is queued on the GPU.
 
 ## 1. Plan progress
 
@@ -26,7 +30,7 @@ changes.
 | **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | **not started** | |
 | **A6** metric naming (ACC, F_first) in tables and README | **not started** | |
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
-| **B** baselines: replay, EWC, LoRA, ConSFT | **not started** (no method code yet) | brackets planned for W3 |
+| **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`); smoke passed (stage-0 identity, resume equality). **EWC bracket done:** Spatial 0.00 at every λ (r 0.01 to 100); Object 0.84 → 0.70; Spatial probe loss 0.73 → 0.17 (GPM's is 0.042). The rule selects λ = 1.244, which is effectively seq_ft. Decision open. LoRA and ConSFT not started | `runs/2026-10-10_ewc_bracket.md` |
 | **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **not started** | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct** |
@@ -105,7 +109,9 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 
 ## 4. Next, when back on the plan (priority order)
 
-1. **Baselines (B):** replay and EWC first, then LoRA. Brackets in W3 on seed 0, T1 → T2.
+1. **Baselines (B):** decide on EWC's selection (keep it, or a post-hoc follow-up); then LoRA and
+   its rank bracket. Before the 4-task baseline runs, `sequence_report` must become
+   method-conditional (`frozen_from_stage1`, the pilot comparison).
 2. **Thesis wording from C1:** raising T2 protection removes the Object forgetting; the new-energy
    allocation adds at most a small, seed-dependent amount at that cell (significant on one seed of
    three). Its consistent edge is final Object retention at about 15 pp more capacity (E3's frontier).
