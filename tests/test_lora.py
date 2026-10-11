@@ -182,17 +182,18 @@ def test_task1_is_seq_ft_bitwise_and_the_stage_lr(spec):
     assert method_stage_config(cfg, method, 2).lr == 3e-4 and method_stage_config(cfg, SeqFT(), 2) is cfg
 
 
-def test_configuration_refusals_and_the_unfilled_production_config():
+def test_configuration_refusals_and_the_production_config():
     for kw in ({"lr": 1e-3}, {"rank": 4}, {"rank": 0, "lr": 1e-3}, {"rank": 2.5, "lr": 1e-3},
                {"rank": 4, "lr": -1.0}):
         with pytest.raises(ValueError):
             LoRA(**kw)
     with pytest.raises(TypeError):
         LoRA(rank=4, lr=1e-3, dropout=0.1)
-    name, kw = load_method_config("lora")
-    assert name == "lora" and kw == {"rank": None, "lr": None, "alpha": 16}
+    name, kw = load_method_config("lora")  # filled from the bracket's bundle (rank 4, lr 3e-5)
+    assert name == "lora" and kw == {"rank": 4, "lr": 3e-5, "alpha": 16}
+    assert build_method(name, **kw).stage_lr(1) == 3e-5
     with pytest.raises(ValueError, match="bundle"):
-        build_method(name, **kw)
+        build_method(name, **{**kw, "rank": None, "lr": None})
     method = LoRA(rank=4, lr=1e-3)
     state = {"method_state": {**LoRA(rank=8, lr=1e-3).state_dict()}}
     with pytest.raises(ValueError, match="not this LoRA"):
