@@ -20,9 +20,13 @@ changes.
     finished Sun 11 Oct 00:39: `runs/2026-10-11_ewc_bracket_v2.md`. Spatial is still 0/50 at every
     eligible λ.
   - It selects r = 100 (λ = 0.001227), now in `configs/method/ewc.yaml`.
-- **Order decided on Sun 11 Oct:** replay's and EWC's 4-task runs are Track 2's held-out test, so
-  they run after Track 2's freeze. **Next planned on the GPU: LoRA's rank × lr bracket** (planned,
-  not started), which is allowed before the freeze. Then Track 2.
+- **LoRA is implemented and its rank × lr bracket is done** (Sun 11 Oct 01:39–13:35,
+  `runs/2026-10-11_lora_bracket.md`). Merged LoRA keeps Spatial where EWC kept nothing.
+  - Selected: rank 4, lr 3e-5 (an lr-axis extension, `optimum_at_boundary`), with Spatial 0.48 and
+    Object 0.72. GPM keeps 0.94 and 0.78.
+  - Retention falls steeply with the adapter lr at every rank.
+- **Order decided on Sun 11 Oct:** the 4-task replay, EWC and LoRA runs are Track 2's held-out
+  test, so they run after Track 2's freeze. **Next: Track 2.**
 
 ## 1. Plan progress
 
@@ -35,7 +39,7 @@ changes.
 | **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | **not started** | |
 | **A6** metric naming (ACC, F_first) in tables and README | **not started** | |
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
-| **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). 4-task replay/EWC runs wait for Track 2's freeze. LoRA next; ConSFT not started | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md` |
+| **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). **LoRA** (`75fb0e1`) **bracket done:** rank {4,16,64} × lr {1e-4,3e-4,1e-3}, plus extensions (1, 1e-4) and (4, 3e-5). Spatial falls with lr at every rank (rank 4: 0.48 → 0.04). Selected rank 4, lr 3e-5 (`optimum_at_boundary`): Spatial 0.48, Object 0.72; best three within noise (0.48 / 0.46 / 0.44). 4-task replay/EWC/LoRA runs wait for Track 2's freeze; ConSFT not started | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md`, `runs/2026-10-11_lora_bracket.md` |
 | **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **not started** | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct** |
@@ -114,7 +118,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 
 ## 4. Next, when back on the plan (priority order)
 
-1. **Baselines (B):** LoRA and its rank × lr bracket (planned, not started). Before the 4-task baseline runs, `sequence_report` must become
+1. **Track 2 (D):** brought forward (see item 3). The baselines' brackets are done; their 4-task runs
+   follow the freeze. Before the 4-task baseline runs, `sequence_report` must become
    method-conditional (`frozen_from_stage1`, the pilot comparison).
 2. **Thesis wording from C1:** raising T2 protection removes the Object forgetting; the new-energy
    allocation adds at most a small, seed-dependent amount at that cell (significant on one seed of
