@@ -1,0 +1,61 @@
+# Track 2: offline predictors of closed-loop forgetting (docs/thesis_plan.md, Workstream D). Run by
+# scripts/behavior_predictors.py. This file grows with the workstream; each section is committed before
+# the step that uses it.
+#
+# STEP 1, THE MANIFEST (the development cell list). Committed before the build.
+#
+# A CELL is a (checkpoint, task) pair with a 50-rollout evaluation, LIBERO and libero_franka, where the
+# task was trained at or before that checkpoint. Sources, recognised by layout:
+#   runner      a run directory (also nested, e.g. resume_check/<run>) with config.yaml naming a
+#               curriculum, eval/stage{k}.json and checkpoints/stage{k}.pt; trained tasks: the
+#               curriculum's stages <= k (co-trained tasks of joint stages included); parent: stage k-1,
+#               or for the first stage of a resumed run the checkpoint resume.json names; stage 0 is a root.
+#   pilot       a run directory whose config.yaml names start_checkpoint and task_key (the GPM
+#               feasibility pilots), eval/stage{k}.json and checkpoints/stage{k}.pt.
+#   row         row.json naming its parent checkpoint, eval.json, checkpoints/final.pt (low_update,
+#               optimizer study, SGP studies, T5 sweep, the EWC and LoRA brackets).
+#   legacy_row  row.json with config.yaml naming reference_run and start_checkpoint (hparam_study's
+#               cl_budget / cl_lr).
+#   trajectory  hparam_study/trajectory/traj__*: eval/step{n}.json with checkpoints/step{n}.pt, one
+#               single-task training from scratch; each step's parent is the previous step, and the
+#               whole trajectory is one root ("an hparam trajectory", thesis_plan §D).
+#   single      single__* (Gate 0 single-task policies): eval.json, checkpoints/final.pt; a root.
+#   For pilots and rows, trained tasks = the parent's trained tasks plus the row's own task.
+# EXCLUDED, each with a recorded reason (and every evaluation file under results/ is reconciled: used or
+# excluded): directories whose name marks them invalid, crashed or an abandoned attempt (hidden
+# attempt directories are never entered); the Dobot embodiment; repeated-state evaluations
+# (*.rep*.eval.json, 150 rollouts); n != 50; tasks not yet trained; an evaluation copied into a resumed
+# run without its checkpoint (its source's cell is counted instead); a row without a checkpoint.
+# BRACKET CELLS (EWC v1/v2, LoRA v1/v2) are development data, flagged `bracket`; the plan excludes them
+# only from the held-out test set.
+# THE TEST SET IS RESERVED: the future 4-task baseline runs (reserved_test_runs). If one exists before the
+# freeze, the build refuses. HELD-OUT EXCLUSION (stated now, applied when they exist): a test cell whose
+# (tensor fingerprint, task) is in the published development key set is excluded from the held-out
+# analysis (the T1 cells shared with seq_ft; production EWC/LoRA seed 0 stage 1 reproducing its bracket
+# arm).
+# DUPLICATES: deduplicated by (tensor-content fingerprint of the state dict, task, episode seeds); the kept
+# alias follows `precedence`, then the evaluation path; every alias, its flags and its file hashes are
+# kept; duplicates whose success vectors differ are counted (a rollout-determinism check).
+# LINEAGE: root = the parentless start of the chain (a runner's stage-0 checkpoint, a single-task policy,
+# or a trajectory); branch (primary) = the ancestor at depth 1 (the root itself for root cells); branch
+# (sensitivity) = thesis_plan §D's literal "first checkpoint where the cell's history diverges from every
+# other run", computed after merging runs with identical chains (resume reproductions): the first
+# non-root node of the cell's chain that lies on exactly one run's chain, else the cell's own node. The
+# depth-1 grouping makes a coarser assumption about dependence; it does not guarantee wider CIs, so both
+# are kept (the change is written into thesis_plan §D).
+# BINDING: each alias records the SHA-256 of every file read to construct it (evaluation, checkpoint,
+# config, row, resume) and its lineage (each ancestor checkpoint's path, SHA-256 and fingerprint). The
+# manifest and its summary are published together, atomically, into out/ with a done-marker; an existing
+# one is verified and never rewritten.
+
+manifest:
+  n_rollouts: 50
+  embodiment: libero_franka
+  task_prefix: "libero_"
+  out: track2/manifest            # under the results root (published atomically)
+  cache: track2_cache             # under the results root (fingerprint cache; outside out/)
+  skip_dirs: [logs, videos, track2, track2_cache]
+  exclude_dir_patterns: [invalid, crashed, attempt, dobot]
+  bracket_dirs: [baseline_selection, baseline_selection_v2, baseline_selection_lora, baseline_selection_lora_v2]
+  reserved_test_runs: '^seq_hetero__(replay|ewc|lora|consft)(_[a-z0-9_]+)?__seed[0-9]+$'
+  precedence: [runner, pilot, row, legacy_row, trajectory, single]

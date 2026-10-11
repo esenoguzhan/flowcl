@@ -170,6 +170,14 @@ share bitwise stage checkpoints and paired episodes:
   single-task policy, or an hparam trajectory.
 - **Level 2, branch:** the first checkpoint where the cell's history diverges from every other run
   under the same root.
+  - **Changed for the manifest (Sun 11 Oct, before any measure is computed):** the primary branch is
+    the ancestor at depth 1, the first trained step after the root (the root itself for root cells).
+  - **Why:** read literally, a trunk checkpoint with many descendants (GPM's stage 2, from which
+    adaptive, e99 and T5 arms diverge) becomes its own singleton branch, independent of its
+    descendants. The depth-1 grouping makes a coarser assumption about dependence. That does not
+    guarantee wider CIs.
+  - **Kept as a sensitivity analysis:** the literal definition, computed after merging runs with
+    identical chains, is stored per cell (`configs/analysis/behavior_predictors.yaml`).
 - **Level 3:** the cell.
 
 **Measures** (fixed banks, common random numbers):
