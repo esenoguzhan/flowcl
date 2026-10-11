@@ -7,6 +7,12 @@ grid cell trains T2 (Object) from seq_ft seed 0's ``stage0.pt`` through
 applies the rule, including the edge extensions; :func:`run_select` freezes the choice in an immutable
 bundle bound to the rule's SHA-256 and to the inputs every row records; :func:`verify` re-validates
 every row's inputs and recomputes the selection from them.
+
+A follow-up rule (``configs/analysis/baseline_selection_lora_v2.yaml``) may **import** an earlier
+rule's published arms (section ``imports``: that rule's file and SHA-256 and its bundle's SHA-256)
+instead of retraining them. Imported rows stay bound to their own rule; whether one is a grid or an
+extension arm is decided by the importing grid; an imported extension arm is only *available* and
+enters the selection only if the importing grid's selection owes exactly that cell.
 """
 
 from __future__ import annotations
@@ -152,6 +158,8 @@ def run_arm(cfg: dict, rank: int, lr: float, *, results_root=None, out_root=None
     root = _root(results_root)
     out_root = Path(out_root) if out_root else root
     seed = int(cfg["bracket_seed"])
+    if not smoke and cfg.get("imports") and cell in imported_cells(cfg, out_root):
+        raise ValueError(f"({rank}, {lr}) is imported from {cfg['imports']['rule']}; it is not retrained")
     ctx = seed_context(low_update_cfg or load_low_update_config(), seed, root)
     if smoke:  # 1-episode cells cannot be paired with the 50-episode references
         ctx = dataclasses.replace(ctx, evals={role: {} for role in ctx.evals})
@@ -206,13 +214,81 @@ def published_rows(cfg: dict, out_root: Path, rule_sha: str) -> dict[tuple[int, 
     return rows
 
 
+def _import_rule_path(cfg: dict) -> Path:
+    path = Path(cfg["imports"]["rule"])
+    return path if path.is_absolute() else repo_root() / path
+
+
+def load_imports(cfg: dict, out_root: Path) -> dict:
+    """The imported rule, checked: its file's and its bundle's SHA-256 are the ones this rule names, and
+    it shares this rule's seed, method constants, recipe and floor."""
+    from flowcl.experiments.sgp_sensitivity import load_selection
+
+    imp = cfg["imports"]
+    path = _import_rule_path(cfg)
+    sha = file_sha256(path)
+    if sha != imp["rule_sha256"]:
+        raise ValueError(f"the imported rule {path} hashes to {sha}, this rule names {imp['rule_sha256']}")
+    icfg = load_config(path)
+    for key in ("alpha", "recipe", "object_tolerance"):
+        if icfg["lora"][key] != cfg["lora"][key]:
+            raise ValueError(f"the imported rule's lora.{key} {icfg['lora'][key]} is not {cfg['lora'][key]}")
+    if icfg["bracket_seed"] != cfg["bracket_seed"]:
+        raise ValueError("the imported rule's bracket seed differs")
+    bundle, bundle_sha = load_selection(_out(icfg, out_root) / "lora")
+    if bundle_sha != imp["bundle_sha256"]:
+        raise ValueError(f"the imported bundle hashes to {bundle_sha}, this rule names {imp['bundle_sha256']}")
+    check_bundle(bundle, sha)
+    return {"cfg": icfg, "rule": path, "rule_sha256": sha, "bundle": bundle, "bundle_sha256": bundle_sha}
+
+
+def _cell_keys(cfg: dict) -> tuple[set, set]:
+    grid_keys = {(r, lr_tag(x)) for r, x in grid(cfg)}
+    return grid_keys, {(r, lr_tag(x)) for r, x in extension_candidates(cfg)} - grid_keys
+
+
+def imported_cells(cfg: dict, out_root: Path) -> set:
+    """The cells whose arm this rule imports (published under the imported rule, a grid or extension
+    cell here)."""
+    imp = load_imports(cfg, Path(out_root))
+    grid_keys, ext_keys = _cell_keys(cfg)
+    return set(published_rows(imp["cfg"], Path(out_root), imp["rule_sha256"])) & (grid_keys | ext_keys)
+
+
+def collect_rows(cfg: dict, out_root: Path, rule_sha: str) -> tuple[dict, dict]:
+    """``(rows, origins)``: this rule's published arms and the imported ones, each with its origin
+    (``imported``, its rule's SHA-256 and config). An imported row must equal the imported bundle's arm
+    (checkpoint SHA-256 and fingerprint); a cell both imported and published here is an error."""
+    rows = published_rows(cfg, out_root, rule_sha)
+    origins = {k: {"imported": False, "rule_sha256": rule_sha, "cfg": cfg} for k in rows}
+    if not cfg.get("imports"):
+        return rows, origins
+    imp = load_imports(cfg, out_root)
+    grid_keys, ext_keys = _cell_keys(cfg)
+    for key, row in published_rows(imp["cfg"], out_root, imp["rule_sha256"]).items():
+        if key not in grid_keys | ext_keys:
+            continue
+        if key in rows:
+            raise ValueError(f"cell {key} is both imported and published under this rule")
+        recorded = imp["bundle"]["arms"].get(arm_key(*key))
+        if recorded is None or (recorded["checkpoint_sha256"], recorded["state_fingerprint"]) != \
+                (row["checkpoint_sha256"], row["lora"]["state_fingerprint"]):
+            raise ValueError(f"imported arm {key} differs from the imported bundle's")
+        rows[key] = row
+        origins[key] = {"imported": True, "rule_sha256": imp["rule_sha256"], "cfg": imp["cfg"]}
+    return rows, origins
+
+
 # ---- the rule (pure) ------------------------------------------------------------------------------
 
 
-def _summary(row: dict) -> dict:
+def _summary(row: dict, grid_keys: set | None = None) -> dict:
+    """The rule's view of a row; ``grid_keys`` (the importing grid) decides whether it is an extension."""
     c = row["cells"]
+    key = (int(row["lora"]["rank"]), lr_tag(row["lora"]["lr"]))
+    extension = bool(row["lora"]["extension"]) if grid_keys is None else key not in grid_keys
     return {"rank": int(row["lora"]["rank"]), "lr": float(row["lora"]["lr"]),
-            "extension": bool(row["lora"]["extension"]), "run_id": row["run_id"],
+            "extension": extension, "run_id": row["run_id"],
             "spatial": c["0"]["success"], "object": c["1"]["success"],
             "spatial_probe": c["0"]["probe_loss"], "object_probe": c["1"]["probe_loss"]}
 
@@ -243,12 +319,15 @@ def owed_extensions(chosen: dict, ranks: list, lrs: list, ext: dict) -> list[tup
     return owed
 
 
-def select_lora(arms: list[dict], floor: float, ranks: list, lrs: list, ext: dict) -> dict:
+def select_lora(arms: list[dict], floor: float, ranks: list, lrs: list, ext: dict,
+                available: set | frozenset = frozenset()) -> dict:
     """The rule over ``[{"rank", "lr", "extension", "spatial", "object", "spatial_probe", "object_probe"}]``.
 
     The grid alone decides which extensions are owed (none in the no-qualifying fallback). While any is
     missing, ``status`` is ``"needs_extension"`` (nothing is published); otherwise the rule is
-    re-applied once over grid and extensions and ``status`` is ``"selected"``."""
+    re-applied once over grid and the owed extensions and ``status`` is ``"selected"``. Extension arms
+    whose cell is in ``available`` (imported) and not owed are set aside (``available_not_owed``); any
+    other unowed extension arm is an error."""
     grid_arms = [a for a in arms if not a["extension"]]
     extra = {(a["rank"], lr_tag(a["lr"])): a for a in arms if a["extension"]}
     want = {(int(r), lr_tag(x)) for r in ranks for x in lrs}
@@ -258,21 +337,24 @@ def select_lora(arms: list[dict], floor: float, ranks: list, lrs: list, ext: dic
     first, first_flags, _, fallback = _apply(grid_arms, floor)
     owed = [] if fallback else owed_extensions(first, ranks, lrs, ext)
     owed_keys = [(r, lr_tag(x)) for r, x in owed]
-    unexpected = sorted(set(extra) - set(owed_keys))
+    unowed = set(extra) - set(owed_keys)
+    unexpected = sorted(unowed - set(available))
     if unexpected:
         raise ValueError(f"extension arms {unexpected} are published but not owed by the grid's selection")
+    set_aside = sorted((k[0], float(k[1])) for k in unowed)
     missing = [o for o, k in zip(owed, owed_keys) if k not in extra]
     first_key = (first["rank"], first["lr"])
     if missing:
         return {"status": "needs_extension", "selected": None, "owed_extensions": owed, "missing": missing,
-                "grid_selection": first_key, "flags": first_flags + ["edge_extension_owed"]}
+                "grid_selection": first_key, "flags": first_flags + ["edge_extension_owed"],
+                "available_not_owed": set_aside}
     if owed:
         chosen, flags, eligible, _ = _apply(grid_arms + [extra[k] for k in owed_keys], floor)
         flags = flags + ["edge_extension"] + (["optimum_at_boundary"] if chosen["extension"] else [])
     else:
         chosen, flags, eligible, _ = _apply(grid_arms, floor)
     return {"status": "selected", "selected": chosen, "flags": flags, "owed_extensions": owed, "missing": [],
-            "grid_selection": first_key,
+            "grid_selection": first_key, "available_not_owed": set_aside,
             "eligible": sorted((a["rank"], a["lr"]) for a in eligible)}
 
 
@@ -285,25 +367,32 @@ def _rule_args(cfg: dict) -> dict:
 
 
 def validate_rows(cfg: dict, rows: dict, ctx, out_root: Path, rule_sha: str, *, allow_dirty: bool = False,
-                  fingerprints: bool = False) -> list[str]:
-    """Problems with the published rows: shared inputs not identical or not the current files',
-    arm-specific inputs not what the rule implies, dirty provenance, or (``fingerprints``) a checkpoint
-    whose tensor content no longer matches its recorded fingerprint."""
+                  fingerprints: bool = False, origins: dict | None = None) -> list[str]:
+    """Problems with the rows: shared inputs not identical or not the current files' (each row bound to
+    its own rule's SHA-256, ``origins``), arm-specific inputs not what the rule implies, dirty
+    provenance, or (``fingerprints``) a checkpoint whose tensors no longer match the recorded
+    fingerprint."""
     problems = []
-    current = shared_inputs(cfg, ctx, ctx.ref_dir / "checkpoints" / "stage0.pt", rule_sha)
     steps = int(cfg["lora"]["recipe"]["steps"])
+    start = ctx.ref_dir / "checkpoints" / "stage0.pt"
+    current = {}
     for (rank, tag), row in sorted(rows.items()):
+        origin = (origins or {}).get((rank, tag)) or {"rule_sha256": rule_sha, "cfg": cfg}
+        if origin["rule_sha256"] not in current:
+            current[origin["rule_sha256"]] = shared_inputs(cfg, ctx, start, origin["rule_sha256"])
+        want_inputs = current[origin["rule_sha256"]]
         name = row["run_id"]
         rec = row["lora"]
-        if rec["inputs"] != current:
-            diff = sorted(k for k in set(current) | set(rec["inputs"]) if current.get(k) != rec["inputs"].get(k))
+        if rec["inputs"] != want_inputs:
+            diff = sorted(k for k in set(want_inputs) | set(rec["inputs"])
+                          if want_inputs.get(k) != rec["inputs"].get(k))
             problems.append(f"{name}: shared inputs differ from the current files in {diff}")
         if int(rec["rank"]) != rank or lr_tag(rec["lr"]) != tag or float(rec["alpha"]) != float(cfg["lora"]["alpha"]):
             problems.append(f"{name}: rank/lr/alpha {rec['rank']}, {rec['lr']}, {rec['alpha']} do not match its cell")
         want = expected_train_config(ctx, float(rec["lr"]), steps, row_device(rec))
         if rec["train_config"] != want or rec["train_config_sha256"] != _json_sha(want):
             problems.append(f"{name}: recorded TrainConfig is not the rule's for its lr")
-        directory = arm_dir(cfg, out_root, rank, float(rec["lr"]), int(cfg["bracket_seed"]))
+        directory = arm_dir(origin["cfg"], out_root, rank, float(rec["lr"]), int(cfg["bracket_seed"]))
         if _arm_train_config(directory) != want:
             problems.append(f"{name}: config.yaml's TrainConfig is not the rule's for its lr")
         if str(row.get("git_sha", "")).endswith("-dirty") and not allow_dirty:
@@ -333,14 +422,32 @@ def _context(cfg: dict, root: Path, low_update_cfg: dict | None):
     return seed_context(low_update_cfg or load_low_update_config(), int(cfg["bracket_seed"]), root)
 
 
-def _evaluate_rule(cfg: dict, rows: dict) -> tuple[dict, float, float]:
-    grid_keys = {(r, lr_tag(x)) for r, x in grid(cfg)}
+def _evaluate_rule(cfg: dict, rows: dict, origins: dict | None = None) -> tuple[dict, float, float]:
+    grid_keys, _ = _cell_keys(cfg)
     missing = sorted(grid_keys - set(rows))
     if missing:
         raise FileNotFoundError(f"bracket arms not published: {missing}")
-    summaries = [_summary(r) for r in rows.values()]
+    summaries = [_summary(r, grid_keys) for r in rows.values()]
+    available = {k for k, o in (origins or {}).items() if o["imported"] and k not in grid_keys}
     seq_ft_object, floor = _floor(summaries, rows, float(cfg["lora"]["object_tolerance"]))
-    return select_lora(summaries, floor, **_rule_args(cfg)), seq_ft_object, floor
+    return select_lora(summaries, floor, **_rule_args(cfg), available=available), seq_ft_object, floor
+
+
+def _validated(cfg: dict, root: Path, out_root: Path, rule_sha: str, low_update_cfg, allow_dirty: bool,
+               fingerprints: bool = False) -> tuple[dict, dict, object, list[str]]:
+    ctx = _context(cfg, root, low_update_cfg)
+    rows, origins = collect_rows(cfg, out_root, rule_sha)
+    problems = validate_rows(cfg, rows, ctx, out_root, rule_sha, allow_dirty=allow_dirty,
+                             fingerprints=fingerprints, origins=origins)
+    return rows, origins, ctx, problems
+
+
+def _imports_record(cfg: dict, out_root: Path) -> dict | None:
+    if not cfg.get("imports"):
+        return None
+    imp = load_imports(cfg, out_root)
+    return {"rule": str(cfg["imports"]["rule"]), "rule_sha256": imp["rule_sha256"],
+            "bundle_sha256": imp["bundle_sha256"]}
 
 
 def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = None,
@@ -351,12 +458,10 @@ def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None
     root = _root(results_root)
     out_root = Path(out_root) if out_root else root
     rule_sha = file_sha256(rule_path(rule))
-    ctx = _context(cfg, root, low_update_cfg)
-    rows = published_rows(cfg, out_root, rule_sha)
-    problems = validate_rows(cfg, rows, ctx, out_root, rule_sha, allow_dirty=allow_dirty)
+    rows, origins, ctx, problems = _validated(cfg, root, out_root, rule_sha, low_update_cfg, allow_dirty)
     if problems:
         raise ValueError(f"published arms fail validation: {problems}")
-    choice, seq_ft_object, floor = _evaluate_rule(cfg, rows)
+    choice, seq_ft_object, floor = _evaluate_rule(cfg, rows, origins)
     if choice["status"] == "needs_extension":
         print(f"[flowcl] LoRA selection: the grid selects {choice['grid_selection']}; edge extension(s) "
               f"{choice['missing']} run before anything is published", flush=True)
@@ -364,17 +469,19 @@ def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None
     chosen = choice["selected"]
     seed = int(cfg["bracket_seed"])
     key = (chosen["rank"], lr_tag(chosen["lr"]))
-    shared = rows[key]["lora"]["inputs"]
+    current = shared_inputs(cfg, ctx, ctx.ref_dir / "checkpoints" / "stage0.pt", rule_sha)
     selection = {
         "git_sha": git_sha(), "seed": seed, "family": FAMILY, "rule_sha256": rule_sha,
-        "inputs": shared, "seq_ft_object": seq_ft_object, "object_floor": floor,
-        "arms": {arm_key(*k_): _bundle_arm(rows[k_]) for k_ in sorted(rows)},
+        "imports": _imports_record(cfg, out_root),
+        "inputs": current, "seq_ft_object": seq_ft_object, "object_floor": floor,
+        "arms": {arm_key(*k_): _bundle_arm(rows[k_], origins[k_], _cell_keys(cfg)[0]) for k_ in sorted(rows)},
         "grid_selection": list(choice["grid_selection"]),
         "owed_extensions": [list(o) for o in choice["owed_extensions"]],
+        "available_not_owed": [list(o) for o in choice["available_not_owed"]],
         "eligible": [list(e) for e in choice["eligible"]],
         "selected": {"rank": chosen["rank"], "lr": chosen["lr"], "alpha": float(cfg["lora"]["alpha"]),
-                     "run_id": chosen["run_id"],
-                     "checkpoint": str(arm_dir(cfg, out_root, chosen["rank"], chosen["lr"], seed)
+                     "run_id": chosen["run_id"], "imported": origins[key]["imported"],
+                     "checkpoint": str(arm_dir(origins[key]["cfg"], out_root, chosen["rank"], chosen["lr"], seed)
                                        / "checkpoints" / "final.pt"),
                      "checkpoint_sha256": rows[key]["checkpoint_sha256"],
                      "state_fingerprint": rows[key]["lora"]["state_fingerprint"]},
@@ -387,11 +494,13 @@ def run_select(cfg: dict, *, results_root=None, out_root=None, rule: Path | None
     return {"status": "selected", **published, "bundle_sha256": sha}
 
 
-def _bundle_arm(row: dict) -> dict:
-    s = _summary(row)
+def _bundle_arm(row: dict, origin: dict | None = None, grid_keys: set | None = None) -> dict:
+    s = _summary(row, grid_keys)
+    origin = origin or {"imported": False, "rule_sha256": None}
     return {**s, "checkpoint_sha256": row["checkpoint_sha256"], "state_fingerprint": row["lora"]["state_fingerprint"],
             "trainable_params": row["lora"]["history"]["trainable_params"],
-            "git_sha": row.get("git_sha"),
+            "git_sha": row.get("git_sha"), "imported": origin["imported"],
+            "rule_sha256": origin["rule_sha256"],
             "paired_vs_seq_ft": {j: row["cells"][j].get("paired", {}).get("seq_ft") for j in ("0", "1")}}
 
 
@@ -407,12 +516,10 @@ def run_extension(cfg: dict, *, results_root=None, out_root=None, rule: Path | N
     root = _root(results_root)
     out_root_p = Path(out_root) if out_root else root
     rule_sha = file_sha256(rule_path(rule))
-    rows = published_rows(cfg, out_root_p, rule_sha)
-    ctx = _context(cfg, root, low_update_cfg)
-    problems = validate_rows(cfg, rows, ctx, out_root_p, rule_sha, allow_dirty=allow_dirty)
+    rows, origins, _, problems = _validated(cfg, root, out_root_p, rule_sha, low_update_cfg, allow_dirty)
     if problems:
         raise ValueError(f"published arms fail validation: {problems}")
-    choice, _, _ = _evaluate_rule(cfg, rows)
+    choice, _, _ = _evaluate_rule(cfg, rows, origins)
     if choice["status"] != "needs_extension":
         raise RuntimeError("no edge extension is owed: the grid's selection lies inside the grid, none "
                            "qualifies, or every owed extension is published")
@@ -423,7 +530,8 @@ def run_extension(cfg: dict, *, results_root=None, out_root=None, rule: Path | N
 
 def verify(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = None,
            low_update_cfg: dict | None = None, allow_dirty: bool = False) -> dict:
-    """Every required arm, its inputs and its checkpoint; the bundle; and the selection recomputed."""
+    """Every required arm, its inputs and its checkpoint; the bundle; the selection recomputed; and, for
+    a rule that imports arms, the imported rule's own verification."""
     from flowcl.experiments.sgp_sensitivity import load_selection
 
     root = _root(results_root)
@@ -434,20 +542,29 @@ def verify(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = N
         rule_sha = file_sha256(rule_path(rule))
         bundle, sha = load_selection(_out(cfg, out_root) / "lora")
         check_bundle(bundle, rule_sha)
-        ctx = _context(cfg, root, low_update_cfg)
-        rows = published_rows(cfg, out_root, rule_sha)
-        problems += validate_rows(cfg, rows, ctx, out_root, rule_sha, allow_dirty=allow_dirty, fingerprints=True)
-        choice, seq_ft_object, floor = _evaluate_rule(cfg, rows)
+        if cfg.get("imports"):
+            imp = load_imports(cfg, out_root)
+            inner = verify(imp["cfg"], results_root=results_root, out_root=out_root, rule=imp["rule"],
+                           low_update_cfg=low_update_cfg, allow_dirty=allow_dirty)
+            problems += [f"imported rule: {p}" for p in inner["problems"]]
+            if bundle.get("imports") != _imports_record(cfg, out_root):
+                problems.append("the bundle's imports differ from this rule's")
+        rows, origins, ctx, row_problems = _validated(cfg, root, out_root, rule_sha, low_update_cfg, allow_dirty,
+                                                      fingerprints=True)
+        problems += row_problems
+        choice, seq_ft_object, floor = _evaluate_rule(cfg, rows, origins)
         if choice["status"] != "selected":
             problems.append(f"the rule still owes extensions {choice['missing']}")
         else:
             got = {"selected": [choice["selected"]["rank"], choice["selected"]["lr"]], "flags": choice["flags"],
                    "owed_extensions": [list(o) for o in choice["owed_extensions"]],
+                   "available_not_owed": [list(o) for o in choice["available_not_owed"]],
                    "eligible": [list(e) for e in choice["eligible"]],
                    "grid_selection": list(choice["grid_selection"]),
                    "object_floor": floor, "seq_ft_object": seq_ft_object}
             want = {"selected": [bundle["selected"]["rank"], bundle["selected"]["lr"]], "flags": bundle["flags"],
-                    "owed_extensions": bundle["owed_extensions"], "eligible": bundle["eligible"],
+                    "owed_extensions": bundle["owed_extensions"],
+                    "available_not_owed": bundle.get("available_not_owed", []), "eligible": bundle["eligible"],
                     "grid_selection": bundle["grid_selection"],
                     "object_floor": bundle["object_floor"], "seq_ft_object": bundle["seq_ft_object"]}
             for k in got:
@@ -463,6 +580,29 @@ def verify(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = N
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         problems.append(f"{type(exc).__name__}: {exc}")
     return {"passed": not problems, "problems": problems, "bundle_sha256": sha}
+
+
+def status(cfg: dict, *, results_root=None, out_root=None, rule: Path | None = None,
+           low_update_cfg: dict | None = None, allow_dirty: bool = False) -> dict:
+    """Imported, published and missing cells (no training), and the imported rule's verification."""
+    root = _root(results_root)
+    out_root = Path(out_root) if out_root else root
+    rule_sha = file_sha256(rule_path(rule))
+    rows, origins, _, problems = _validated(cfg, root, out_root, rule_sha, low_update_cfg, allow_dirty)
+    grid_keys, ext_keys = _cell_keys(cfg)
+    out = {"rule_sha256": rule_sha,
+           "imported": sorted(arm_key(*k) for k, o in origins.items() if o["imported"]),
+           "published": sorted(arm_key(*k) for k, o in origins.items() if not o["imported"]),
+           "missing_grid": sorted(arm_key(r, float(t)) for r, t in grid_keys - set(rows)),
+           "available_extensions": sorted(arm_key(*k) for k in set(rows) & ext_keys),
+           "row_problems": problems}
+    if cfg.get("imports"):
+        imp = load_imports(cfg, out_root)
+        out["imports"] = _imports_record(cfg, out_root)
+        out["imported_verify"] = verify(imp["cfg"], results_root=results_root, out_root=out_root, rule=imp["rule"],
+                                        low_update_cfg=low_update_cfg, allow_dirty=allow_dirty)
+    out["ready"] = not problems and (not cfg.get("imports") or out["imported_verify"]["passed"])
+    return out
 
 
 # ---- smoke and benchmark --------------------------------------------------------------------------

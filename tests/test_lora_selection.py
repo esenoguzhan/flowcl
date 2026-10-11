@@ -386,8 +386,8 @@ def test_pipeline_through_two_extensions_at_a_corner(spec, tmp_path, monkeypatch
     nothing is published before them, and verify recomputes the same result."""
     original = ls._summary
 
-    def summary(row):
-        s = original(row)
+    def summary(row, grid_keys=None):
+        s = original(row, grid_keys)
         s["spatial_probe"] = 0.0 if (s["rank"], s["lr"]) == (64, 1e-3) else 1.0
         return s
 
@@ -413,3 +413,147 @@ def test_pipeline_through_two_extensions_at_a_corner(spec, tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="no edge extension is owed"):
         ls.run_extension(cfg, **train)
     assert ls.verify(cfg, **sel_kw)["passed"]
+
+
+# ---- v2: the lower-lr band, importing v1's arms ---------------------------------------------------
+
+LRS2 = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
+EXT2 = {"rank": {"low": 1, "high": 256}, "lr": {"low": 3e-6, "high": 3e-3}}
+
+
+def grid2(overrides=None):
+    overrides = overrides or {}
+    return [arm(r, lr, **overrides.get((r, lr), {})) for r in RANKS for lr in LRS2]
+
+
+def test_v2_rule_available_extensions_and_lr_edges():
+    imported_ext = arm(1, 1e-4, extension=True)
+    # interior winner: the imported rank-1 row is set aside, not an error, and not selected
+    out = ls.select_lora(grid2({(16, 3e-5): {"spatial": 0.5}}) + [imported_ext], 0.68, RANKS, LRS2, EXT2,
+                         available={(1, "0.0001")})
+    assert out["status"] == "selected" and (out["selected"]["rank"], out["selected"]["lr"]) == (16, 3e-5)
+    assert out["available_not_owed"] == [(1, 1e-4)] and out["owed_extensions"] == []
+    # without the availability, an unowed extension is still an error
+    with pytest.raises(ValueError, match="not owed"):
+        ls.select_lora(grid2({(16, 3e-5): {"spatial": 0.5}}) + [imported_ext], 0.68, RANKS, LRS2, EXT2)
+    # owed and imported: used, not run again
+    out = ls.select_lora(grid2({(4, 1e-4): {"spatial": 0.5}}) + [imported_ext], 0.68, RANKS, LRS2, EXT2,
+                         available={(1, "0.0001")})
+    assert out["status"] == "selected" and out["owed_extensions"] == [(1, 1e-4)] and out["available_not_owed"] == []
+    assert out["flags"] == ["edge_extension"]
+    # the new low edge: lr 1e-5 owes 3e-6 at the selected rank
+    out = ls.select_lora(grid2({(16, 1e-5): {"spatial": 0.5}}), 0.68, RANKS, LRS2, EXT2)
+    assert out["status"] == "needs_extension" and out["missing"] == [(16, 3e-6)]
+    cfg = ls.load_config(repo_root() / "configs" / "analysis" / "baseline_selection_lora_v2.yaml")
+    assert cfg["imports"]["rule_sha256"] == ls.file_sha256(ls.rule_path())
+    assert [lr for lr in cfg["lora"]["lrs"]] == LRS2 and cfg["lora"]["extension"] == EXT2
+    v1 = {(r, ls.lr_tag(lr)) for r, lr in ls.grid(ls.load_config())} | {(4, "3e-05")}
+    new = [(r, lr) for r, lr in ls.grid(cfg) if (r, ls.lr_tag(lr)) not in v1]
+    queue = (repo_root() / "scripts" / "queue_lora_bracket_v2.sh").read_text()
+    assert 'ARMS="' + " ".join(f"{r}:{ls.lr_tag(lr)}" for r, lr in sorted(new)) + '"' in queue
+
+
+def _write_rule(path, cfg):
+    from omegaconf import OmegaConf
+    OmegaConf.save(OmegaConf.create(cfg), path)
+    return path
+
+
+def test_v2_pipeline_imports_v1_and_selects_over_the_union(spec, tmp_path, monkeypatch):
+    original = ls._summary
+    probes = {(4, 1e-4): 0.0, (16, 3e-5): -1.0}   # fixed: v1 selects (4, 1e-4); v2's new (16, 3e-5) beats it
+
+    def summary(row, grid_keys=None):
+        s = original(row, grid_keys)
+        s["spatial_probe"] = probes.get((s["rank"], s["lr"]), 1.0)
+        return s
+
+    monkeypatch.setattr(ls, "_summary", summary)
+    cfg1, kw, train = world(tmp_path, spec)
+    rule1 = _write_rule(tmp_path / "rule_v1.yaml", cfg1)
+    common = dict(results_root=tmp_path, low_update_cfg=kw["low_update_cfg"], allow_dirty=True)
+    for r, lr in ls.grid(cfg1):
+        ls.run_arm(cfg1, r, lr, rule=rule1, **train)
+    while ls.run_select(cfg1, rule=rule1, **common)["status"] == "needs_extension":
+        ls.run_extension(cfg1, rule=rule1, **train)
+    v1 = ls.run_select(cfg1, rule=rule1, **common)
+    assert v1["owed_extensions"] == [[1, 1e-4], [4, 3e-5]]
+    cfg2 = copy.deepcopy(ls.load_config(repo_root() / "configs" / "analysis" / "baseline_selection_lora_v2.yaml"))
+    cfg2["lora"]["recipe"] = {"steps": 2}
+    cfg2["imports"] = {"rule": str(rule1), "rule_sha256": ls.file_sha256(rule1),
+                       "bundle_sha256": v1["bundle_sha256"]}
+    rule2 = _write_rule(tmp_path / "rule_v2.yaml", cfg2)
+    st = ls.status(cfg2, rule=rule2, **common)
+    assert st["ready"] and len(st["imported"]) == 11 and st["available_extensions"] == ["r1__lr0.0001"]
+    assert sorted(st["missing_grid"]) == sorted(ls.arm_key(r, lr) for r, lr in
+                                                ((4, 1e-5), (16, 1e-5), (16, 3e-5), (64, 1e-5), (64, 3e-5)))
+    with pytest.raises(ValueError, match="imported"):
+        ls.run_arm(cfg2, 4, 3e-5, rule=rule2, **train)   # a v1 arm is never retrained
+    for r, lr in ((4, 1e-5), (16, 1e-5), (16, 3e-5), (64, 1e-5), (64, 3e-5)):
+        ls.run_arm(cfg2, r, lr, rule=rule2, **train)
+    out = ls.run_select(cfg2, rule=rule2, **common)
+    assert out["status"] == "selected" and (out["selected"]["rank"], out["selected"]["lr"]) == (16, 3e-5)
+    assert out["available_not_owed"] == [[1, 1e-4]] and out["imports"]["bundle_sha256"] == v1["bundle_sha256"]
+    assert len(out["arms"]) == 16 and out["arms"]["r4__lr3e-05"]["imported"] and not out["selected"]["imported"]
+    assert out["arms"]["r4__lr3e-05"]["extension"] is False and out["arms"]["r1__lr0.0001"]["extension"] is True
+    v = ls.verify(cfg2, rule=rule2, **common)
+    assert v["passed"], v
+    # an imported row that no longer matches v1's bundle fails v2's verification
+    row_path = ls.arm_dir(cfg1, tmp_path, 4, 3e-4, 0) / "row.json"
+    row = json.loads(row_path.read_text())
+    tampered = copy.deepcopy(row)
+    tampered["lora"]["state_fingerprint"] = "0" * 64
+    row_path.write_text(json.dumps(tampered))
+    v = ls.verify(cfg2, rule=rule2, **common)
+    assert not v["passed"] and any("imported" in p for p in v["problems"])
+    row_path.write_text(json.dumps(row))
+    assert ls.verify(cfg2, rule=rule2, **common)["passed"]
+    # a v1 bundle other than the one v2 names
+    bad = copy.deepcopy(cfg2)
+    bad["imports"]["bundle_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="imported bundle"):
+        ls.load_imports(bad, tmp_path)
+    bad = copy.deepcopy(cfg2)
+    bad["imports"]["rule_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="imported rule"):
+        ls.load_imports(bad, tmp_path)
+    bad = copy.deepcopy(cfg2)
+    bad["lora"]["alpha"] = 8
+    with pytest.raises(ValueError, match="alpha"):
+        ls.load_imports(bad, tmp_path)
+
+
+QUEUE2 = repo_root() / "scripts" / "queue_lora_bracket_v2.sh"
+ARMS2 = [f"{k}_arm_r{r}_lr{t}" for k, (r, t) in enumerate([(4, "1e-05"), (16, "1e-05"), (16, "3e-05"), (64, "1e-05"),
+                                                            (64, "3e-05")])]
+
+
+def run_queue2(tmp_path, args=(), fail="", step_rc="", present=()):
+    results = tmp_path / "results"
+    for rel in present:
+        p = results / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}")
+    env = {**os.environ, "QUEUE_DRY_RUN": "1", "QUEUE_FAIL_STEP": fail, "QUEUE_STEP_RC": step_rc,
+           "QUEUE_LOG_ROOT": str(tmp_path / "logs"), "QUEUE_RESULTS_ROOT": str(results)}
+    done = subprocess.run(["bash", str(QUEUE2), *args], env=env, capture_output=True, text=True, timeout=120)
+    (logdir,) = list((tmp_path / "logs").glob("queue_*"))
+    return done.returncode, (logdir / "queue.log").read_text(), logdir
+
+
+def test_v2_queue_status_arms_extensions_and_resume(tmp_path):
+    assert subprocess.run(["bash", "-n", str(QUEUE2)]).returncode == 0
+    rc, log, logdir = run_queue2(tmp_path / "a")
+    assert rc == 0 and order(log, ["00_status"] + ARMS2 + ["9_select", "12_verify"])
+    assert "--config configs/analysis/baseline_selection_lora_v2.yaml --status" in (logdir / "00_status.log").read_text()
+    assert (logdir / "2_arm_r16_lr3e-05.log").read_text().strip().endswith("--arm 16 3e-05")
+    rc, log, _ = run_queue2(tmp_path / "b", step_rc="9_select=10")
+    assert rc == 0 and order(log, ["9_select", "10_extension_1", "11_select_1", "12_verify"])
+    rc, log, _ = run_queue2(tmp_path / "c", fail="00_status")
+    assert rc == 1 and "START 0_arm" not in log and "SKIP arms: the status check failed" in log
+    rows = [f"baseline_selection_lora_v2/lora/seed0/lorab__r{r}__lr{t}__seed0/row.json"
+            for r, t in ((4, "1e-05"), (16, "1e-05"))]
+    rc, log, _ = run_queue2(tmp_path / "d", ["--from-step", "2"], present=rows)
+    assert rc == 0 and "SKIP 00_status" in log and f"PRIOR {ARMS2[0]} ok" in log and f"START {ARMS2[2]}" in log
+    for bad in (["--from-step", "6"], ["--smoke", "/tmp/x"]):
+        assert subprocess.run(["bash", str(QUEUE2), *bad], capture_output=True).returncode == 2, bad

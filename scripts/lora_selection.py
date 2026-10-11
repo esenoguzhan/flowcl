@@ -8,6 +8,8 @@ Spec §1: no logic in scripts/. See :mod:`flowcl.experiments.lora_selection`; th
     --select                     apply the rule; exit 10 (nothing published) while an extension is owed
     --extension                  train the next owed edge-extension arm (refused unless one is owed)
     --verify                     inputs, checkpoints, bundle and the recomputed selection; exit 1 if not
+    --status                     imported, published and missing cells and the imported rule's verification
+                                 (no training); exit 1 unless ready
     --smoke-arm R LR             the bracket path against the runner (into --out-root): an arm from
                                  --reference-run's stage0.pt at --smoke-steps steps must reproduce
                                  --identity-run's stage1.pt under the same TrainConfig; exit 1 if not
@@ -34,6 +36,7 @@ def main() -> None:
     action.add_argument("--select", action="store_true")
     action.add_argument("--extension", action="store_true")
     action.add_argument("--verify", action="store_true")
+    action.add_argument("--status", action="store_true")
     action.add_argument("--smoke-arm", nargs=2, type=float, metavar=("R", "LR"))
     action.add_argument("--benchmark", action="store_true")
     action.add_argument("--write-smoke-method", type=Path, metavar="PATH")
@@ -74,6 +77,10 @@ def main() -> None:
         out = ls.verify(cfg, allow_dirty=args.allow_dirty, **roots)
         print(json.dumps(out, indent=2))
         sys.exit(0 if out["passed"] else 1)
+    elif args.status:
+        out = ls.status(cfg, allow_dirty=args.allow_dirty, **roots)
+        print(json.dumps(out, indent=2))
+        sys.exit(0 if out["ready"] else 1)
     elif args.smoke_arm is not None:
         out = ls.smoke_arm(cfg, int(args.smoke_arm[0]), args.smoke_arm[1], reference_run=args.reference_run,
                            identity_run=args.identity_run, steps=args.smoke_steps, episodes=args.smoke_episodes,

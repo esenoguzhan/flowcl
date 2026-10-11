@@ -1,0 +1,62 @@
+# LoRA rank × learning-rate bracket v2 (Workstream B): the lower-lr band. A follow-up decided AFTER v1's
+# outcome (configs/analysis/baseline_selection_lora.yaml; docs/runs/2026-10-11_lora_bracket.md), and
+# labelled post hoc. v1's rule, rows, bundle and record stand unchanged; v2's selection supersedes v1's
+# for the 4-task runs (as EWC v2's did). Committed before any v2 arm; no calibration. Evaluated by
+# scripts/lora_selection.py --config <this file>; queued by scripts/queue_lora_bracket_v2.sh.
+#
+# WHY (decided after v1): v1 selected rank 4, lr 3e-5, an lr-axis extension flagged optimum_at_boundary,
+# and the rule re-applies only once, so lower learning rates were untested. Retention fell steeply with
+# the adapter lr at every rank, and the higher ranks kept far more Object at lr 1e-4 (rank 16: 0.88;
+# rank 64: 0.90) but were never tried below it. v2 fills in lr 3e-5 and 1e-5 for ranks 4, 16 and 64.
+#
+# UNCHANGED FROM v1: the method (sequential merged LoRA, flowcl/methods/lora.py; its training path is
+# byte-identical to v1's, checked before launch with git diff 75fb0e1), alpha = 16, the released
+# initialisation, seed 0, the start checkpoint (seq_ft seed 0's stage0.pt), the recipe (30k steps,
+# warmup + cosine, weight decay 1e-4), the paired cells, the floor (Object >= seq_ft's stage-1 Object -
+# 0.10, 0.68), the ordering (Spatial success, Spatial probe loss, the smaller rank, the smaller lr), the
+# no-qualifying fallback (highest Object, no extension), the flags, the input binding and verify's
+# recomputation.
+#
+# THE GRID: ranks {4, 16, 64} × lrs {1e-5, 3e-5, 1e-4, 3e-4, 1e-3} (15 cells).
+# IMPORTS (not retrained): every v1 row whose cell is a v2 grid cell or a v2 extension cell, bound to v1's
+# rule and bundle SHA-256 below; v1's verify must pass, and each imported row must equal v1's bundle arm.
+#   grid cells (10): v1's 9 grid arms and (4, 3e-5) (a v1 extension, a grid cell here); they always
+#     enter the selection;
+#   available extension (1): (1, 1e-4); it enters the selection ONLY if v2's grid selection owes exactly
+#     that cell, otherwise it is listed in the bundle as available_not_owed and stays out.
+# NEW ARMS (5): (4, 1e-5), (16, 1e-5), (16, 3e-5), (64, 1e-5), (64, 3e-5), trained at the v2 commit.
+# EDGE EXTENSION (as v1's): if the grid's selection lies at an end of an axis, one arm beyond that end at
+# the selected value of the other axis (rank 4 -> 1 or 64 -> 256; lr 1e-5 -> 3e-6 or 1e-3 -> 3e-3), an
+# imported row used where one exists; no combined corner; the rule re-applied once.
+#
+# INTERPRETATIONS (pre-written):
+#   The selected (rank, lr) is "the best among tested settings" on the development seed, never a resolved
+#     optimum; it becomes configs/method/lora.yaml's rank and lr in a commit of its own.
+#   The record reports the full Spatial-Object trade-off, not only the winner (v1's leading Spatial scores
+#     differ by 1-2 rollouts while Object differs by up to 16 points).
+#   Ranges are reported separately: v1 tested lr 3e-5 (rank 4 only) to 1e-3 and rank 1 at 1e-4; v2 adds
+#     lr 1e-5 and 3e-5 at ranks 4 to 64 (and any extension).
+#   Spatial > 0 at an eligible arm: observed retention on the development seed; broader claims wait for
+#     the replication seeds. A difference from GPM compares two procedures on the same weight support.
+#   Limits: v1's, plus the post-hoc decision and arms from two commits with an identical training path.
+# TRACK 2: as v1's (by tensor-content fingerprint): every bracket cell is excluded from the held-out set,
+# and so is any production cell that reproduces one (production LoRA seed 0's stage 1 is
+# identity-checked against the selected arm), and the T1 cells shared with seq_ft.
+
+bracket_seed: 0
+out: baseline_selection_lora_v2      # under the output root
+
+imports:
+  rule: configs/analysis/baseline_selection_lora.yaml
+  rule_sha256: a6582554914555c28e6d800ec3f98971a6d3f144a9e6e4ee4b231bbefe9e0eba
+  bundle_sha256: a1d62334cb3226ca6ad9833694e719cc9cc7ea888dcd48c96c13422d5ec08310
+
+lora:
+  recipe: {steps: 30000}
+  alpha: 16
+  ranks: [4, 16, 64]
+  lrs: [1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+  object_tolerance: 0.10
+  extension:
+    rank: {low: 1, high: 256}
+    lr: {low: 3.0e-6, high: 3.0e-3}
