@@ -189,8 +189,8 @@ def test_configuration_refusals_and_the_production_config():
             LoRA(**kw)
     with pytest.raises(TypeError):
         LoRA(rank=4, lr=1e-3, dropout=0.1)
-    name, kw = load_method_config("lora")  # filled from the bracket's bundle (rank 4, lr 3e-5)
-    assert name == "lora" and kw == {"rank": 4, "lr": 3e-5, "alpha": 16}
+    name, kw = load_method_config("lora")  # filled from the v2 bracket's bundle (rank 16, lr 3e-5)
+    assert name == "lora" and kw == {"rank": 16, "lr": 3e-5, "alpha": 16}
     assert build_method(name, **kw).stage_lr(1) == 3e-5
     with pytest.raises(ValueError, match="bundle"):
         build_method(name, **{**kw, "rank": None, "lr": None})

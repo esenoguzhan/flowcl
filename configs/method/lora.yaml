@@ -2,13 +2,14 @@
 # flowcl/methods/lora.py: full fine-tuning on Task 1, then a frozen base with fresh rank-`rank` adapters
 # on every registry layer per task, trained at `lr` and merged at the task's end.
 #
-# rank and lr are the LoRA bracket's registered selection: rank 4, lr 3e-5 (an lr-axis extension,
-# flagged optimum_at_boundary), from the frozen bundle results/baseline_selection_lora/lora/selection/
-# (selection.json SHA-256 a1d62334...; rule configs/analysis/baseline_selection_lora.yaml; record
-# docs/runs/2026-10-11_lora_bracket.md). Task 1 trains at the recipe's lr; lr is the adapters' from Task 2.
+# rank and lr are the LoRA v2 bracket's registered selection: rank 16, lr 3e-5 (inside the grid, no
+# flags), from the frozen bundle results/baseline_selection_lora_v2/lora/selection/ (selection.json
+# SHA-256 455edc42...; rule configs/analysis/baseline_selection_lora_v2.yaml; record
+# docs/runs/2026-10-12_lora_bracket_v2.md). It supersedes v1's rank 4, lr 3e-5. Task 1 trains at the
+# recipe's lr; lr is the adapters' from Task 2.
 # Production LoRA seed 0's stage 1 is identity-checked against that arm's checkpoint.
 name: lora
 
-rank: 4
+rank: 16
 lr: 3.0e-5
 alpha: 16
