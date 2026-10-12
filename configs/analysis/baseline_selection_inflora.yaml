@@ -1,0 +1,44 @@
+# The InfLoRA adaptation's rank × learning-rate bracket, T1 -> T2 on the development seed (the
+# projected-LoRA comparison). Committed before any arm. Everything not stated here is
+# baseline_selection_projected_lora.yaml's (arms, selection, extensions, inputs, K_old, the
+# layer-output-change diagnostic, interpretations, claim scope); only the variant differs.
+#
+# THE VARIANT `inflora`: "an InfLoRA adaptation under the shared protocol" (Liang & Li, CVPR 2024), not a
+# reproduction. At T2's start, T2's input Gram K is captured per registry layer with the current weights
+# (GPM's capture; seeds derive_seed(namespace, "inflora_design_probe::<task>" / "inflora_design::<task>",
+# 1)); an explicit orthonormal basis C of the memory's complement is built; A's rows are C u_i for the
+# top-r eigenpairs of C^T K C with eigenvalue > 1e-8 trace(C^T K C) (zero-eigenvalue directions are never
+# used; the effective rank is recorded; a layer with none is not adapted). A is fixed (not in the
+# optimiser); only B is trained, from 0; scale 1, as InfLoRA. A_eff = A - (A M) M^T is still formed every
+# forward pass (A already lies in the complement; this keeps the constraint exact under float rounding).
+# DISCLOSED PROTOCOL DIFFERENCES: T1 is full fine-tuning (InfLoRA trains an adapter from the first task),
+# and our GPM memory rule (a fixed eps 0.95 per task) replaces DualGPM's update rule, a substantive
+# difference, not only a storage choice. The design capture's time is recorded as cost.
+# INTERPRETATION ADDED: at equal rank `inflora` trains d_out r parameters per layer against `trained`'s
+# (d_in + d_out) r; performance is reported against the trainable-parameter count.
+
+bracket_seed: 0
+out: baseline_selection_inflora   # under the output root
+family: inflora
+arm_prefix: inflb
+
+projection:
+  variant: inflora
+  eps: 0.95
+  memory:
+    run: seq_hetero__gpm_projected_adam__seed0
+    file: method/memory_task0.pt
+    sha256: 93b699356e97441d5e207d9654b6360fa361470371b65c2e6ad6be26d97fac45
+  kold:
+    file: baseline_selection_projected/kold_seq_ft_seed0_stage0.pt
+    capture_config: subspace
+
+lora:
+  recipe: {steps: 30000}
+  alpha: 16          # bound for the shared rule machinery; inflora's scale is 1, not alpha / r
+  ranks: [4, 16, 64]
+  lrs: [3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+  object_tolerance: 0.10
+  extension:
+    rank: {low: 1, high: 256}
+    lr: {low: 1.0e-5, high: 3.0e-3}

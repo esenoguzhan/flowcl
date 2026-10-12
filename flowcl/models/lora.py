@@ -84,3 +84,81 @@ def detach(module: nn.Linear) -> None:
     delattr(module, _SCALE)
     del module._parameters["lora_A"]
     del module._parameters["lora_B"]
+
+
+# ---- projected adapters (projected LoRA, an InfLoRA adaptation): the update confined to P⊥ -----------
+#
+# A projected adapter keeps a protected input basis M (d_in x k, orthonormal columns) and uses the
+# effective down-projection A_eff = A - (A M) M^T, formed differentiably at every forward pass, so the
+# update (scale) B A_eff satisfies Delta W M = 0 in exact arithmetic for any A and B, whatever the
+# optimiser does to A. That equals projecting every input (x P⊥), at r d_in k instead of a pass over
+# every activation. With M = None the adapter is unprojected. ``train_A=False`` freezes A (InfLoRA's
+# fixed down-projection); its rows must already lie in the complement.
+
+_PSCALE = "_plora_scale"
+_PHOOK = "_plora_hook"
+_PM = "_plora_M"
+
+
+def is_projected(module: nn.Linear) -> bool:
+    return hasattr(module, _PHOOK)
+
+
+def effective_down(module: nn.Linear) -> torch.Tensor:
+    a = module.lora_A
+    m = getattr(module, _PM)
+    return a if m is None else a - (a @ m) @ m.T
+
+
+def _projected_hook(module: nn.Linear, args, output):
+    x = args[0]
+    return output + getattr(module, _PSCALE) * F.linear(F.linear(x, effective_down(module)), module.lora_B)
+
+
+def attach_projected(module: nn.Linear, a_init: torch.Tensor, memory: torch.Tensor | None, scale: float,
+                     train_a: bool) -> int:
+    """Attach a projected adapter with down-projection ``a_init`` (r x d_in) and B = 0; return the
+    number of trainable parameters it adds."""
+    if not isinstance(module, nn.Linear):
+        raise TypeError(f"projected adapters adapt nn.Linear layers, got {type(module).__name__}")
+    if is_projected(module) or is_adapted(module):
+        raise RuntimeError("this layer already carries an adapter")
+    weight = module.weight
+    r = int(a_init.shape[0])
+    if a_init.shape != (r, module.in_features) or r < 1:
+        raise ValueError(f"a_init must be (r >= 1, {module.in_features}), got {tuple(a_init.shape)}")
+    module.register_parameter("lora_A", nn.Parameter(a_init.to(device=weight.device, dtype=weight.dtype),
+                                                     requires_grad=bool(train_a)))
+    module.register_parameter("lora_B", nn.Parameter(
+        torch.zeros(module.out_features, r, device=weight.device, dtype=weight.dtype)))
+    m = None if memory is None else memory.to(device=weight.device, dtype=weight.dtype)
+    setattr(module, _PM, m)
+    setattr(module, _PSCALE, float(scale))
+    setattr(module, _PHOOK, module.register_forward_hook(_projected_hook))
+    return module.lora_B.numel() + (module.lora_A.numel() if train_a else 0)
+
+
+def projected_delta(module: nn.Linear) -> torch.Tensor:
+    """The intended update ``scale * B A_eff`` in fp32, shaped like ``module.weight``."""
+    with torch.no_grad():
+        return getattr(module, _PSCALE) * (module.lora_B.detach().float() @ effective_down(module).detach().float())
+
+
+def merge_projected(module: nn.Linear) -> tuple[torch.Tensor, torch.Tensor]:
+    """Merge the intended update into W (fp32) and detach; return ``(intended, realized)`` where
+    realized = W_after - W_before."""
+    with torch.no_grad():
+        intended = projected_delta(module)
+        before = module.weight.detach().clone()
+        module.weight.add_(intended.to(module.weight.dtype))
+        realized = module.weight.detach().float() - before.float()
+    detach_projected(module)
+    return intended, realized
+
+
+def detach_projected(module: nn.Linear) -> None:
+    getattr(module, _PHOOK).remove()
+    for attr in (_PHOOK, _PSCALE, _PM):
+        delattr(module, attr)
+    del module._parameters["lora_A"]
+    del module._parameters["lora_B"]

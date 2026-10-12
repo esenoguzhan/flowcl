@@ -59,3 +59,65 @@ manifest:
   bracket_dirs: [baseline_selection, baseline_selection_v2, baseline_selection_lora, baseline_selection_lora_v2]
   reserved_test_runs: '^seq_hetero__(replay|ewc|lora|consft)(_[a-z0-9_]+)?__seed[0-9]+$'
   precedence: [runner, pilot, row, legacy_row, trajectory, single]
+
+# STEP 2, THE MEASURES (flowcl/analysis/behavior.py; behavior_predictors.run_measures). Committed before
+# any measure is computed. No training, no rollouts.
+#
+# CELLS: exactly the published manifest's (bound by its SHA-256 below), each from its kept alias's
+# checkpoint. BANKS (common random numbers, fixed per task, identical for every checkpoint): the task's
+# n_demos demonstrations built with the checkpoint's own frozen stats; the forgetting diagnostics' probe
+# batches (batch 64 x 16, tags gpm_pilot_probe::*), taken from an index-only loader through the same
+# sampler as build_dataloader(shuffle=True), so the batches are the probe's own; fp32, autocast off,
+# eval mode.
+# MEASURES (one forward pass per batch; per-element errors e = (v - (A1 - A0))^2, masked):
+#   M0  the masked flow-matching loss (equal to probes.probe_batch_losses; reproduction asserted per batch)
+#   M1  the loss per flow-time bin (flow_head.S_BINS, four bins, s in [lo, hi); 1.0 in the last)
+#   M2  the loss per action component (m2.components) and on the executed first m2.executed_steps chunk
+#       steps against the rest
+#   M3  K chunks sampled per observation with the policy's Euler integrator (m3.euler_steps, null = the
+#       policy's 10) from the noise bank derive_seed(m3.noise_tag, task, 0), on the first m3.n_batches
+#       probe batches, scored by per-sample MSE against the demonstration chunk. m3_mean (the mean over
+#       draws) estimates the expected single-draw demonstration error on this offline observation bank,
+#       a candidate proxy for closed-loop performance; m3_best (best of K) is an ORACLE DIAGNOSTIC: a
+#       deployed policy draws once and cannot select by the demonstration. Both also on the executed
+#       first steps. Disclosed limitation: one demonstration can penalise a different valid action.
+# RESAMPLING UNITS: every measure is stored as additive (sum, count) pairs per batch AND per demonstration
+# (demo ids, valid-element counts): chunks overlap within a demonstration, so batches are not independent.
+# INSTRUMENT CHECKS (fail loud; nothing published unless all pass), to instrument.rel_tol: M0 reproduces
+# the forgetting diagnostics' loss matrices (seq_ft, GPM, adaptive GPM; every seed low_update.yaml
+# registers) at every trained cell, and every row's recorded probe loss (bracket, study and legacy rows).
+# TEST SET: the reserved 4-task runs now include projected_lora and inflora (reserved_test_runs); if one
+# exists before the freeze the measures refuse. Their bracket cells are in neither set; reproduced
+# production cells are excluded by tensor fingerprint.
+# RESUME: a work file is reused only if its binding (this file's SHA-256, this section's hash, the
+# manifest's SHA-256, the git SHA) and its checkpoint's SHA-256 match; anything else is recomputed.
+# PUBLICATION: results/track2/measures/ (measures, summary, done-marker) by one rename, gated on the
+# instrument checks AND the full CPU suite's result file reporting success at this commit.
+# CARRIED INTO STEP 3's RULE (written before any fitting): whether the primary score weights cells or
+# roots; a sensitivity analysis without seed 0's dominant root (214 of 449 cells); neither 449 cells nor
+# 24 roots counts as independent training replications; within-task ranking (a) and cross-task
+# calibration (b) stay separate claims.
+
+measures:
+  manifest_sha256: 21c91ebc71560001abad159098773a51123bdbd3bcef1088a5dd1c2195d9caf5
+  n_demos: 50
+  probe:
+    batch_size: 64
+    n_batches: 16
+    seed_tags:
+      shuffle: gpm_pilot_probe::shuffle
+      flow_time: gpm_pilot_probe::flow_time
+      noise: gpm_pilot_probe::noise
+  m2:
+    components: {position: [0, 3], rotation: [3, 6], gripper: [6, 7]}
+    executed_steps: 8
+  m3:
+    n_batches: 8
+    k: 8
+    noise_tag: track2_m3::noise
+    euler_steps: null
+  instrument: {rel_tol: 1.0e-3}
+  reserved_test_runs: '^seq_hetero__(replay|ewc|lora|consft|projected_lora|inflora)(_[a-z0-9_]+)?__seed[0-9]+$'
+  out: track2/measures
+  work: track2/.measures_work
+  dataset_cache: 4

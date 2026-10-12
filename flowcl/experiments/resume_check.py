@@ -121,7 +121,9 @@ def compare_resume(source_run: Path, resumed_run: Path, stage: int, all_artifact
     evaluation = compare_evaluations(json.loads((source_run / "eval" / f"stage{stage}.json").read_text()),
                                      json.loads((resumed_run / "eval" / f"stage{stage}.json").read_text()))
     if method_state:
-        diffs = deep_differences(_method_state(source_run, stage), _method_state(resumed_run, stage))
+        # wall-clock measurements (a method's ``timings``) are not part of the deterministic state
+        diffs = deep_differences(*({k: v for k, v in _method_state(run, stage).items() if k != "timings"}
+                                   for run in (source_run, resumed_run)))
         memories["method_state"] = {"passed": not diffs, "differences": diffs}
     resume = json.loads((resumed_run / "resume.json").read_text())
     passed = identity["passed"] and all(m["passed"] for m in memories.values()) and evaluation["passed"]

@@ -1,0 +1,98 @@
+# Projected LoRA's rank × learning-rate bracket, T1 -> T2 on the development seed (the projected-LoRA
+# comparison; docs/runs/2026-10-1x_projected_lora_comparison.md). Committed before any arm; no
+# calibration. Evaluated by scripts/lora_selection.py --config <this file>; queued by
+# scripts/queue_projected_lora_bracket.sh. The method is flowcl/methods/projected_lora.py, variant
+# `trained`. Two sibling rules share everything below except the variant (and pca_trained's grid):
+# baseline_selection_inflora.yaml and baseline_selection_pca_trained.yaml.
+#
+# CLAIM SCOPE: we claim no new projection mechanism. The intended contribution is a controlled empirical
+# characterization of fixed against trainable low-rank adaptation under shared protection constraints,
+# including measured resource costs and failure diagnostics. Prior work is context: InfLoRA (CVPR 2024),
+# Janus-LoRA, LoDA, KeepLoRA, OPLoRA, LoRA-Null, OrthoSkillVLA.
+#
+# THE METHOD (variant `trained`): T1 is full fine-tuning and builds GPM's memory exactly as
+# gpm_projected_adam does, so the arms start from seq_ft seed 0's stage0.pt (asserted bitwise equal to
+# gpm_projected_adam seed 0's stage0.pt) and install that run's Task-1 memory (method/memory_task0.pt,
+# bound by SHA-256 below; eps 0.95). At T2 every base parameter is frozen; each of the 91 registry layers
+# gets an adapter whose effective down-projection is A_eff = A - (A M) M^T, formed differentiably every
+# forward pass, so the update (alpha/r) B A_eff has Delta W M = 0 in exact arithmetic under any optimiser.
+# A: the released LoRA initialisation (kaiming_uniform_(a=sqrt(5)), CPU generator
+# derive_seed(namespace, "projected_lora_init::<task>", 1)); B = 0; alpha = 16 as LoRA's. The update is
+# merged into W at the task's end (fp32). A layer whose memory is full rank is not adapted (recorded); if
+# no layer can be adapted the arm raises. Numerically: the intended and the realized (W_after - W_before)
+# ||Delta W M|| are checked against atol 1e-5 ||W|| + rtol 1e-4 ||Delta W|| per layer; a violation fails
+# the arm. "Merge exactness" means agreement within these tolerances.
+#
+# ARMS, SELECTION, EXTENSIONS AND INPUTS: exactly LoRA's rule (baseline_selection_lora.yaml): seed 0, T2
+# (Object) with the reference recipe at the arm's lr through low_update.train_stage with the runner's
+# text-cache state; cells R[1][0] (Spatial) and R[1][1] (Object) paired with seq_ft's stage 1; eligible
+# iff Object >= seq_ft's stage-1 Object - 0.10 (0.68); among eligible the highest Spatial, then the lower
+# Spatial probe loss, then the smaller rank, then the smaller lr; the no-qualifying fallback; edge
+# extensions (at most 2: rank 4 -> 1 or 64 -> 256, lr 3e-5 -> 1e-5 or 1e-3 -> 3e-3) and one
+# re-application; nothing published while an owed arm is missing. Grid: rank {4, 16, 64} x lr {3e-5,
+# 1e-4, 3e-4, 1e-3} (12 arms). The lower rate is included because damage through directions the memory
+# omits is not removed by the projection, and LoRA's bracket showed how much the lr matters.
+# The shared inputs add the projection: the variant, eps, the memory file's SHA-256 (equal to the rule's)
+# and K_old's (below). Every row records the method's history: cost (trainable parameters, an
+# optimiser-state estimate at 16 B/parameter, the stored memory's bytes, peak GPU memory, design and
+# training seconds), the per-layer constraint residuals, and the subspace movement (principal angles
+# between the initial A_eff row space and the merged update's row space, with numerical ranks, and
+# f_outside = ||D (I - Q0 Q0^T)||^2 / ||D||^2, n/a for D = 0).
+#
+# LAYER-OUTPUT CHANGE (a diagnostic, not a selection input): for the realized displacement
+# D = W_final - W_start per registry layer, tr(D K_old D^T) / tr(W_0 K_old W_0^T), with K_old the full
+# Task-1 input Gram captured once at seq_ft seed 0's stage 0 on Task-1 data (GPM's capture, seeds
+# kold_probe::/kold::; file below, immutable, bound by SHA-256 in every row). The general form is valid
+# for any D and is used for every method, including LoRA's selected arm and gpm_projected_adam's stage 1
+# (scripts/lora_selection.py --energy); the P⊥-sandwiched form is recorded only as a check for projected
+# updates. It measures one layer's output on fixed Task-1 inputs, not the whole network's change
+# (upstream activations move too), and it is a T1 -> T2 diagnostic. A tiny constraint residual can
+# coexist with forgetting through residual activation directions the memory omits: at eps 0.95 their
+# energy is at most about 5% of the *captured* distribution, a bound that need not hold for later
+# activations or rollout states.
+#
+# INTERPRETATIONS (pre-written; descriptive, seed 0):
+#   The selected arm is "the best among tested settings"; compared with gpm_projected_adam seed 0's
+#     stage 1 (Spatial 0.94, Object 0.78) and LoRA v2's selected arm (rank 16, lr 3e-5: Spatial 0.52,
+#     Object 0.70), and with the other two families' selected arms.
+#   "Within 10 pp" of gpm_projected_adam is a screening threshold for the 4-task runs, not a
+#     non-inferiority claim. A claim reads "comparable retention and acquisition with measured savings in
+#     X", X filled only with measured quantities (trainable parameters, optimiser state, peak memory,
+#     time).
+#   Performance is reported against the actual trainable-parameter count as well as the rank (InfLoRA
+#     trains fewer parameters at equal rank).
+#   A gap to gpm_projected_adam compares a merged low-rank update confined to P⊥ with a dense projected
+#     AdamW update on the same weights and the same memory; it does not isolate rank alone.
+#   Limits: one transition on the development seed (which also enters the final evaluation); one memory
+#     (Task 1's); the later 4-task runs (a separate step) include adaptive GPM as the retention reference
+#     and separate rollout uncertainty from seed robustness.
+#   OPLoRA's double-sided weight-SVD projector is not studied (E1 measured an output-sensitivity
+#     subspace, which says nothing about it).
+# TRACK 2: every bracket cell is in neither the development nor the held-out set; a future 4-task
+# projected_lora run is reserved for the test set (configs/analysis/behavior_predictors.yaml, measures).
+
+bracket_seed: 0
+out: baseline_selection_projected_lora   # under the output root
+family: projected_lora
+arm_prefix: plorab
+
+projection:
+  variant: trained
+  eps: 0.95
+  memory:
+    run: seq_hetero__gpm_projected_adam__seed0
+    file: method/memory_task0.pt
+    sha256: 93b699356e97441d5e207d9654b6360fa361470371b65c2e6ad6be26d97fac45
+  kold:
+    file: baseline_selection_projected/kold_seq_ft_seed0_stage0.pt
+    capture_config: subspace
+
+lora:
+  recipe: {steps: 30000}
+  alpha: 16
+  ranks: [4, 16, 64]
+  lrs: [3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+  object_tolerance: 0.10
+  extension:
+    rank: {low: 1, high: 256}
+    lr: {low: 1.0e-5, high: 3.0e-3}

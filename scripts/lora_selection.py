@@ -15,7 +15,14 @@ Spec §1: no logic in scripts/. See :mod:`flowcl.experiments.lora_selection`; th
                                  --identity-run's stage1.pt under the same TrainConfig; exit 1 if not
     --benchmark                  seconds per T2 step at --bench-ranks (0 = full fine-tuning); writes
                                  --out-root/benchmark.json
-    --write-smoke-method PATH    a scratch LoRA method YAML (--rank, --lr) for smoke runs of the runner
+    --write-smoke-method PATH    a scratch LoRA method YAML (--rank, --lr) for smoke runs of the runner (a
+                                 projection rule's: its variant with GPM's memory rule)
+
+A projection rule (configs/analysis/baseline_selection_{projected_lora,inflora,pca_trained}.yaml) adds:
+
+    --capture-kold               the one-time Task-1 input Gram at seq_ft seed 0's stage 0 (immutable; reused)
+    --energy START END           the layer-output-change diagnostic for a checkpoint pair (--out: JSON)
+    --compare-memory A B         two GPM memory artifacts, basis for basis; exit 1 if they differ
 """
 
 from __future__ import annotations
@@ -40,6 +47,9 @@ def main() -> None:
     action.add_argument("--smoke-arm", nargs=2, type=float, metavar=("R", "LR"))
     action.add_argument("--benchmark", action="store_true")
     action.add_argument("--write-smoke-method", type=Path, metavar="PATH")
+    action.add_argument("--capture-kold", action="store_true")
+    action.add_argument("--energy", nargs=2, type=Path, metavar=("START", "END"))
+    action.add_argument("--compare-memory", nargs=2, type=Path, metavar=("A", "B"))
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--results-root", type=Path, default=None, help="runs and references (default results/)")
     parser.add_argument("--out-root", type=Path, default=None, help="arm outputs (default: the results root)")
@@ -54,6 +64,7 @@ def main() -> None:
     parser.add_argument("--bench-steps", type=int, default=300)
     parser.add_argument("--rank", type=int, default=4, help="--write-smoke-method")
     parser.add_argument("--lr", type=float, default=1e-3, help="--write-smoke-method")
+    parser.add_argument("--out", type=Path, default=None, help="--energy, --compare-memory: write the JSON here")
     args = parser.parse_args()
     cfg = ls.load_config(args.config)
     results = (repo_root() / "results").resolve()
@@ -61,6 +72,8 @@ def main() -> None:
     if scratch and (args.out_root is None or args.out_root.resolve() == results
                     or results in args.out_root.resolve().parents):
         parser.error("--smoke-arm and --benchmark need --out-root outside the repository's results/")
+    if (args.capture_kold or args.energy) and not cfg.get("projection"):
+        parser.error("--capture-kold and --energy need a projection rule")
     if args.smoke_arm is not None and (args.reference_run is None or args.identity_run is None):
         parser.error("--smoke-arm needs --reference-run and --identity-run")
     roots = {"results_root": args.results_root, "out_root": args.out_root, "rule": args.config}
@@ -93,8 +106,25 @@ def main() -> None:
         args.out_root.mkdir(parents=True, exist_ok=True)
         (args.out_root / "benchmark.json").write_text(json.dumps(out, indent=2) + "\n")
         print(json.dumps(out, indent=2))
+    elif args.capture_kold:
+        print(json.dumps(ls.capture_kold(cfg, results_root=args.results_root, device=args.device,
+                                         dataset_dir=args.dataset_dir, allow_dirty=args.allow_dirty), indent=2))
+    elif args.energy is not None or args.compare_memory is not None:
+        if args.energy is not None:
+            root = ls._root(args.results_root)
+            out = ls.reference_output_change(args.energy[0], args.energy[1], ls.kold_path(cfg, root))
+            out = {k: v for k, v in out.items() if k != "per_layer"} | {"per_layer": out["per_layer"]}
+        else:
+            out = ls.compare_memories(*args.compare_memory)
+        text = json.dumps(out, indent=2)
+        if args.out is not None:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text + "\n")
+        print(text)
+        sys.exit(0 if out.get("passed", True) else 1)
     else:
-        print(ls.write_smoke_method(args.write_smoke_method, args.rank, args.lr, float(cfg["lora"]["alpha"])))
+        print(ls.write_smoke_method(args.write_smoke_method, args.rank, args.lr, float(cfg["lora"]["alpha"]),
+                                    projection=cfg.get("projection")))
 
 
 if __name__ == "__main__":

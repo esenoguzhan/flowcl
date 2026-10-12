@@ -1,0 +1,43 @@
+# The matched ablation's learning-rate bracket at rank 16, T1 -> T2 on the development seed (the
+# projected-LoRA comparison). Committed before any arm. Everything not stated here is
+# baseline_selection_projected_lora.yaml's (selection, inputs, K_old, the layer-output-change
+# diagnostic, interpretations, claim scope).
+#
+# THE VARIANT `pca_trained`: A is initialised to exactly `inflora`'s basis (the same design capture,
+# seeds and tolerance; asserted equal in the tests), then A and B are both trained, scale 1. It is
+# matched to `inflora`'s rank-16 arms: the same basis at initialisation, scale, optimiser, data order and
+# memory. Grid: rank 16 x lr {3e-5, 1e-4, 3e-4, 1e-3} (4 arms); a single rank, so the rank axis owes no
+# extension (extension.rank: null); lr extensions as the sibling rules'. Selected separately under the
+# same rule, and compared with `inflora` cell by cell (rank 16, equal lr).
+# INTERPRETATION (pre-written): `pca_trained` against `inflora` measures the effect of unfreezing the
+# down-projection under the same protection constraint. Training A also changes optimisation, scaling and
+# conditioning (twice the parameters at scale 1), so it does not isolate geometric movement alone;
+# f_outside and the principal angles help interpret it. A stricter control (A trained with its row space
+# fixed) waits until the results justify it. A fixed projected-gradient basis is a later control,
+# labelled as adapted, not a reproduction of KeepLoRA or OrthoSkillVLA.
+
+bracket_seed: 0
+out: baseline_selection_pca_trained   # under the output root
+family: pca_trained
+arm_prefix: pcab
+
+projection:
+  variant: pca_trained
+  eps: 0.95
+  memory:
+    run: seq_hetero__gpm_projected_adam__seed0
+    file: method/memory_task0.pt
+    sha256: 93b699356e97441d5e207d9654b6360fa361470371b65c2e6ad6be26d97fac45
+  kold:
+    file: baseline_selection_projected/kold_seq_ft_seed0_stage0.pt
+    capture_config: subspace
+
+lora:
+  recipe: {steps: 30000}
+  alpha: 16          # bound for the shared rule machinery; pca_trained's scale is 1, not alpha / r
+  ranks: [16]
+  lrs: [3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+  object_tolerance: 0.10
+  extension:
+    rank: null
+    lr: {low: 1.0e-5, high: 3.0e-3}

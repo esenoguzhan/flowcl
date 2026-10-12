@@ -493,3 +493,230 @@ def load_manifest(out_dir: Path) -> dict:
     return {"manifest": json.loads((Path(out_dir) / "manifest.json").read_text()),
             "summary": json.loads((Path(out_dir) / "summary.json").read_text()),
             "manifest_sha256": done["manifest_sha256"]}
+
+
+# ---- step 2: the measures ---------------------------------------------------------------------------
+
+
+def _json_sha(payload) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def measures_binding(cfg: dict, rule: Path | None) -> dict:
+    """What every resumable work file and the published bundle are bound to."""
+    return {"rule_sha256": file_sha256(config_path(rule)), "measures_sha256": _json_sha(cfg["measures"]),
+            "manifest_sha256": cfg["measures"]["manifest_sha256"], "git_sha": git_sha()}
+
+
+def _reserved_measures(root: Path, cfg: dict) -> list[str]:
+    pattern = re.compile(cfg["measures"]["reserved_test_runs"])
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and pattern.match(p.name))
+
+
+def expected_probe_losses(manifest: dict, root: Path, low_update_cfg: dict) -> dict[str, list[dict]]:
+    """The recorded probe losses each cell must reproduce (instrument checks): the forgetting
+    diagnostics' loss matrices (seq_ft, GPM, adaptive GPM; every registered seed) and every row's
+    recorded probe loss, matched to cells through their aliases."""
+    from flowcl.data.curriculum import load_curriculum
+
+    runner_values: dict[tuple[str, int, str], tuple[float, str]] = {}
+    for seed, s in low_update_cfg["seeds"].items():
+        diags = {k: json.loads((root / p).read_text()) for k, p in s["diagnostics"].items()}
+        ref_cfg = _yaml(root / s["reference_run"] / "config.yaml")
+        keys = [st.task_key for st in load_curriculum(ref_cfg["curriculum"]).stages]
+        mats = {s["reference_run"]: diags["gpm"]["loss_matrix"]["reference"],
+                s["gpm_run"]: diags["gpm"]["loss_matrix"]["method"],
+                s["adaptive_gpm_run"]: diags["adaptive_gpm"]["loss_matrix"]["method"]}
+        for run, L in mats.items():
+            for i, row in enumerate(L):
+                for j, value in enumerate(row[: i + 1]):
+                    runner_values[(run, i, keys[j])] = (float(value), f"diagnostics seed {seed}")
+    out: dict[str, list[dict]] = {}
+    for cell in manifest["cells"]:
+        for alias in cell["aliases"]:
+            hit = None
+            if alias["kind"] == "runner":
+                hit = runner_values.get((alias["run"], alias["stage"], cell["task_key"]))
+            elif alias["kind"] in ("row", "legacy_row"):
+                row = json.loads((root / alias["run"] / "row.json").read_text())
+                if isinstance(row.get("cells"), dict):
+                    for c in row["cells"].values():
+                        if c.get("task_key") == cell["task_key"] and c.get("probe_loss") is not None:
+                            hit = (float(c["probe_loss"]), f"row {alias['run']}")
+                elif isinstance(row.get("probe_loss"), dict):
+                    rcfg = _yaml(root / alias["run"] / "config.yaml")
+                    role = {rcfg.get("retained_task_key"): "retained", rcfg.get("task_key"): "new"}.get(cell["task_key"])
+                    if role and row["probe_loss"].get(role) is not None:
+                        hit = (float(row["probe_loss"][role]), f"legacy row {alias['run']}")
+            if hit is not None:
+                out.setdefault(cell["id"], []).append({"expected": hit[0], "source": hit[1]})
+    return out
+
+
+def instrument_checks(values: dict[str, float], expected: dict[str, list[dict]], rel_tol: float) -> dict:
+    """Every recorded probe loss of a measured cell, reproduced by its M0 to ``rel_tol``."""
+    checked, failures, worst = 0, [], 0.0
+    for cell_id, items in expected.items():
+        if cell_id not in values:
+            continue
+        for item in items:
+            rel = abs(values[cell_id] - item["expected"]) / abs(item["expected"])
+            worst = max(worst, rel)
+            checked += 1
+            if rel > rel_tol:
+                failures.append({"cell": cell_id, **item, "m0": values[cell_id], "rel": rel})
+    return {"checked": checked, "max_rel": worst, "failures": failures, "passed": not failures}
+
+
+def suite_green(path: Path | None) -> tuple[bool, str]:
+    """The full CPU suite's result file must report success at this commit."""
+    if path is None or not Path(path).is_file():
+        return False, f"no suite result file at {path}"
+    text = Path(path).read_text()
+    sha = git_sha()
+    if "exit 0" not in text or sha[:7] not in text or sha.endswith("-dirty"):
+        return False, f"the suite result at {path} does not report success at {sha}"
+    return True, "ok"
+
+
+def run_measures(cfg: dict | None = None, *, results_root: Path | None = None, rule: Path | None = None,
+                 out_root: Path | None = None, limit: int | None = None, device: str = "cuda",
+                 dataset_dir: Path | None = None, low_update_cfg: dict | None = None,
+                 suite_result: Path | None = None) -> dict:
+    """Measure every manifest cell (resumably), run the instrument checks, and publish (``limit`` = a
+    smoke over the first cells into ``out_root``; nothing published)."""
+    from collections import OrderedDict
+
+    from flowcl.analysis.behavior import cell_measures
+    from flowcl.data.tasks import TaskRef
+    from flowcl.experiments.low_update import load_low_update_config
+    from flowcl.train.checkpoint import load_checkpoint
+    from flowcl.train.pipeline import build_dataset
+
+    cfg = cfg or load_config(rule)
+    m = cfg["measures"]
+    root = Path(results_root) if results_root else repo_root() / "results"
+    published = load_manifest(root / cfg["manifest"]["out"])
+    if published["manifest_sha256"] != m["manifest_sha256"]:
+        raise ValueError(f"the published manifest is {published['manifest_sha256']}, the rule names "
+                         f"{m['manifest_sha256']}")
+    reserved = _reserved_measures(root, cfg)
+    if reserved:
+        raise RuntimeError(f"reserved test runs exist before the freeze: {reserved}; the measures refuse")
+    manifest = published["manifest"]
+    binding = measures_binding(cfg, rule)
+    smoke = limit is not None
+    base = Path(out_root) if smoke else root
+    work = base / m["work"]
+    work.mkdir(parents=True, exist_ok=True)
+    cells = sorted(manifest["cells"], key=lambda c: (c["root"], c["aliases"][0]["checkpoint"], c["task_key"]))
+    if smoke:
+        cells = cells[: int(limit)]
+    groups: OrderedDict[str, list[dict]] = OrderedDict()
+    for c in cells:
+        groups.setdefault(c["aliases"][0]["checkpoint"], []).append(c)
+    datasets: OrderedDict = OrderedDict()
+    started = time.perf_counter()
+    computed = 0
+    for ckpt_rel, group in groups.items():
+        path = root / ckpt_rel
+        recorded = group[0]["aliases"][0]["files"][ckpt_rel]
+        pending = []
+        for c in group:
+            wf = work / f"{_json_sha(c['id'])[:24]}.json"
+            if wf.is_file():
+                done = json.loads(wf.read_text())
+                if done.get("binding") == binding and done.get("checkpoint_sha256") == recorded:
+                    continue
+            pending.append((c, wf))
+        if not pending:
+            continue
+        if file_sha256(path) != recorded:
+            raise ValueError(f"{ckpt_rel} no longer has the manifest's SHA-256")
+        loaded = load_checkpoint(path, device=device)
+        policy, spec, stats = loaded.policy, loaded.spec, loaded.stats
+        for c, wf in pending:
+            key = (stats.fingerprint(), c["task_key"])
+            if key not in datasets:
+                datasets[key] = build_dataset([TaskRef.from_key(c["task_key"])], spec, stats,
+                                              n_demos=int(m["n_demos"]), dataset_dir=dataset_dir)
+                while len(datasets) > int(m["dataset_cache"]):
+                    datasets.popitem(last=False)
+            datasets.move_to_end(key)
+            t0 = time.perf_counter()
+            result = cell_measures(policy, datasets[key], c["task_key"], m, device)
+            payload = {"binding": binding, "cell": c["id"], "checkpoint": ckpt_rel, "checkpoint_sha256": recorded,
+                       "task_key": c["task_key"], "seconds": time.perf_counter() - t0, "measures": result}
+            tmp = wf.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload) + "\n")
+            os.replace(tmp, wf)
+            computed += 1
+        del loaded, policy
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    results = {}
+    for c in cells:
+        payload = json.loads((work / f"{_json_sha(c['id'])[:24]}.json").read_text())
+        if payload["binding"] != binding:
+            raise RuntimeError(f"{c['id']}: stale work file")
+        results[c["id"]] = payload
+    expected = expected_probe_losses(manifest, root, low_update_cfg or load_low_update_config())
+    m0 = {cid: r["measures"]["elements"]["values"]["m0"] for cid, r in results.items()}
+    checks = instrument_checks(m0, expected, float(m["instrument"]["rel_tol"]))
+    summary = summarize_measures(results, manifest, checks, time.perf_counter() - started, computed)
+    report = {"binding": binding, "summary": summary, "instrument": checks}
+    if smoke:
+        (base / "measures_smoke.json").write_text(json.dumps(report, indent=2) + "\n")
+        if not checks["passed"] or checks["checked"] == 0:
+            raise RuntimeError(f"the smoke's instrument checks did not pass ({checks['checked']} checked, "
+                               f"{len(checks['failures'])} failures; see measures_smoke.json)")
+        return report
+    if not checks["passed"]:
+        (work / "instrument_report.json").write_text(json.dumps(checks, indent=2) + "\n")
+        raise RuntimeError(f"instrument checks failed for {len(checks['failures'])} recorded values; nothing "
+                           "is published (see instrument_report.json)")
+    ok, why = suite_green(suite_result)
+    if not ok:
+        raise RuntimeError(f"publication gated on the CPU suite: {why}")
+    bundle = {"binding": binding, "instrument": checks, "cells": results}
+    return publish_bundle(root / m["out"], bundle, summary)
+
+
+def summarize_measures(results: dict, manifest: dict, checks: dict, seconds: float, computed: int) -> dict:
+    by_suite: dict[str, dict[str, list]] = {}
+    suite_of = {c["id"]: c["suite"] for c in manifest["cells"]}
+    for cid, r in results.items():
+        vals = {**r["measures"]["elements"]["values"], **r["measures"]["m3"]["values"]}
+        for k, v in vals.items():
+            if v is not None:
+                by_suite.setdefault(suite_of[cid], {}).setdefault(k, []).append(v)
+    medians = {s: {k: sorted(v)[len(v) // 2] for k, v in d.items()} for s, d in by_suite.items()}
+    return {"cells": len(results), "computed_this_run": computed, "seconds": seconds,
+            "seconds_per_cell_mean": (sum(r["seconds"] for r in results.values()) / len(results)) if results else None,
+            "median_by_suite": medians, "instrument": {k: checks[k] for k in ("checked", "max_rel", "passed")}}
+
+
+def publish_bundle(out_dir: Path, bundle: dict, summary: dict) -> dict:
+    """``measures.json`` and ``summary.json`` together by one rename; an existing bundle is verified and
+    returned, never rewritten."""
+    if out_dir.exists():
+        return load_bundle(out_dir)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    attempt = out_dir.parent / f".measures_attempt_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+    attempt.mkdir()
+    (attempt / "measures.json").write_text(json.dumps(bundle) + "\n")
+    (attempt / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (attempt / "done.json").write_text(json.dumps({
+        "measures_sha256": file_sha256(attempt / "measures.json"),
+        "summary_sha256": file_sha256(attempt / "summary.json")}, indent=2) + "\n")
+    os.rename(attempt, out_dir)
+    return load_bundle(out_dir)
+
+
+def load_bundle(out_dir: Path) -> dict:
+    done = json.loads((Path(out_dir) / "done.json").read_text())
+    for name in ("measures", "summary"):
+        if file_sha256(Path(out_dir) / f"{name}.json") != done[f"{name}_sha256"]:
+            raise RuntimeError(f"{out_dir}/{name}.json does not match its done-marker")
+    return {"summary": json.loads((Path(out_dir) / "summary.json").read_text()),
+            "measures_sha256": done["measures_sha256"]}
