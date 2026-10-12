@@ -68,6 +68,7 @@ class ProjectedLoRA(GPM):
         self.timings: dict[str, dict] = {}
         self._adapted: list[str] = []
         self._q0: dict[str, torch.Tensor] = {}
+        self._grad_flags: dict[str, bool] = {}
         self._started = 0.0
 
     @property
@@ -107,6 +108,7 @@ class ProjectedLoRA(GPM):
         t0 = time.perf_counter()   # before freezing: the capture's reachability probe needs gradients
         grams = self._design_grams(policy, task_idx, context) if self.variant != "trained" else None
         design_seconds = time.perf_counter() - t0
+        self._grad_flags = {n: p.requires_grad for n, p in policy.named_parameters()}
         for param in policy.parameters():
             param.requires_grad_(False)
             param.grad = None
@@ -209,6 +211,11 @@ class ProjectedLoRA(GPM):
                 "train_seconds": time.perf_counter() - self._started,
                 "peak_gpu_bytes": int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else None})
             self._adapted, self._q0 = [], {}
+            # the base's trainable flags as they were before the task, so GPM's memory update (its
+            # capture's reachability probe needs gradients) sees what a GPM run would
+            for name, param in policy.named_parameters():
+                param.requires_grad_(self._grad_flags[name])
+            self._grad_flags = {}
             if not ok:
                 raise RuntimeError(f"{self.display_name}: the protection constraint exceeds its tolerance at task "
                                    f"{task_idx} (see the history's merge record)")

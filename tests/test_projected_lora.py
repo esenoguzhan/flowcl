@@ -470,3 +470,19 @@ def test_tonight_queue_chains_and_gates(tmp_path):
                 [*args, "--suite-wait-min", "x"]):
         rc, _, _ = _queue(tmp_path / "bad", "queue_tonight.sh", bad)
         assert rc == 2, bad
+
+
+def test_memory_update_after_an_adapted_task_restores_the_base_flags(spec, capture_yaml):
+    """T1 full fine-tuning, then T2 adapted with update_memory: the task-end capture runs with the base's
+    trainable flags restored, and the memory grows by T2's directions."""
+    keys = ["toy/one", "toy/two"]
+    data = data_for(spec, keys)
+    for variant in ("trained", "inflora"):
+        policy = fresh_policy(spec)
+        flags = {n: p.requires_grad for n, p in policy.named_parameters()}
+        method = ProjectedLoRA(variant=variant, rank=2, lr=1e-3, capture_config=capture_yaml)
+        for t in (0, 1):
+            train_one_task(policy, data[keys[t]], method_stage_config(small_cfg(steps=2), method, t), method=method,
+                           task_idx=t, generator=torch.Generator().manual_seed(t), context=ctx(data, keys[t]))
+        assert {n: p.requires_grad for n, p in policy.named_parameters()} == flags
+        assert sorted(method.memory_history) == [0, 1] and method.history["1"]["merge"]["constraint_ok"]
