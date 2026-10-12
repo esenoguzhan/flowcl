@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Mon 12 Oct 2026, week W2 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Tue 13 Oct 2026, week W2 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -29,8 +29,18 @@ changes.
   - At lr 1e-5, Object falls below the floor at every rank. Retention falls steeply with lr.
 - **Order decided on Sun 11 Oct:** the 4-task replay, EWC and LoRA runs are Track 2's held-out
   test, so they run after Track 2's freeze.
-- **Track 2, step 1 (the development manifest) is done** (`runs/2026-10-12_track2_manifest.md`).
-  **Next: the measures M0–M3** on those cells; the freeze's hard deadline is Fri 30 Oct.
+- **Track 2, steps 1 and 2 are done:** the development manifest (`runs/2026-10-12_track2_manifest.md`)
+  and the measures M0–M3 on its 449 cells (`runs/2026-10-13_track2_measures.md`; 281 recorded probe
+  losses reproduced within 2.1e-5). **Next: step 3's rule** (validation and predictor selection),
+  written before any fitting; the freeze's hard deadline is Fri 30 Oct.
+- **The projected-LoRA comparison is running** (started Tue 13 Oct 01:52, tmux `tonight`). We claim
+  no new projection mechanism: a controlled comparison of fixed against trainable low-rank adaptation
+  under GPM's protection, T1 -> T2 on seed 0.
+  - Three rules, committed before any arm: `projected_lora` (trained A), an InfLoRA adaptation (fixed
+    A), and the `pca_trained` ablation.
+  - All three smokes passed (runner identity, memory equal to GPM's, resume, bracket path).
+  - About 70 min per arm, 28 arms plus up to 6 extensions; expected done around Wed midday.
+  - Record to come: `runs/2026-10-1x_projected_lora_comparison.md`.
 
 ## 1. Plan progress
 
@@ -46,7 +56,7 @@ changes.
 | **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). **LoRA** (`75fb0e1`) **v1 bracket:** rank {4,16,64} × lr {1e-4,3e-4,1e-3} plus (1, 1e-4) and (4, 3e-5); Spatial falls with lr at every rank; rank 4, lr 3e-5 at the boundary. **v2** (`620727b`, post hoc): lr 1e-5 and 3e-5 at ranks 4–64; at 1e-5 Object < floor at every rank. **Selected rank 16, lr 3e-5:** Spatial 0.52, Object 0.70; the top eligible arms are within noise (0.52 / 0.48 / 0.46 / 0.44). 4-task replay/EWC/LoRA runs wait for Track 2's freeze; ConSFT not started | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md`, `runs/2026-10-11_lora_bracket.md`, `runs/2026-10-12_lora_bracket_v2.md` |
 | **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
-| **D** Track 2 (offline predictors) | **step 1 done: the development manifest** (`2ec4c03`, merged): 449 cells (checkpoint × trained task, 50 rollouts) under 24 roots; seed 0's shared stage 0 holds 214; 63 bitwise duplicates collapsed (one disagrees by 2/50 rollouts); 114 depth-1 / 147 first-divergence branches (branch definition changed in `thesis_plan.md` §D, the literal one kept as sensitivity); held-out key set published. **Next: the measures M0–M3**, then validation and the freeze | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct**; `runs/2026-10-12_track2_manifest.md` |
+| **D** Track 2 (offline predictors) | **step 2 done: the measures M0–M3** (`d213ddb`/`99e8083`): 449 cells, bundle `5be958cc…`, instrument checks 281/281 within 2.1e-5; descriptive only (`runs/2026-10-13_track2_measures.md`). **Step 1 done: the development manifest** (`2ec4c03`, merged): 449 cells (checkpoint × trained task, 50 rollouts) under 24 roots; seed 0's shared stage 0 holds 214; 63 bitwise duplicates collapsed (one disagrees by 2/50 rollouts); 114 depth-1 / 147 first-divergence branches (branch definition changed in `thesis_plan.md` §D, the literal one kept as sensitivity); held-out key set published. **Next: step 3's rule**, then validation and the freeze | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct**; `runs/2026-10-12_track2_manifest.md` |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
 | **E2** pilots | not started; angle A is off | D2 (end of W5) is angle B (only if Track 2 finds critical outputs) or the minimum thesis |
 | **F0** hardware readiness | **not started on AgileX**. The Dobot try-out was cancelled before any robot time | branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
