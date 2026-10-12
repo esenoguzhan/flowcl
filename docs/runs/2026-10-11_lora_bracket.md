@@ -1,6 +1,11 @@
 # LoRA rank × lr bracket (seed 0, T1 → T2): merged LoRA keeps Spatial where EWC kept nothing. The rule selects rank 4, lr 3e-5 (an lr-axis extension, `optimum_at_boundary`): Spatial 0.48, Object 0.72. Retention falls steeply with the adapter learning rate at every rank
 
 **Status: the pre-registered bracket, complete.**
+
+**Follow-up:** `runs/2026-10-12_lora_bracket_v2.md` (post hoc; the lower-lr band, lr 1e-5 and 3e-5 at
+ranks 4–64, this bracket's arms imported). It selects rank 16, lr 3e-5 (Spatial 0.52, Object 0.70)
+inside its grid. At lr 1e-5, Object falls below the floor at every rank. Its selection replaces
+this one for the 4-task LoRA runs.
 - The queue ended `QUEUE DONE ok`, and the verification passed: inputs, checkpoint fingerprints, and
   the selection recomputed from the validated rows.
 - **The registered selection is rank 4, lr 3e-5 (alpha 16), flagged `edge_extension`,
