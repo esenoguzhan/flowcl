@@ -121,3 +121,72 @@ measures:
   out: track2/measures
   work: track2/.measures_work
   dataset_cache: 4
+
+# STEP 3, THE SELECTION (behavior_predictors.run_select). Committed before any fitting: no relation
+# between a measure and rollout success had been computed or inspected when this was written (the
+# step-2 record is distributions only). Publishing its bundle is THE FREEZE.
+#
+# INPUTS: the published manifest and the published measures bundle, each bound by SHA-256 below; a cell's
+# success = its kept alias's successes (n = 50).
+# CANDIDATES: the deployable measures in `candidates`; the reference is `reference` (M0); the `oracle`
+# measures (best-of-K: a deployed policy draws once) are reported and NEVER selectable. Transform:
+# x = log(value) (all values positive).
+# CLAIM (a), WITHIN-TASK RANKING, score C_a: Harrell's concordance over within-task pairs (same task_key)
+# whose success counts differ by at least ranking.min_count_difference; concordant when the cell with the
+# lower measure has the higher success; ties in the measure count 1/2. PAIR-WEIGHTED (each pair counts
+# once, so larger tasks weigh roughly quadratically more); per-task C_a and a task-weighted C_a are
+# reported. Cross-task pairs never enter.
+# CLAIM (b), CROSS-TASK CALIBRATION, score K_b: one pooled binomial logistic curve success ~ a + b x
+# (50 trials per cell; Newton's method, ridge calibration.ridge on (a, b), at most calibration.max_iter
+# iterations to calibration.tol); LEAVE-ONE-ROOT-OUT cross-fitting (each root's cells are predicted by a
+# curve fitted on the other roots); K_b = the cell-weighted mean over tasks with >= calibration.min_task_cells
+# cells of |mean over the task's cells of (observed rate - predicted)|: the task-level calibration-in-the-
+# large at equal M; lower is better. Secondary, descriptive: the cross-fitted Brier score ("cross-task
+# probability prediction") and the in-sample deviance gained by per-task intercepts.
+# UNCERTAINTY: the two-level cluster bootstrap (thesis_plan §D): roots with replacement, then branches
+# (bootstrap.branch) with replacement within each drawn root; cells stay with their branch; bootstrap.n
+# resamples, bootstrap.seed, percentile intervals at bootstrap.confidence. Every candidate and every
+# paired difference from M0 uses the same resamples. For K_b and Brier the cross-fitted predictions are
+# computed once on the original data and resampled: these intervals are CONDITIONAL ON THE CROSS-FITTED
+# PREDICTIONS (they omit refitting variation). A resample in which a score is undefined (no comparable
+# pair; no task with enough cells) is dropped for every candidate alike, and counted.
+# SELECTION (pure): per claim separately, the candidate with the best development point improvement over
+# M0 (C_a(M) - C_a(M0); K_b(M0) - K_b(M)); ties by the order of `candidates`; a candidate whose fit fails
+# to converge (any fold or the full fit) is undefined and not selectable (recorded). It is CARRIED to the
+# test set only if that improvement is > 0; otherwise nothing is carried and that claim is "not shown"
+# in advance. At most one measure per claim. For (b), the carried measure's and M0's logistic
+# coefficients fitted on ALL development cells are frozen in the bundle.
+# SENSITIVITIES (reported; never change the selection): root-weighted scores (each root's within-root
+# score, averaged over roots where defined); without seed 0's stage-0 root (sensitivities.dominant_root,
+# 214 cells); first-divergence branches in the bootstrap; pairs with |delta count| >=
+# sensitivities.strict_count_difference; without bracket cells; without the all-0 and all-50 cells.
+# THE TEST SET (stated now; applied at step 4): cells of the reserved 4-task runs (manifest
+# reserved_test_runs and measures reserved_test_runs: replay, ewc, lora, consft, projected_lora, inflora;
+# seeds 0-2), stages >= 1, trained tasks, 50 rollouts; a cell whose (fingerprint, task) is in the
+# published development_keys is excluded. The current manifest builder and measure runner refuse reserved
+# runs by design; step 4 adds a test mode that builds the test manifest from the reserved runs only, under
+# step 1's rule, and measures it under step 2's section. Test predictions use the FROZEN development
+# coefficients; development cells are never refitted.
+# THE TEST CLAIM (thesis_plan §D): "M beats M0" on (a) or (b) requires, on the test cells, an improvement
+# whose two-level cluster bootstrap interval excludes 0 AND the same sign within every root (seed);
+# otherwise "not shown". M0's own test C_a and K_b are reported descriptively. Neither the 449 cells nor
+# the 24 roots are independent training replications.
+# PUBLICATION: results/<out>/ (selection.json, summary.json, done.json) by one rename, gated on the full
+# CPU suite's result file reporting success at this commit; an existing bundle is verified, never
+# rewritten; verify recomputes it bitwise from the inputs.
+
+selection:
+  manifest_sha256: 21c91ebc71560001abad159098773a51123bdbd3bcef1088a5dd1c2195d9caf5
+  measures_sha256: 5be958ccb129f0e0f06dfb36d89392a16dcf7ac299ce9ac7ec635009005d6915
+  candidates: [m0, m1_bin0, m1_bin1, m1_bin2, m1_bin3, m2_position, m2_rotation, m2_gripper,
+               m2_executed, m2_rest, m3_mean, m3_mean_executed]
+  reference: m0
+  oracle: [m3_best, m3_best_executed]
+  ranking: {min_count_difference: 1}
+  calibration: {min_task_cells: 5, ridge: 1.0e-6, max_iter: 100, tol: 1.0e-10}
+  bootstrap: {n: 2000, seed: 20261016, confidence: 0.95, branch: branch_depth1}
+  sensitivities:
+    dominant_root: 670dd372d6466e5c73393eda54e3f4f99e231b2bc59b85b282038418abbe90e0
+    strict_count_difference: 5
+    branch_alternative: branch_first_divergence
+  out: track2/selection
