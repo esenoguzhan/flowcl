@@ -29,10 +29,14 @@ changes.
   - At lr 1e-5, Object falls below the floor at every rank. Retention falls steeply with lr.
 - **Order decided on Sun 11 Oct:** the 4-task replay, EWC and LoRA runs are Track 2's held-out
   test, so they run after Track 2's freeze.
-- **Track 2, steps 1 and 2 are done:** the development manifest (`runs/2026-10-12_track2_manifest.md`)
-  and the measures M0–M3 on its 449 cells (`runs/2026-10-13_track2_measures.md`; 281 recorded probe
-  losses reproduced within 2.1e-5). **Next: step 3's rule** (validation and predictor selection),
-  written before any fitting; the freeze's hard deadline is Fri 30 Oct.
+- **Track 2 is FROZEN (Thu 15 Oct 21:59; `runs/2026-10-15_track2_selection.md`).** Steps 1–3 are done:
+  the manifest (449 cells), the measures M0–M3, and the selection (rule `1a6b6de`, written before any
+  fitting; bundle `b397bc0a…`, verified).
+  - M0 already ranks within tasks at C_a 0.82 and is miscalibrated across tasks by 8 pp.
+  - Carried to the held-out test: `m2_position` (a: +0.008) and `m3_mean` (b: +0.016). Both
+    development intervals include 0, and `m3_mean` fails root weighting, so "not shown" is the likely
+    held-out result.
+  - **Next:** the 4-task baseline runs (the test set) can be queued; then step 4, the held-out test.
 - **The projected-LoRA comparison is done** (Wed 14 Oct 07:44; `runs/2026-10-14_projected_lora_comparison.md`).
   No new mechanism is claimed. T1 -> T2 on seed 0, low-rank adapters confined to the complement of
   GPM's Task-1 memory:
