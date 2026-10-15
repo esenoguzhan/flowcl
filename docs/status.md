@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Tue 13 Oct 2026, week W2 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Thu 15 Oct 2026, week W2 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -33,14 +33,16 @@ changes.
   and the measures M0–M3 on its 449 cells (`runs/2026-10-13_track2_measures.md`; 281 recorded probe
   losses reproduced within 2.1e-5). **Next: step 3's rule** (validation and predictor selection),
   written before any fitting; the freeze's hard deadline is Fri 30 Oct.
-- **The projected-LoRA comparison is running** (started Tue 13 Oct 01:52, tmux `tonight`). We claim
-  no new projection mechanism: a controlled comparison of fixed against trainable low-rank adaptation
-  under GPM's protection, T1 -> T2 on seed 0.
-  - Three rules, committed before any arm: `projected_lora` (trained A), an InfLoRA adaptation (fixed
-    A), and the `pca_trained` ablation.
-  - All three smokes passed (runner identity, memory equal to GPM's, resume, bracket path).
-  - About 70 min per arm, 28 arms plus up to 6 extensions; expected done around Wed midday.
-  - Record to come: `runs/2026-10-1x_projected_lora_comparison.md`.
+- **The projected-LoRA comparison is done** (Wed 14 Oct 07:44; `runs/2026-10-14_projected_lora_comparison.md`).
+  No new mechanism is claimed. T1 -> T2 on seed 0, low-rank adapters confined to the complement of
+  GPM's Task-1 memory:
+  - all three families keep Spatial at 0.90–0.98 (plain LoRA: 0.52);
+  - selected: `inflora` (16, 1e-4) 0.90 / 0.82 with 1.0M trainable parameters and about 35% less peak
+    GPU memory; `pca_trained` (16, 1e-4) 0.98 / 0.82; `projected_lora` (64, 3e-4) 0.94 / 0.70;
+    `gpm_projected_adam` 0.94 / 0.78;
+  - unfreezing InfLoRA's A helped at every lr (8 of 8 comparisons equal or higher); every variant is
+    10–25% slower per step.
+  - The 4-task runs are reserved for Track 2's test set, so they wait for the freeze.
 
 ## 1. Plan progress
 
