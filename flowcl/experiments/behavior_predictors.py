@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import torch
 from omegaconf import OmegaConf
 
@@ -720,3 +721,253 @@ def load_bundle(out_dir: Path) -> dict:
             raise RuntimeError(f"{out_dir}/{name}.json does not match its done-marker")
     return {"summary": json.loads((Path(out_dir) / "summary.json").read_text()),
             "measures_sha256": done["measures_sha256"]}
+
+
+# ---- step 3: the selection (the freeze) --------------------------------------------------------------
+
+
+def _finite(value):
+    if value is None:
+        return None
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
+def _ci(samples, confidence):
+    from flowcl.analysis.predictors import interval
+
+    out = interval(samples, confidence)
+    return None if out is None else [out[0], out[1]]
+
+
+def selection_inputs(cfg: dict, root: Path) -> dict:
+    """The development cells and every candidate's log values, from the published manifest and measures
+    bundle, each checked against the SHA-256 the rule names."""
+    from flowcl.analysis.predictors import Cells, log_values
+
+    sel = cfg["selection"]
+    published = load_manifest(root / cfg["manifest"]["out"])
+    if published["manifest_sha256"] != sel["manifest_sha256"]:
+        raise ValueError(f"the published manifest is {published['manifest_sha256']}, the rule names "
+                         f"{sel['manifest_sha256']}")
+    measures_dir = root / cfg["measures"]["out"]
+    load_bundle(measures_dir)   # verifies the done-marker
+    measures_sha = json.loads((measures_dir / "done.json").read_text())["measures_sha256"]
+    if measures_sha != sel["measures_sha256"]:
+        raise ValueError(f"the published measures are {measures_sha}, the rule names {sel['measures_sha256']}")
+    measures = json.loads((measures_dir / "measures.json").read_text())["cells"]
+    cells = sorted(published["manifest"]["cells"], key=lambda c: c["id"])
+    if sorted(measures) != [c["id"] for c in cells]:
+        raise ValueError("the measures bundle does not cover exactly the manifest's cells")
+    names = list(sel["candidates"]) + list(sel["oracle"])
+    if sel["reference"] not in sel["candidates"]:
+        raise ValueError("the reference must be a candidate")
+    values = {}
+    for name in names:
+        raw = []
+        for c in cells:
+            m = measures[c["id"]]["measures"]
+            v = {**m["elements"]["values"], **m["m3"]["values"]}.get(name)
+            if v is None:
+                raise ValueError(f"{c['id']}: measure {name} is undefined")
+            raw.append(v)
+        values[name] = log_values(raw)
+    obj = lambda key: np.asarray([c[key] for c in cells], dtype=object)   # noqa: E731
+    dev = Cells(tuple(c["id"] for c in cells), obj("task_key"), obj("root"), obj(sel["bootstrap"]["branch"]),
+                np.asarray([sum(bool(s) for s in c["successes"]) for c in cells], dtype=np.float64),
+                np.asarray([c["n"] for c in cells], dtype=np.float64))
+    return {"cells": dev, "values": values, "raw": cells, "manifest_sha256": published["manifest_sha256"],
+            "measures_sha256": measures_sha}
+
+
+def analyse(cells, values: dict, sel: dict, *, min_count_difference: int | None = None, weights=None) -> dict:
+    """Every candidate's C_a and K_b (with Brier and the task-intercept deviance gain), their two-level
+    cluster bootstrap intervals and the paired improvements over the reference, on ``cells``."""
+    from flowcl.analysis import predictors as pr
+
+    cal, boot = sel["calibration"], sel["bootstrap"]
+    min_diff = int(sel["ranking"]["min_count_difference"] if min_count_difference is None else min_count_difference)
+    pairs = pr.ranking_pairs(cells, min_diff)
+    if weights is None:
+        weights = pr.bootstrap_weights(cells, int(boot["n"]), int(boot["seed"]))
+    pw = pr.pair_weights(weights, pairs)
+    eligible = pr.eligible_tasks(cells, int(cal["min_task_cells"]))
+    conf = float(boot["confidence"])
+    ref = sel["reference"]
+    per, draws = {}, {}
+    for name, x in values.items():
+        conc = pr.pair_concordance(x, pairs)
+        c_a, c_boot = pr.concordance(conc), pr.concordance(conc, pw)
+        pred = pr.cross_fit(x, cells, float(cal["ridge"]), int(cal["max_iter"]), float(cal["tol"]))
+        rec = {"c_a": _finite(c_a), "c_a_ci": _ci(c_boot, conf),
+               "c_a_task_weighted": _finite(pr.task_weighted_concordance(conc, pairs, cells)),
+               "c_a_per_task": pr.per_task_concordance(conc, pairs, cells), "converged": pred is not None}
+        k_boot = None
+        if pred is not None:
+            resid = cells.rate - pred
+            k_boot = pr.calibration_gap(resid, cells, eligible, weights)
+            gain = pr.task_intercept_deviance_gain(x, cells, float(cal["ridge"]), int(cal["max_iter"]), float(cal["tol"]))
+            rec.update({"k_b": _finite(pr.calibration_gap(resid, cells, eligible)), "k_b_ci": _ci(k_boot, conf),
+                        "brier": _finite(pr.brier(resid)), "brier_ci": _ci(pr.brier(resid, weights), conf),
+                        "task_intercept_deviance_gain": _finite(gain)})
+        else:
+            rec.update({"k_b": None, "k_b_ci": None, "brier": None, "brier_ci": None,
+                        "task_intercept_deviance_gain": None})
+        per[name], draws[name] = rec, (c_boot, k_boot)
+    rc, rk = draws[ref]
+    for name, rec in per.items():
+        cb, kb = draws[name]
+        rec["improvement_a"] = None if rec["c_a"] is None or per[ref]["c_a"] is None else rec["c_a"] - per[ref]["c_a"]
+        rec["improvement_a_ci"] = _ci(cb - rc, conf)
+        both = rec["k_b"] is not None and per[ref]["k_b"] is not None
+        rec["improvement_b"] = per[ref]["k_b"] - rec["k_b"] if both else None
+        rec["improvement_b_ci"] = _ci(rk - kb, conf) if both else None
+    return {"n_cells": len(cells.ids), "n_pairs": int(len(pairs[0])), "n_roots": len(set(cells.root)),
+            "n_branches": len(set(zip(cells.root, cells.branch))),
+            "eligible_tasks": sorted(set(cells.task[eligible])),
+            "dropped_resamples": {"a": int(np.sum(~np.isfinite(rc))),
+                                  "b": int(np.sum(~np.isfinite(rk))) if rk is not None else None},
+            "candidates": per}
+
+
+def root_weighted(cells, values: dict, sel: dict) -> dict:
+    """Sensitivity: each root's within-root C_a and K_b (from the main cross-fitted predictions), averaged
+    over the roots where defined (point estimates)."""
+    from flowcl.analysis import predictors as pr
+
+    cal = sel["calibration"]
+    eligible = pr.eligible_tasks(cells, int(cal["min_task_cells"]))
+    out = {}
+    for name, x in values.items():
+        pred = pr.cross_fit(x, cells, float(cal["ridge"]), int(cal["max_iter"]), float(cal["tol"]))
+        cs, ks = [], []
+        for r in sorted(set(cells.root)):
+            m = cells.root == r
+            sub = cells.subset(m)
+            pairs = pr.ranking_pairs(sub, int(sel["ranking"]["min_count_difference"]))
+            if len(pairs[0]):
+                cs.append(pr.concordance(pr.pair_concordance(x[m], pairs)))
+            if pred is not None and eligible[m].any():
+                ks.append(pr.calibration_gap((cells.rate - pred)[m], sub, eligible[m]))
+        out[name] = {"c_a": _finite(np.mean(cs)) if cs else None, "roots_a": len(cs),
+                     "k_b": _finite(np.mean(ks)) if ks else None, "roots_b": len(ks)}
+    return out
+
+
+def selection_report(cfg: dict, root: Path, rule: Path | None = None) -> dict:
+    """The full step-3 result (deterministic given the inputs and the rule): the analysis, the selection
+    per claim, the frozen coefficients and the sensitivities."""
+    from flowcl.analysis import predictors as pr
+
+    sel = cfg["selection"]
+    inp = selection_inputs(cfg, root)
+    cells, values = inp["cells"], inp["values"]
+    main = analyse(cells, values, sel)
+    order, ref, oracle = list(sel["candidates"]), sel["reference"], set(sel["oracle"])
+    choice = {
+        "a": pr.select({n: main["candidates"][n]["improvement_a"] for n in order}, order, ref, oracle),
+        "b": pr.select({n: (main["candidates"][n]["improvement_b"] if main["candidates"][n]["converged"] else None)
+                        for n in order}, order, ref, oracle),
+    }
+    cal = sel["calibration"]
+    frozen = {}
+    for name in sorted({ref} | ({choice["b"]["carried"]} if choice["b"]["carried"] else set())):
+        beta = pr.fit_logistic(pr.design(values[name]), cells.k, cells.n, float(cal["ridge"]), int(cal["max_iter"]),
+                               float(cal["tol"]))
+        frozen[name] = None if beta is None else {"intercept": float(beta[0]), "slope": float(beta[1]),
+                                                  "x": "log(value)"}
+    raw = inp["raw"]
+    sens_cfg = sel["sensitivities"]
+
+    def subset(mask):
+        return cells.subset(mask), {n: v[np.asarray(mask, dtype=bool)] for n, v in values.items()}
+
+    alt = cells.with_branch(np.asarray([c[sens_cfg["branch_alternative"]] for c in raw], dtype=object))
+    successes = np.asarray([sum(bool(s) for s in c["successes"]) for c in raw])
+    sensitivities = {
+        "root_weighted": root_weighted(cells, values, sel),
+        "without_dominant_root": analyse(*subset(cells.root != sens_cfg["dominant_root"]), sel),
+        "first_divergence_branches": analyse(alt, values, sel),
+        "strict_pairs": analyse(cells, values, sel, min_count_difference=int(sens_cfg["strict_count_difference"])),
+        "without_bracket_cells": analyse(*subset(np.asarray([not c["bracket"] for c in raw])), sel),
+        "without_all_0_and_all_50": analyse(*subset((successes > 0) & (successes < np.asarray([c["n"] for c in raw]))),
+                                            sel),
+    }
+    return {"inputs": {"manifest_sha256": inp["manifest_sha256"], "measures_sha256": inp["measures_sha256"],
+                       "rule_sha256": file_sha256(config_path(rule)), "selection_sha256": _json_sha(sel)},
+            "main": main, "selection": choice, "frozen_coefficients": frozen, "sensitivities": sensitivities,
+            "notes": {"k_b_and_brier_intervals": "conditional on the cross-fitted predictions",
+                      "oracle_never_selectable": sorted(oracle)}}
+
+
+def _selection_summary(report: dict) -> dict:
+    main = report["main"]["candidates"]
+    keep = ("c_a", "c_a_ci", "improvement_a", "improvement_a_ci", "k_b", "k_b_ci", "improvement_b",
+            "improvement_b_ci", "brier", "converged")
+    return {"selection": report["selection"], "frozen_coefficients": report["frozen_coefficients"],
+            "candidates": {n: {k: v[k] for k in keep} for n, v in main.items()},
+            "counts": {k: report["main"][k] for k in ("n_cells", "n_pairs", "n_roots", "n_branches",
+                                                       "eligible_tasks", "dropped_resamples")}}
+
+
+def run_select(cfg: dict | None = None, *, results_root: Path | None = None, rule: Path | None = None,
+               suite_result: Path | None = None, out_root: Path | None = None) -> dict:
+    """Compute the step-3 report and publish it (the freeze). ``out_root`` (outside results/) writes an
+    unpublished copy for a dry run; publication needs a clean tree and the suite's success at this commit."""
+    cfg = cfg or load_config(rule)
+    root = Path(results_root) if results_root else repo_root() / "results"
+    started = time.perf_counter()
+    report = selection_report(cfg, root, rule)
+    provenance = {"git_sha": git_sha(), "seconds": time.perf_counter() - started}
+    if out_root is not None:
+        Path(out_root).mkdir(parents=True, exist_ok=True)
+        (Path(out_root) / "selection_dry.json").write_text(json.dumps({**report, "provenance": provenance},
+                                                                       indent=2) + "\n")
+        return {"summary": _selection_summary(report), "dry_run": True}
+    if provenance["git_sha"].endswith("-dirty"):
+        raise RuntimeError("the freeze needs a clean tree")
+    ok, why = suite_green(suite_result)
+    if not ok:
+        raise RuntimeError(f"the freeze is gated on the CPU suite: {why}")
+    return publish_selection(root / cfg["selection"]["out"], {**report, "provenance": provenance},
+                             _selection_summary(report))
+
+
+def publish_selection(out_dir: Path, bundle: dict, summary: dict) -> dict:
+    """``selection.json`` and ``summary.json`` together by one rename; an existing bundle is verified
+    against its done-marker and returned, never rewritten."""
+    if out_dir.exists():
+        return load_selection(out_dir)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    attempt = out_dir.parent / f".selection_attempt_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+    attempt.mkdir()
+    (attempt / "selection.json").write_text(json.dumps(bundle, indent=2) + "\n")
+    (attempt / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (attempt / "done.json").write_text(json.dumps({
+        "selection_sha256": file_sha256(attempt / "selection.json"),
+        "summary_sha256": file_sha256(attempt / "summary.json")}, indent=2) + "\n")
+    os.rename(attempt, out_dir)
+    return load_selection(out_dir)
+
+
+def load_selection(out_dir: Path) -> dict:
+    done = json.loads((Path(out_dir) / "done.json").read_text())
+    for name in ("selection", "summary"):
+        if file_sha256(Path(out_dir) / f"{name}.json") != done[f"{name}_sha256"]:
+            raise RuntimeError(f"{out_dir}/{name}.json does not match its done-marker")
+    return {"summary": json.loads((Path(out_dir) / "summary.json").read_text()),
+            "selection_sha256": done["selection_sha256"]}
+
+
+def verify_selection(cfg: dict | None = None, *, results_root: Path | None = None, rule: Path | None = None) -> dict:
+    """Recompute the report from the inputs and compare it with the published bundle (everything but the
+    provenance)."""
+    cfg = cfg or load_config(rule)
+    root = Path(results_root) if results_root else repo_root() / "results"
+    out_dir = root / cfg["selection"]["out"]
+    load_selection(out_dir)
+    published = json.loads((out_dir / "selection.json").read_text())
+    published.pop("provenance", None)
+    recomputed = json.loads(json.dumps(selection_report(cfg, root, rule)))
+    different = sorted(k for k in set(published) | set(recomputed) if published.get(k) != recomputed.get(k))
+    return {"passed": not different, "different": different}
