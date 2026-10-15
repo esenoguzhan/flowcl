@@ -204,6 +204,21 @@ class RolloutResult:
 
 
 @dataclass
+class EpisodeRun:
+    """What :meth:`LiberoTaskEnv.run_episode` returns: the outcome, every executed action (replay
+    included), the replans (``record``: step, the generator state before sampling, the chunk), the
+    first post-replay prefix (``base`` and ``executed`` clipped, ``raw`` before clipping)."""
+
+    success: bool
+    n_steps: int
+    actions: np.ndarray
+    replans: list
+    prefix: dict | None
+    replayed_success: bool = False
+    n_replay: int = 0
+
+
+@dataclass
 class EvalConfig:
     """Rollout settings (§4.4, §8.1)."""
 
@@ -588,6 +603,80 @@ class LiberoTaskEnv:
             alt_first_step=alt_first_step,
             alt_at_end=self.goal_holds(alt_goal) if alt_goal is not None else None,
         )
+
+    def run_episode(
+        self,
+        policy,
+        stats: NormalizationStats,
+        init_state: np.ndarray,
+        env_seed: int,
+        generator: torch.Generator,
+        cfg: EvalConfig | None = None,
+        *,
+        replay: np.ndarray | None = None,
+        perturb_first: np.ndarray | None = None,
+        record: bool = False,
+    ) -> "EpisodeRun":
+        """One episode from an explicit initial sim state (the recovery study; :meth:`rollout` is the
+        evaluation path and is not used here).
+
+        Exactly :meth:`rollout`'s start (``env.seed``, ``reset``, ``set_init_state``) and closed loop,
+        with two additions: ``replay`` (n, d_action) executed actions are stepped open-loop first,
+        which rebuilds every controller state (the gripper's ``current_action`` lies outside MuJoCo's
+        state, and ``reset`` reloads the model); ``perturb_first`` (execute_k, d_action) is added to the
+        first ``execute_k`` actions of the first chunk sampled after the replay, before clipping. The
+        policy draws from ``generator`` as given (seeded, or a saved state restored by the caller).
+        """
+        cfg = cfg or EvalConfig()
+        if cfg.temporal_ensembling:
+            raise ValueError("run_episode does not support temporal ensembling")
+        execute_k = cfg.execute_k if cfg.execute_k is not None else self.spec.action.execute_k
+        if perturb_first is not None and np.asarray(perturb_first).shape != (execute_k, self.spec.d_action):
+            raise ValueError(f"perturb_first must be ({execute_k}, {self.spec.d_action})")
+        device = next(policy.parameters()).device
+        self.env.seed(int(env_seed))
+        self.env.reset()
+        obs = self.env.set_init_state(np.asarray(init_state))
+        policy.eval()
+        executed: list[np.ndarray] = []
+        replans: list[dict] = []
+        step, success = 0, False
+        for action in (np.asarray(replay, dtype=np.float64) if replay is not None else ()):
+            obs, _r, _d, _i = self.env.step(np.asarray(action, dtype=np.float64))
+            executed.append(np.asarray(action, dtype=np.float64))
+            step += 1
+            if self.env.check_success():
+                return EpisodeRun(True, step, np.stack(executed), replans, None, replayed_success=True)
+        n_replay = step
+        prefix = None
+        while step < cfg.max_steps:
+            state = generator.get_state() if record else None
+            batch = self._build_policy_batch(obs, stats, device)
+            with torch.no_grad():
+                chunk = policy.sample(batch, n_steps=cfg.euler_steps, generator=generator)
+            chunk_np = stats.denormalize_action(chunk[0].detach().cpu().numpy().astype(np.float32))
+            if record:
+                replans.append({"step": step, "generator_state": state, "chunk": chunk_np.copy()})
+            actions = chunk_np[:execute_k].astype(np.float64)
+            if prefix is None:
+                base = np.clip(actions, -1.0, 1.0)
+                if perturb_first is not None:
+                    actions = actions + np.asarray(perturb_first, dtype=np.float64)
+                prefix = {"base": base, "executed": np.clip(actions, -1.0, 1.0), "raw": actions.copy()}
+            for offset in range(execute_k):
+                if step >= cfg.max_steps:
+                    break
+                action = np.clip(actions[offset], -1.0, 1.0).astype(np.float64)
+                obs, _r, _d, _i = self.env.step(action)
+                executed.append(action)
+                step += 1
+                if self.env.check_success():
+                    success = True
+                    break
+            if success:
+                break
+        return EpisodeRun(success, step, np.stack(executed) if executed else np.zeros((0, self.spec.d_action)),
+                          replans, prefix, replayed_success=False, n_replay=n_replay)
 
     def evaluate(
         self,
