@@ -13,12 +13,18 @@ scripts/. See :mod:`flowcl.experiments.recovery_study`. Exactly one action per c
 
 from __future__ import annotations
 
-import argparse
-import json
+import os
 import sys
-from pathlib import Path
 
-from flowcl.experiments import recovery_study as rs
+if "--simulate" in sys.argv:   # one BLAS thread per simulation worker, set before NumPy loads (18 workers x
+    for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):   # 24 threads oversubscribed)
+        os.environ.setdefault(_v, "1")
+
+import argparse  # noqa: E402
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from flowcl.experiments import recovery_study as rs  # noqa: E402
 
 
 def main() -> None:
