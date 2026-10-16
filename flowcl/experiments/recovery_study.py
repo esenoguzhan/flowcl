@@ -92,8 +92,10 @@ def _setup(rule: dict, task: dict, root: Path, device: str, dataset_dir=None):
     demos = list(iter_episodes(ref.demo_path(dataset_dir), loaded.spec, n_demos=int(rule["n_demos_sigma"]),
                                task_id=ref.task_key, with_sim_states=True))
     sigma = np.concatenate([d.action for d in demos]).astype(np.float64).std(axis=0)
+    zero = sigma <= 0                      # e.g. a task that never closes the gripper: the rule's pooled SD
+    sigma = np.where(zero, np.asarray(rule["sigma_fallback"], dtype=np.float64), sigma)
     if np.any(sigma <= 0):
-        raise ValueError(f"{task['key']}: a zero action SD")
+        raise ValueError(f"{task['key']}: a zero action SD with no fallback")
     ev = rule["eval"]
     cfg = EvalConfig(n_episodes=1, max_steps=int(ev["max_steps"]), execute_k=int(ev["execute_k"]),
                      euler_steps=int(ev["euler_steps"]), image_size=int(ev["image_size"]))
@@ -167,6 +169,8 @@ def run_task(rule: dict, task_index: int, *, results_root=None, out_root=None, r
     try:
         nominals = {i: _nominal(env, loaded, demos, i, ns, key, cfg) for i in range(n_nominal)}
         _atomic_json(work / "nominal.json", {"binding": bind, "fallback": fallback, "sigma": sigma.tolist(),
+                                             "sigma_fallback_dims": [int(d) for d in np.flatnonzero(
+                                                 np.isclose(sigma, rule["sigma_fallback"]))],
                                              "rollouts": {str(i): {"seed": s, "success": bool(r.success),
                                                                    "n_steps": int(r.n_steps)}
                                                           for i, (s, r) in nominals.items()}})

@@ -20,7 +20,10 @@
 # query, seed derive_seed(namespace, "recovery::bank::<task>", (i * 100 + q))): per structured group
 # (position dims 0-2, rotation 3-5, gripper 6) a fixed random unit direction within the group, at
 # signs +/- and magnitudes m * sigma (sigma = per-dimension SD of the task's training demos' raw actions,
-# all n_demos_sigma demos), constant over the prefix; plus isotropic directions over the whole prefix at
+# all n_demos_sigma demos; a dimension whose SD is exactly 0 in a task uses `sigma_fallback`, the
+# per-dimension SD pooled over the four tasks' training demos - AMENDMENT before any production
+# continuation, found by the smoke: the Goal drawer task never closes the gripper, SD 0), constant over
+# the prefix; plus isotropic directions over the whole prefix at
 # the structured perturbations' mean raw norm per magnitude.
 # THE INTERVENTION ANALYSED IS THE CONTROLLER-RELEVANT ONE: the change after clipping (size: its norm in
 # sigma units over all 7 dims), and the gripper's SIGN FLIPS (the Panda gripper controller uses only
@@ -95,6 +98,7 @@ tasks:
 eval: {euler_steps: 10, execute_k: 8, max_steps: 600, image_size: 128}
 n_nominal: 12
 n_demos_sigma: 50
+sigma_fallback: [0.284051, 0.37584, 0.409439, 0.0464323, 0.0716757, 0.099626, 0.97494]   # pooled, 4 tasks x 50 demos
 phases: [0.0833333333, 0.25, 0.4166666667, 0.5833333333, 0.75, 0.9166666667]
 fallback: {phases: [0.125, 0.375, 0.625, 0.875]}
 perturbations: {magnitudes: [1.0, 3.0], n_isotropic_per_magnitude: 2}
