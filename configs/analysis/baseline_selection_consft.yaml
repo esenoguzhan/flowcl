@@ -89,4 +89,25 @@ consft:
   calibration_samples: 4096
   calibration_batch: 64
   object_tolerance: 0.10
-  calibration: null
+  # Filled from the calibration (Sat 17 Oct 2026, 23:58, at 288c343, before any arm): q50 = median initial
+  # per-sample loss of seq_ft seed 0's stage0.pt on T2 (4096 draws); initial floor fractions z10 0.613, z30 0.864,
+  # z100 0.981, z300 0.999, table5 1.000; the lower extension (z 3, tau_start 5.44) is capped.
+  calibration:
+    file: baseline_selection_consft/consft_calibration.json    # under the results root
+    sha256: cc2d2a392452a63bc635e833f423f7ab17613d54a8a41aba5ae06fc3f81d90b3
+    q50: 0.6532121300697327
+    tau_starts:
+      z10__T2000: 1.6330303251743317
+      z10__T30000: 1.6330303251743317
+      z30__T2000: 0.5443434417247772
+      z30__T30000: 0.5443434417247772
+      z100__T2000: 0.16330303251743317
+      z100__T30000: 0.16330303251743317
+      z300__T2000: 0.05443434417247772
+      z300__T30000: 0.05443434417247772
+      table5: 0.003
+      z1000__T2000: 0.016330303251743318
+      z1000__T30000: 0.016330303251743318
+      z3__T2000: 5.443434417247772
+      z3__T30000: 5.443434417247772
+    capped_extensions: [z3__T2000, z3__T30000]
