@@ -71,7 +71,7 @@ export MUJOCO_GL=egl
 
 RES="${QUEUE_RESULTS_ROOT:-results}"
 RULE=configs/analysis/baseline_selection_consft.yaml
-ARMS="z1__T2000 z1__T30000 z3__T2000 z3__T30000 z10__T2000 z10__T30000 z30__T2000 z30__T30000 table5"   # the rule's
+ARMS="z10__T2000 z10__T30000 z30__T2000 z30__T30000 z100__T2000 z100__T30000 z300__T2000 z300__T30000 table5"   # the rule's
 if [ -n "$SMOKE" ]; then
     case "$SMOKE" in /*) ;; *) echo "--smoke needs an absolute directory" >&2; exit 2 ;; esac
     case "$SMOKE/" in "$(pwd)/results/"*) echo "--smoke must be outside results/" >&2; exit 2 ;; esac

@@ -25,16 +25,28 @@
 # THE GRID: τ_start(z) = κ·q50 / z, z = κ·L/τ being the weight's exponent at the median initial sample, for
 # z in `zs` × T in `decay_steps`, plus the Table 5 arm (τ_start 0.003, T 2000: the paper's exact values),
 # 9 arms. The Table 5 arm's effective z is κ·q50/0.003, which places it in the ordering.
-# Pre-written: at the median, z = 1, 3, 10, 30 give ω ≈ 0.37, 0.05, floor, floor; larger z is not
-# proportionally stronger protection (z = 10 and 30 differ in how many low-loss samples stay above the floor).
+# Pre-written (first version, zs {1, 3, 10, 30}): at the median, z = 1, 3, 10, 30 give ω ≈ 0.37, 0.05, floor,
+# floor; larger z is not proportionally stronger protection.
+#
+# AMENDMENT (Sat 17 Oct 2026, 23:50, before any arm; no arm outcome exists). The first calibration (at a8250ce)
+# refused under the cap rule below: z = 1 and z = 3 need q50 < 0.20 and < 0.60, and seq_ft stage 0's initial
+# per-sample losses on T2 have median 0.653 (mean 1.69, q05 0.076, q95 8.64; per-s-bin medians from 0.17 at
+# s ~ 0.05 to 8.4 at s ~ 0.95; at seq_ft's stage 1 the median is 0.0002 and the mean 0.0072). Under Table 5's
+# τ_end = 5 every feasible arm has z > κ·q50/τ_end ≈ 3.3. The ladder is shifted up one decade, nothing else
+# changes: zs {10, 30, 100, 300}, extensions {3, 1000} (3 is capped at this q50, so a selection at z = 10 is
+# flagged `lower_extension_capped` and owes nothing: the weaker side is bounded by the cap). All of them floor the
+# median sample at the start; they differ in the share of samples above the floor (κL/τ < ln 1000, i.e.
+# L < 6.91·q50/z): about 40 %, 13 %, 3 % and under 1 % of the draws for z = 10, 30, 100, 300. As training
+# lowers the losses (by about 3000× at the median over a stage) the weights rise toward 1 at fixed τ, the
+# paper's "progressive" dynamic. τ_end, κ and the other Table 5 constants are unchanged (the user's decision).
 # T = 2000 is the paper's step count; T = 30000 is one whole stage (30k × 64 = 1.92M samples, near the
 # paper's 2000 × 1024 = 2.05M).
 #
 # THE CAP (pre-written): τ(t) ≤ τ_end = 5, so an arm with τ_start ≥ τ_end runs at τ_end throughout, a
 # degenerate case of eq. 12. The calibration refuses if any grid arm (or the Table 5 arm) has τ_start ≥ τ_end;
-# the rule is then amended before any arm. The lower extension (z = 0.3) is not run when its τ_start ≥ τ_end:
-# a grid selection at z = 1 is then flagged `lower_extension_capped` and owes no extension (a deliberate
-# restriction of the search). Both extensions are validated by the calibration.
+# the rule is then amended before any arm. The lower extension (extension.z.low) is not run when its
+# τ_start ≥ τ_end: a grid selection at min(zs) is then flagged `lower_extension_capped` and owes no extension (a
+# deliberate restriction of the search). Both extensions are validated by the calibration.
 #
 # THE RULE (as EWC's and LoRA's): eligible arms keep Object >= seq_ft's stage-1 Object - object_tolerance.
 #   ORDER: the highest Spatial success, then the lower Spatial probe loss, then the smaller effective z, then
@@ -69,11 +81,11 @@ out: baseline_selection_consft      # under the output root
 consft:
   recipe: {steps: 30000, lr: 1.0e-4}
   constants: {kappa: 25.0, decay_rate: 0.8, curve: 3.5, omega_min: 0.001, tau_end: 5.0}
-  zs: [1, 3, 10, 30]
+  zs: [10, 30, 100, 300]                # amended before any arm (header); first version [1, 3, 10, 30]
   decay_steps: [2000, 30000]
   table5: {tau_start: 0.003, decay_steps: 2000}
   extension:
-    z: {low: 0.3, high: 100}
+    z: {low: 3, high: 1000}             # amended with zs; first version {0.3, 100}
   calibration_samples: 4096
   calibration_batch: 64
   object_tolerance: 0.10

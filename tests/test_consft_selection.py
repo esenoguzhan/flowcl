@@ -13,23 +13,35 @@ import torch
 from flowcl.experiments import consft_selection as cs
 from flowcl.methods.consft import ConSFT
 
-RULE = cs.load_config()
+COMMITTED = cs.load_config()
 
 
 def cfg(**over):
-    c = copy.deepcopy(RULE)
+    c = copy.deepcopy(COMMITTED)
     c["consft"].update(over)
     return c
 
 
+# The pure tests use the rule's first-version ladder (amended before any arm; see the rule's header).
+RULE = cfg(zs=[1, 3, 10, 30], extension={"z": {"low": 0.3, "high": 100}})
+
+
 def test_the_committed_rule():
-    c = RULE["consft"]
+    c = COMMITTED["consft"]
     assert c["constants"] == {"kappa": 25.0, "decay_rate": 0.8, "curve": 3.5, "omega_min": 0.001, "tau_end": 5.0}
-    assert c["zs"] == [1, 3, 10, 30] and c["decay_steps"] == [2000, 30000]
+    assert c["zs"] == [10, 30, 100, 300] and c["decay_steps"] == [2000, 30000]
+    assert c["extension"] == {"z": {"low": 3, "high": 1000}}
     assert c["table5"] == {"tau_start": 0.003, "decay_steps": 2000}
     assert c["recipe"] == {"steps": 30000, "lr": 1.0e-4}
-    assert set(cs.constants(RULE)) == {"kappa", "decay_rate", "curve", "omega_min", "tau_end"}
-    ConSFT(tau_start=0.1, decay_steps=2000, **cs.constants(RULE))   # the constants are the method's kwargs
+    assert set(cs.constants(COMMITTED)) == {"kappa", "decay_rate", "curve", "omega_min", "tau_end"}
+    ConSFT(tau_start=0.1, decay_steps=2000, **cs.constants(COMMITTED))   # the constants are the method's kwargs
+    # at the refused calibration's median (0.653) the amended grid passes and the lower extension is capped
+    plan = cs.plan_arms(COMMITTED, 0.653)
+    cs.check_caps(plan)
+    assert {a["key"]: a["capped"] for a in plan["extensions"]} == \
+        {"z3__T2000": True, "z3__T30000": True, "z1000__T2000": False, "z1000__T30000": False}
+    with pytest.raises(ValueError, match="tau_start >= tau_end"):
+        cs.check_caps(cs.plan_arms(RULE, 0.653))   # the first version refuses there
 
 
 def test_plan_grid_table5_and_extensions():
