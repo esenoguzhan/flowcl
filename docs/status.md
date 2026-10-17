@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Thu 15 Oct 2026, week W2 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Sat 17 Oct 2026, week W2 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -47,6 +47,18 @@ changes.
   - unfreezing InfLoRA's A helped at every lr (8 of 8 comparisons equal or higher); every variant is
     10–25% slower per step.
   - The 4-task runs are reserved for Track 2's test set, so they wait for the freeze.
+- **The recovery measurement study: GO** (Sat 17 Oct 04:34; `runs/2026-10-17_recovery_study.md`).
+  An exploratory study outside the plan, with no training. The rule `88a8a72b…` was committed before
+  any perturbed rollout and validated beforehand (false GO 0/200 under every null).
+  - **Design:** 18,768 closed-loop continuations on the seq_ft seed-0 policies, one task each.
+    Constant 8-step action offsets (position, rotation, gripper, isotropic) are applied at 6 phases.
+  - **Result:** all 4 tasks pass Q1 (cell S20 0.65–0.94) and Q2 (beyond-magnitude gain 0.04–0.13
+    nats) at 95%; 3 of 4 also pass at 99%. The negative control is clean (0 / 3,246 no-op
+    mismatches or injuries).
+  - **The structure:** position offsets harm, while rotation is nearly inert per demo SD (a
+    scaling-dependent contrast). A gripper flip is fatal only while an object is carried (0.79–0.91).
+  - **GO authorizes only the integrated-action Jacobian and capacity feasibility study,** the input to
+    D2's angle B (Uᵀ ΔW M = 0). It does not authorize a method.
 
 ## 1. Plan progress
 
@@ -64,7 +76,7 @@ changes.
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **step 2 done: the measures M0–M3** (`d213ddb`/`99e8083`): 449 cells, bundle `5be958cc…`, instrument checks 281/281 within 2.1e-5; descriptive only (`runs/2026-10-13_track2_measures.md`). **Step 1 done: the development manifest** (`2ec4c03`, merged): 449 cells (checkpoint × trained task, 50 rollouts) under 24 roots; seed 0's shared stage 0 holds 214; 63 bitwise duplicates collapsed (one disagrees by 2/50 rollouts); 114 depth-1 / 147 first-divergence branches (branch definition changed in `thesis_plan.md` §D, the literal one kept as sensitivity); held-out key set published. **Next: step 3's rule**, then validation and the freeze | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct**; `runs/2026-10-12_track2_manifest.md` |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
-| **E2** pilots | not started; angle A is off | D2 (end of W5) is angle B (only if Track 2 finds critical outputs) or the minimum thesis |
+| **E2** pilots | not started; angle A is off. The recovery study (GO) measured closed-loop critical outputs (position; the gripper while carrying). Angle B now needs the Jacobian/capacity feasibility study (not planned) | D2 (end of W5) is angle B or the minimum thesis; `runs/2026-10-17_recovery_study.md` |
 | **F0** hardware readiness | **not started on AgileX**. The Dobot try-out was cancelled before any robot time | branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
@@ -138,6 +150,10 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 
 ## 4. Next, when back on the plan (priority order)
 
+0. **Decide the GPU order:** the seed-0 4-task baseline queue (Track 2's held-out test set; needs a
+   plan, the production configs for `projected_lora` / `inflora`, and identity checks against the
+   bracket arms), or the recovery study's feasibility study (needs its own plan and rule; it feeds
+   D2 at the end of W5).
 1. **Track 2 (D):** brought forward (see item 3). The baselines' brackets are done; their 4-task runs
    follow the freeze. Before the 4-task baseline runs, `sequence_report` must become
    method-conditional (`frozen_from_stage1`, the pilot comparison).
