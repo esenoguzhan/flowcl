@@ -59,6 +59,18 @@ changes.
     scaling-dependent contrast). A gripper flip is fatal only while an object is carried (0.79–0.91).
   - **GO authorizes only the integrated-action Jacobian and capacity feasibility study,** the input to
     D2's angle B (Uᵀ ΔW M = 0). It does not authorize a method.
+- **E1-B, that feasibility study: `fail`** (Sat 17 Oct 18:48; `runs/2026-10-17_twosided_angleb.md`).
+  It reran E1 with the integrated executed prefix, weighted by the recovery study's injury rates. There
+  was no training; the rule `17663228…` was committed before production.
+  - **Result:** the trunk two-sided fraction at T4's start is 0.861 (GPM 0.933, threshold ≤ 0.50).
+    That is E1's number to three decimals. Uniform, shuffled, phase-pooled and gripper-free weightings
+    all give 0.850–0.870; the label is `near_full_rank`.
+  - **Reading:** the trunk's output-side occupancy comes from state variety, not from which outputs
+    are measured.
+  - **Pre-written consequence:** the recovery line stops (a scheduling decision), and **D2 = the
+    minimum thesis**. The recovery GO stands as a measured finding.
+  - **Disk:** `results/twosided_angleb/` holds 48 GB. About 42 GB are Grams kept for E2-B, which will
+    not run; deleting them is the user's call.
 
 ## 1. Plan progress
 
@@ -76,7 +88,8 @@ changes.
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **step 2 done: the measures M0–M3** (`d213ddb`/`99e8083`): 449 cells, bundle `5be958cc…`, instrument checks 281/281 within 2.1e-5; descriptive only (`runs/2026-10-13_track2_measures.md`). **Step 1 done: the development manifest** (`2ec4c03`, merged): 449 cells (checkpoint × trained task, 50 rollouts) under 24 roots; seed 0's shared stage 0 holds 214; 63 bitwise duplicates collapsed (one disagrees by 2/50 rollouts); 114 depth-1 / 147 first-divergence branches (branch definition changed in `thesis_plan.md` §D, the literal one kept as sensitivity); held-out key set published. **Next: step 3's rule**, then validation and the freeze | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct**; `runs/2026-10-12_track2_manifest.md` |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
-| **E2** pilots | not started; angle A is off. The recovery study (GO) measured closed-loop critical outputs (position; the gripper while carrying). Angle B now needs the Jacobian/capacity feasibility study (not planned) | D2 (end of W5) is angle B or the minimum thesis; `runs/2026-10-17_recovery_study.md` |
+| **E1-B** angle-B capacity gate (recovery-weighted executed prefix) | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933, the same as E1 to three decimals; every weighting 0.850–0.870) | `runs/2026-10-17_twosided_angleb.md` |
+| **E2** pilots | **not run:** angle A is off (E1), angle B is off (E1-B). **D2 resolves to the minimum thesis** (pre-written in E1-B's rule) | `runs/2026-10-02_twosided_gonogo.md`, `runs/2026-10-17_twosided_angleb.md` |
 | **F0** hardware readiness | **not started on AgileX**. The Dobot try-out was cancelled before any robot time | branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
@@ -150,18 +163,17 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 
 ## 4. Next, when back on the plan (priority order)
 
-0. **Decide the GPU order:** the seed-0 4-task baseline queue (Track 2's held-out test set; needs a
+0. **Next on the GPU: the seed-0 4-task baseline queue** (Track 2's held-out test set). It needs a
    plan, the production configs for `projected_lora` / `inflora`, and identity checks against the
-   bracket arms), or the recovery study's feasibility study (needs its own plan and rule; it feeds
-   D2 at the end of W5).
+   bracket arms. The recovery line is closed (E1-B `fail`), and D2 resolves to the minimum thesis.
 1. **Track 2 (D):** brought forward (see item 3). The baselines' brackets are done; their 4-task runs
    follow the freeze. Before the 4-task baseline runs, `sequence_report` must become
    method-conditional (`frozen_from_stage1`, the pilot comparison).
 2. **Thesis wording from C1:** raising T2 protection removes the Object forgetting; the new-energy
    allocation adds at most a small, seed-dependent amount at that cell (significant on one seed of
    three). Its consistent edge is final Object retention at about 15 pp more capacity (E3's frontier).
-3. **Track 2 (D):** manifest and measures, frozen by Fri 30 Oct at the latest (sooner if possible).
-   Angle B at D2 depends on it. After the freeze: the 4-task replay, EWC and LoRA runs.
+3. **Track 2 (D):** frozen on Thu 15 Oct. Angle B no longer depends on it (E1-B closed angle B), so
+   the held-out test is reported for its own sake. The 4-task replay, EWC and LoRA runs come first.
 4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).
 5. **ConSFT notes** (W5).
 6. **Hardware:** F1 engineering on AgileX (adapter, `hw_env`, proof) continues in parallel to the GPU work; reuse the `dobot-hw` pieces (§3).
