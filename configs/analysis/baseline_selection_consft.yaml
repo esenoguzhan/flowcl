@@ -1,0 +1,80 @@
+# ConSFT τ_start × T bracket (Workstream B; docs/consft_notes.md). Committed before the calibration and before
+# any arm, with `calibration: null`; the calibration's values and SHA-256 are then filled in by a second commit,
+# still before any arm (EWC's pattern). Evaluated by scripts/consft_selection.py --config <this file>; queued by
+# scripts/queue_consft_bracket.sh.
+#
+# THE METHOD: flowcl/methods/consft.py. Each sample's flow-matching loss is scaled by sg[max(ω_min,
+# exp(-κ L_i / τ(t)))], τ(t) = min(τ_start / max(ρ(t), 1e-8), τ_end) with ρ of eq. 11 (arXiv 2605.08879v2,
+# App. C.1). The fixed constants are Table 5's (`constants`, the user's decision); the paper tunes only τ_start
+# and T (decay_steps) per task, and this bracket tunes exactly those. T1 is seq_ft (the stage-0 checkpoint is
+# shared), and the schedule restarts at every task.
+#
+# SETUP (as EWC's and LoRA's brackets): seed 0; each arm trains T2 (Object) from seq_ft seed 0's stage0.pt
+# through low_update.train_stage with the runner's text-cache state, under seq_ft's recipe (30k steps, lr 1e-4,
+# batch 64, AMP, warmup + cosine, weight decay 1e-4), and is evaluated on T1 and T2 (50 rollouts) with the
+# fixed probe losses.
+#
+# THE CALIBRATION (before any arm; no arm outcome): per-sample losses L_i (the method's: masked mean over the
+# sample's valid elements) of seq_ft seed 0's stage0.pt on T2's training data, `calibration_samples` draws in
+# batches of `calibration_batch` (indices, flow times s and noise from derive_seed(ns,
+# "consft_calibration::<task>", 1)), train mode and AMP as in training, after the runner's text cache. q50 is
+# their median. It also reports, descriptively: the loss quantiles and per-s-bin medians; for every arm and
+# both extensions the initial ω distribution (quantiles, floor fraction, per s-bin); and the same draws on
+# seq_ft's stage1.pt (the end-of-stage loss scale), with ω at each arm's τ_start and at τ_end.
+#
+# THE GRID: τ_start(z) = κ·q50 / z, z = κ·L/τ being the weight's exponent at the median initial sample, for
+# z in `zs` × T in `decay_steps`, plus the Table 5 arm (τ_start 0.003, T 2000: the paper's exact values),
+# 9 arms. The Table 5 arm's effective z is κ·q50/0.003, which places it in the ordering.
+# Pre-written: at the median, z = 1, 3, 10, 30 give ω ≈ 0.37, 0.05, floor, floor; larger z is not
+# proportionally stronger protection (z = 10 and 30 differ in how many low-loss samples stay above the floor).
+# T = 2000 is the paper's step count; T = 30000 is one whole stage (30k × 64 = 1.92M samples, near the
+# paper's 2000 × 1024 = 2.05M).
+#
+# THE CAP (pre-written): τ(t) ≤ τ_end = 5, so an arm with τ_start ≥ τ_end runs at τ_end throughout, a
+# degenerate case of eq. 12. The calibration refuses if any grid arm (or the Table 5 arm) has τ_start ≥ τ_end;
+# the rule is then amended before any arm. The lower extension (z = 0.3) is not run when its τ_start ≥ τ_end:
+# a grid selection at z = 1 is then flagged `lower_extension_capped` and owes no extension (a deliberate
+# restriction of the search). Both extensions are validated by the calibration.
+#
+# THE RULE (as EWC's and LoRA's): eligible arms keep Object >= seq_ft's stage-1 Object - object_tolerance.
+#   ORDER: the highest Spatial success, then the lower Spatial probe loss, then the smaller effective z, then
+#     the shorter T, then the arm id (lexicographic; the last deterministic tie-break).
+#   FALLBACK (none eligible): the highest Object, then the lower Object probe loss, then the smaller z, then the
+#     shorter T, then the arm id; flagged `no_qualifying_setting`; it owes no extension.
+#   ARM TYPE: every arm records arm_type (grid, table5, extension); extension eligibility comes from the type,
+#     never from z (the Table 5 arm can coincide with a grid arm, e.g. q50 = 0.00012 makes it (z 1, T 2000)).
+#   EDGE EXTENSION: a selected grid arm at z = min(zs) owes the arm at extension.z.low, one at z = max(zs) owes
+#     the arm at extension.z.high, at the selected T; the rule is re-applied once over the base arms and the
+#     owed extension. table5 and extension arms are never extended; T is not extended.
+#   FLAGS: all_eligible_spatial_zero, edge_extension(_owed), optimum_at_boundary, lower_extension_capped,
+#     no_qualifying_setting.
+#
+# INTERPRETATIONS (pre-written): the selection is "the best among tested settings" on the development seed,
+# never a resolved optimum; it becomes configs/method/consft.yaml's tau_start and decay_steps in a commit of its
+# own. The record reports the full Spatial-Object trade-off, the per-arm weighting logs, and what the weights
+# did per flow-time bin. If every eligible arm keeps Spatial at 0 (flag all_eligible_spatial_zero), ConSFT still
+# enters the 4-task runs at its selection, as EWC did.
+#
+# TRACK 2 (the frozen rule, configs/analysis/behavior_predictors.yaml, excludes test cells whose (fingerprint,
+# task) is in the development keys; these arms come after the freeze and cannot be among them): the selection
+# bundle carries `track2_exclusion_keys`, (ewc.tensor_fingerprint of the arm's final state dict, task key) for
+# both trained tasks of every completed arm, selected or not, extensions included; verify recomputes them from
+# the checkpoint tensors. Track 2's step 4 must exclude the union of these keys and the development keys; its
+# acceptance check: production ConSFT seed 0's stage 1 (identity-checked against the selected arm) is excluded.
+# The frozen rule and its bundle are not modified.
+
+bracket_seed: 0
+out: baseline_selection_consft      # under the output root
+
+consft:
+  recipe: {steps: 30000, lr: 1.0e-4}
+  constants: {kappa: 25.0, decay_rate: 0.8, curve: 3.5, omega_min: 0.001, tau_end: 5.0}
+  zs: [1, 3, 10, 30]
+  decay_steps: [2000, 30000]
+  table5: {tau_start: 0.003, decay_steps: 2000}
+  extension:
+    z: {low: 0.3, high: 100}
+  calibration_samples: 4096
+  calibration_batch: 64
+  object_tolerance: 0.10
+  calibration: null
