@@ -500,3 +500,76 @@ def simulate(spec: dict, rule: dict, regime: dict, n_worlds: int, n_tasks: int, 
 
 def _simulate_star(a):
     return simulate_once(*a)
+
+
+# ---- E1-B's inputs (configs/analysis/twosided_angleb.yaml) -------------------------------------------
+
+
+def phase_group_weights(rows: list[dict], n_bins: int, magnitude: float) -> dict:
+    """The recovery map as E1-B's metric weights. Per phase bin (the query index) and structured group: the
+    injury rate among effective (not a controller no-op), at-risk (the paired nominal continuation
+    succeeded) perturbations at ``magnitude``, pooled over rollouts, seeds and signs. A cell without such
+    trials takes its group's rate over all bins (``pooled``, also the phase-pooled variant's weights)."""
+    nominal = {(r["rollout"], r["query"], r["seed"]): bool(r["success"]) for r in rows if r["kind"] == 0}
+    trials = np.zeros((int(n_bins), len(GROUPS)), dtype=np.int64)
+    injuries = np.zeros_like(trials)
+    for r in rows:
+        if r["kind"] != 1 or not 0 <= r["group"] < len(GROUPS) or r["noop"]:
+            continue
+        if float(r["magnitude"]) != float(magnitude) or not nominal[(r["rollout"], r["query"], r["seed"])]:
+            continue
+        b = int(r["query"])
+        if not 0 <= b < n_bins:
+            raise ValueError(f"query {b} is outside the {n_bins} phase bins")
+        trials[b, r["group"]] += 1
+        injuries[b, r["group"]] += int(not r["success"])
+    total = trials.sum(axis=0)
+    if (total == 0).any():
+        empty = [GROUPS[g] for g in np.flatnonzero(total == 0)]
+        raise ValueError(f"no effective at-risk trials at {magnitude} sigma for {empty}")
+    pooled = injuries.sum(axis=0) / total
+    w = np.where(trials > 0, injuries / np.maximum(trials, 1), pooled[None, :])
+    return {"w": w.tolist(), "pooled": pooled.tolist(), "trials": trials.tolist(), "injuries": injuries.tolist(),
+            "fallback_cells": [[int(b), GROUPS[g]] for b, g in zip(*np.nonzero(trials == 0))],
+            "groups": list(GROUPS), "magnitude": float(magnitude)}
+
+
+def gripper_closed_by_bin(rows: list[dict], direction, n_bins: int, magnitude: float) -> dict:
+    """Command-level phase evidence from the recovery rollouts: at each (rollout, query, seed), the gripper
+    command's sign inferred from which ``magnitude``-sigma gripper perturbation changed the controller's
+    input. Pushing a closed (+) command down flips it, pushing it up does not; ``direction(rollout, query,
+    bank_index)`` is the perturbation's net sign on the gripper. Undetermined when both or neither flip.
+    Returns the closed fraction per bin among determined continuations."""
+    grip = ALL_GROUPS.index("gripper")
+    seen: dict = {}
+    for r in rows:
+        if r["kind"] != 1 or r["group"] != grip or float(r["magnitude"]) != float(magnitude):
+            continue
+        key = (r["rollout"], r["query"], r["seed"])
+        seen.setdefault(key, []).append((direction(r["rollout"], r["query"], r["bank_index"]), not r["noop"]))
+    closed = np.zeros(int(n_bins))
+    determined = np.zeros(int(n_bins), dtype=np.int64)
+    undetermined = 0
+    for (_, q, _), pairs in seen.items():
+        effective = [d for d, eff in pairs if eff]
+        if len(effective) != 1:
+            undetermined += 1
+            continue
+        determined[int(q)] += 1
+        closed[int(q)] += float(effective[0] < 0)
+    frac = [float(c / n) if n else None for c, n in zip(closed, determined)]
+    return {"closed_fraction": frac, "determined": determined.tolist(), "undetermined": undetermined}
+
+
+def demo_gripper_closed_by_bin(gripper_actions: list[np.ndarray], n_bins: int) -> dict:
+    """The same per-bin closed fraction in the demonstrations (raw gripper action > 0), frames binned by
+    t / L."""
+    closed = np.zeros(int(n_bins))
+    count = np.zeros(int(n_bins), dtype=np.int64)
+    for a in gripper_actions:
+        a = np.asarray(a, dtype=np.float64)
+        bins = np.minimum((np.arange(len(a)) * n_bins) // len(a), n_bins - 1)
+        np.add.at(count, bins, 1)
+        np.add.at(closed, bins, (a > 0).astype(np.float64))
+    return {"closed_fraction": [float(c / n) if n else None for c, n in zip(closed, count)],
+            "frames": count.tolist()}

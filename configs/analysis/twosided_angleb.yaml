@@ -1,0 +1,155 @@
+# E1-B: the angle-B capacity gate (docs/thesis_plan.md, D2's angle-B row: "u restricted to those
+# outputs, rerun E1"). NO TRAINING. Committed with the code before any production capture.
+# Evaluated by scripts/twosided_angleb.py; queued by scripts/queue_twosided_angleb.sh.
+# Record: docs/runs/2026-10-1x_twosided_angleb.md.
+#
+# QUESTION: does the trunk's output side become compact under a CONTINUOUS EXECUTED-PREFIX SURROGATE
+# WEIGHTED BY OBSERVED INJURY (the recovery study's GO, docs/runs/2026-10-17_recovery_study.md)? The
+# surrogate ignores clipping and the gripper's sign processing: a defensible hypothesis, not the
+# controller. E1 (configs/analysis/twosided_gonogo.yaml) failed on whole-velocity sensitivity: trunk
+# two-sided 0.861 against GPM 0.933, threshold 0.50, near full rank.
+#
+# SOURCE: E1's, unchanged and SHA-pinned (adaptive GPM seed 0). --task i (0..3) = stage i = T(i+1):
+# stage{i}.pt on that task's whole demo dataset (the incremental protocol), E1's text-cache state
+# (warm_runner_cache). M = GPM's stored memory_task{i} (E1 replayed it bitwise; not recaptured).
+# RECOVERY INPUTS (pinned): the study's rule and published analysis; its work files are bound to that
+# rule. Recovery task i must be curriculum stage i's task. DISCLOSED: the weights were measured on
+# seq_ft's task-i policies in rollout-normalized time and are applied to GPM's policies in
+# demo-normalized time (a task property assumed; the phase-pooled variant P and the alignment check
+# below bear on it).
+#
+# THE OUTPUT: the integrated executed prefix. flowcl.analysis.integrated_sensitivity.integrate: the
+# arithmetic of FlowHead.sample with autograd on (the trunk encodes once, 10 Euler steps), fp32,
+# autocast off, eval(); noise drawn per batch on the CPU from derive_seed(ns, "<noise_tag>::<key>", i);
+# the prefix = chunk steps 0..execute_k-1.
+#
+# THE EXACT COHERENT CAPTURE (the decisive variant and its controls). Per action dimension d one VJP of
+# T_d = sum_{k<K} a_{k,d} / sqrt(K) (a constant offset across the prefix: the temporal direction the
+# study perturbed) gives g_d at every registry layer's output. Rows are scaled by
+# c_d = std_d / sigma_{i,d} (std: the checkpoint's frozen normalization; sigma: the recovery sigma,
+# gripper fallback included, so harm is per demo SD as perturbed) and accumulated in float64 on the
+# CPU into 18 Grams per layer, one per (phase bin b x group g):
+#   G_{b,g} = sum_{d in g} sum_{rows in b} c_d^2 g_d g_d^T,
+# phase phi = t / L_episode of the demo frame, b = min(n_bins - 1, floor(n_bins * phi)) (the study's
+# six bins, centred on its queries at 1/12 .. 11/12). Every coherent variant is
+#   G_v = sum_{b,g} w_v[b, g] G_{b,g},
+# EXACT OVER OUTPUT DIRECTIONS, conditional on the captured samples and rows.
+# ROWS: a hooked decoder layer runs once per Euler step; per sample and layer up to tokens_per_sample
+# rows are drawn among eligible (call, position) pairs (the trunk: E1's rule). ELIGIBLE: the output
+# gradient of a generic random combination of the K x 7 prefix outputs is nonzero (almost surely the
+# union of every prefix output's support, so it contains every coherent and Hutchinson VJP's
+# support); drawn once per batch, the rows serve every VJP. The generic combination and the rows
+# come from one CPU generator seeded capture.row_subsample_seed.
+#
+# THE VARIANTS, w_v[b, g] (g = position, rotation, gripper):
+#   R  (DECISIVE)  the recovery injury rate of effective (not a controller no-op), at-risk (the
+#                  paired nominal continuation succeeded) recovery.magnitude-sigma perturbations in
+#                  (task i, bin b, group g), pooled over rollouts, seeds and signs; a cell with no
+#                  such trials takes its group's task-level rate (flowcl.analysis.recovery.
+#                  phase_group_weights).
+#   I              1 everywhere: uniform per-sigma sensitivity, same integration and window.
+#   S              R's 18 values permuted per task by numpy default_rng(derive_seed(ns,
+#                  "<shuffle_tag>::<key>", i)).permutation: concentration without the structure.
+#   P              per-group task-level rates (phase-independent): the phase-transfer sensitivity.
+#   R0             R with the gripper weight 0 (the surrogate's weakest component). Reported.
+# THE INDEPENDENT-STEP COMPARISON (Ri): Hutchinson, capture.n_probes probes (A, B): z ~ N(0, I) over
+# K x 7, drawn on the CPU from derive_seed(ns, "<u_tag>::<key>", i), scaled per sample by
+# sqrt(w_R[b, g(d)]) c_d. Reported only.
+#
+# VALIDITY, per capture (any failure -> invalid): the pinned SHAs; INTEGRATION IDENTITY: the
+# grad-enabled integration equals policy.sample(batch, noise=...) BITWISE on every batch; weights and
+# every parameter's .grad unchanged; rows per output dimension >= the capture config's
+# min_samples_per_dim; every Gram finite. SMOKE (--smoke-batches N, outside results/): the rows check
+# is unverified (recorded); the rest is enforced; a smoke capture never makes the summary complete.
+#
+# U RULE AND DECISIVE QUANTITY (E1's own): U accumulated task by task with extend_basis over the
+# per-task G_v; decisive rule adaptive, eps_out 0.95, f 0.9. Decisive quantity: the parameter-weighted
+# trunk two-sided fraction of (U_1 u U_2 u U_3)_R x memory_task2 (E2's T4-pilot start).
+# VERDICT, first match: invalid; incomplete (fewer than 4 non-smoke captures); pass (<= threshold);
+# fail. Exit codes of the summary: 0 pass/fail, 3 invalid, 4 incomplete.
+# LABELS (never change the verdict):
+#   uniform_integrated_suffices  I's decisive fraction <= threshold (I changes the integration, the
+#                                window and the scaling relative to E1; it isolates the weighting)
+#   concentration_suffices       S's <= threshold
+#   phase_mapping_sensitive      P's verdict differs from R's (the conclusion is then scoped to the
+#                                transferred weighting)
+#   near_full_rank               R's trunk param-weighted k_out/d_out >= rule.near_full_rank
+# Ri's A-only and B-only chains on opposite sides of the threshold: Ri's estimator_sensitive (Ri is
+# never decisive).
+# REPORTED ONLY: every variant x {adaptive, fixed} x eps_out, after T1-T4, by half and group; E1's
+# velocity fractions (its summary, pinned); Ri's A/B stability; the weight table; the ALIGNMENT CHECK
+# (command-level evidence of phase correspondence, not evidence that an object is carried): per bin,
+# the gripper-closed fraction in the demos against the recovery rollouts' (inferred at each query
+# from which recovery.magnitude-sigma gripper perturbation flipped the command) and the median
+# rollout / demo length ratio; the T4 point; E1's labelled forecast; timings and seeds.
+#
+# PRE-WRITTEN CONSEQUENCES. PASS: plan E2-B (the T4/T5 matched-start pilots with the two-sided
+# projector); its rule defines a deterministic rank-budgeted construction of the uniform, shuffled and
+# random controls from the saved Grams (including layers where a control's rank is below R's).
+# FAIL: the recovery line stops (a scheduling decision); D2 = the minimum thesis; the record says "the
+# tested surrogate did not meet the preregistered 50% capacity budget under this capture and
+# accumulation rule", not that every recovery-derived Kronecker metric lacks useful capacity.
+#
+# Outputs (results/<out>/): capture/task{i}/{grams_coherent.pt, grams_hutch_A.pt, grams_hutch_B.pt,
+# capture.json} (published atomically), bases/{R,I,S,P}_adaptive_e0.95_task{i}.pt, summary.json.
+
+seed: 0
+out: twosided_angleb                 # under results/
+
+source:                              # E1's, unchanged (adaptive GPM, seed 0)
+  run: seq_hetero__gpm_projected_adam_ne90__seed0
+  eps: 0.95
+  new_energy_fraction: 0.9
+  capture_config: subspace
+  sha256:
+    stage0: 08151a08c0aaa522592999f0f645afe99403dc022992de977a3c81c79204e19f
+    stage1: 6c930927b209e631227ceff682f54a005b7bd97a2fb4a1be97e6dae2b9575a74
+    stage2: f3f5202eac82e9210b6f62d6494c9934aa12946f116d5fec6931f28338b02404
+    stage3: 4a2b4e3ffb6c8fc867adfd1aaee6f8d4fc781b44423abdb51e94ca5db332cf15
+    memory0: 65d69c8610361cdbdadb7b12ec2ef09e2e7684341be930420e9ba30ada24e894
+    memory1: d95795bb43077cc33a886ed095823beaa9e308573700a2f6f091ee10cfbd59de
+    memory2: db20de36177a0900b8286812e60d6c79d1684497f801b5b2b118929d19b3f1fe
+    memory3: 8a2f9ab7ede969ad1faa8276dbdfde73ccb9baf0d299f24ef2d0edeb3fcb8234
+    result: e25d35fd25f81b65a8e719868ca5b9db8d676fed416fc8c0399ce83c723b22ba
+
+e1:                                  # E1's published summary (reported alongside)
+  summary: twosided_gonogo/summary.json
+  sha256: 03d4359d1b0cda6650fa0cb3eefd87d6e67e0a0c3410fea575add15b176f0d63
+
+recovery:
+  rule: configs/analysis/recovery_study.yaml
+  rule_sha256: 88a8a72bdb4553e1aa3a6d320f346e0502df5774bb9bb6af4dab0af22fdfc5df
+  analysis: recovery_study/analysis/analysis.json
+  analysis_sha256: 33ac9f44ea94d2c7cd26c3e40ccf344c8b9e5d226c19e601b21aec9a96c6928b
+  work: recovery_study/.work
+  magnitude: 3.0
+  n_bins: 6
+
+capture:
+  execute_k: 8
+  groups: {position: [0, 3], rotation: [3, 6], gripper: [6, 7]}
+  n_probes: 2                        # Ri: A, B
+  noise_tag: angleb_noise
+  u_tag: angleb_u
+  shuffle_tag: angleb_shuffle
+  row_subsample_seed: 2
+
+variants: [R, I, S, P, R0]
+decisive_variant: R
+
+u_rule:                              # E1's
+  decisive: {rule: adaptive, eps_out: 0.95}
+  eps_out: [0.90, 0.95, 0.99]
+  rules:
+    adaptive: 0.9
+    fixed: null
+
+rule:                                # E1's
+  decisive_task: 2
+  half: trunk
+  threshold: 0.50
+  near_full_rank: 0.90
+
+forecast:                            # E1's (labelled a forecast)
+  from_tasks: [1, 3]
+  to: [5, 6, 7, 8]
