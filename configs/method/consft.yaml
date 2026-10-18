@@ -1,0 +1,22 @@
+# consft: Conservative SFT (docs/thesis_plan.md, Workstream B; Zhang et al., arXiv 2605.08879v2). See
+# flowcl/methods/consft.py and docs/consft_notes.md: each sample's flow-matching loss is scaled by the
+# stop-gradient weight max(omega_min, exp(-kappa L_i / tau(t))), tau rising from tau_start to tau_end over
+# decay_steps (eq. 11-12), restarted at every task; Task 1 is seq_ft.
+#
+# The constants are the paper's Table 5 (the user's decision). tau_start and decay_steps are the bracket's
+# registered selection: z = 1000 at T = 30000 (tau_start = kappa q50 / z, q50 = 0.6532 from the calibration
+# cc2d2a39...), the upper edge extension, flagged all_eligible_spatial_zero, edge_extension and
+# optimum_at_boundary; from the frozen bundle results/baseline_selection_consft/consft/selection/
+# (selection.json SHA-256 b0f20f54...; rule configs/analysis/baseline_selection_consft.yaml; record
+# docs/runs/2026-10-18_consft_bracket.md). Production ConSFT seed 0's stage 1 is identity-checked against
+# that arm's checkpoint.
+name: consft
+
+tau_start: 0.016330303251743318
+decay_steps: 30000
+kappa: 25.0
+decay_rate: 0.8
+curve: 3.5
+omega_min: 0.001
+tau_end: 5.0
+log_interval: 100

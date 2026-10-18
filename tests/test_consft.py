@@ -179,3 +179,17 @@ def test_validation_and_registry():
                 {"log_interval": 0}):
         with pytest.raises(ValueError):
             ConSFT(**{**TABLE5, **bad})
+
+
+def test_the_production_config():
+    from flowcl.data.config import load_method_config
+    from flowcl.experiments import consft_selection as cs
+
+    name, kw = load_method_config("consft")  # filled from the bracket's bundle (z 1000, T 30000)
+    assert name == "consft" and kw == {"tau_start": 0.016330303251743318, "decay_steps": 30000, "kappa": 25.0,
+                                       "decay_rate": 0.8, "curve": 3.5, "omega_min": 0.001, "tau_end": 5.0,
+                                       "log_interval": 100}
+    rule = cs.load_config()
+    assert kw["tau_start"] == rule["consft"]["calibration"]["tau_starts"]["z1000__T30000"]
+    assert {k: kw[k] for k in cs.constants(rule)} == cs.constants(rule)
+    assert isinstance(build_method(name, **kw), ConSFT)
