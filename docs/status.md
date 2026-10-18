@@ -1,4 +1,4 @@
-# Status: where the thesis stands (Sat 17 Oct 2026, week W2 of `docs/thesis_plan.md`)
+# Status: where the thesis stands (Sun 18 Oct 2026, week W2 of `docs/thesis_plan.md`)
 
 This is the handoff page: what is done, what is parked, what comes next. The plan itself is
 `docs/thesis_plan.md`; every result has a record in `docs/runs/`. Update this page when the state
@@ -27,6 +27,23 @@ changes.
   - **Selected: rank 16, lr 3e-5,** inside the grid, with Spatial 0.52 and Object 0.70 (GPM: 0.94
     and 0.78). It is in `configs/method/lora.yaml`.
   - At lr 1e-5, Object falls below the floor at every rank. Retention falls steeply with lr.
+- **ConSFT is implemented and its τ_start and T are decided** (Sun 18 Oct 09:40;
+  `runs/2026-10-18_consft_bracket.md`; notes `consft_notes.md`).
+  - **The method:** Table 5's constants (the user's choice). T1 is seq_ft, and the schedule
+    restarts at every task.
+  - **The bracket:** 9 arms plus one edge extension. The z ladder was amended before any arm (to
+    {10, 30, 100, 300}), because τ_end = 5 caps z = 1 and z = 3.
+  - **Spatial is 0/50 at every arm, and no arm's Spatial probe loss is below seq_ft's (0.725).**
+  - **Selected: z = 1000 at T = 30000** (τ_start 0.0163). It is the upper edge extension, chosen by
+    the probe-loss tie-break: 0.730, Object 0.92. Flags: `all_eligible_spatial_zero`,
+    `edge_extension`, `optimum_at_boundary`. It is in `configs/method/consft.yaml`.
+  - **Readings, not demonstrations:**
+    - under AdamW, a uniform floor trains like SFT (the Table 5 arm's first 1,700 steps);
+    - the T = 2000 arms' abrupt weight rise coincides with a loss jump and a higher Spatial probe
+      loss (note (c));
+    - much of the weighting runs along flow time.
+  - **The bundle carries Track 2 exclusion keys** for all 10 arms × 2 tasks. Step 4 must use them
+    (§4, item 1).
 - **Order decided on Sun 11 Oct:** the 4-task replay, EWC and LoRA runs are Track 2's held-out
   test, so they run after Track 2's freeze.
 - **Track 2 is FROZEN (Thu 15 Oct 21:59; `runs/2026-10-15_track2_selection.md`).** Steps 1–3 are done:
@@ -37,6 +54,7 @@ changes.
     development intervals include 0, and `m3_mean` fails root weighting, so "not shown" is the likely
     held-out result.
   - **Next:** the 4-task baseline runs (the test set) can be queued; then step 4, the held-out test.
+    Step 4 must also exclude the bracket arms that came after the freeze (§4, item 1).
 - **The projected-LoRA comparison is done** (Wed 14 Oct 07:44; `runs/2026-10-14_projected_lora_comparison.md`).
   No new mechanism is claimed. T1 -> T2 on seed 0, low-rank adapters confined to the complement of
   GPM's Task-1 memory:
@@ -83,7 +101,7 @@ changes.
 | **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | **not started** | |
 | **A6** metric naming (ACC, F_first) in tables and README | **not started** | |
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
-| **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). **LoRA** (`75fb0e1`) **v1 bracket:** rank {4,16,64} × lr {1e-4,3e-4,1e-3} plus (1, 1e-4) and (4, 3e-5); Spatial falls with lr at every rank; rank 4, lr 3e-5 at the boundary. **v2** (`620727b`, post hoc): lr 1e-5 and 3e-5 at ranks 4–64; at 1e-5 Object < floor at every rank. **Selected rank 16, lr 3e-5:** Spatial 0.52, Object 0.70; the top eligible arms are within noise (0.52 / 0.48 / 0.46 / 0.44). 4-task replay/EWC/LoRA runs wait for Track 2's freeze; ConSFT not started | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md`, `runs/2026-10-11_lora_bracket.md`, `runs/2026-10-12_lora_bracket_v2.md` |
+| **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). **LoRA** (`75fb0e1`) **v1 bracket:** rank {4,16,64} × lr {1e-4,3e-4,1e-3} plus (1, 1e-4) and (4, 3e-5); Spatial falls with lr at every rank; rank 4, lr 3e-5 at the boundary. **v2** (`620727b`, post hoc): lr 1e-5 and 3e-5 at ranks 4–64; at 1e-5 Object < floor at every rank. **Selected rank 16, lr 3e-5:** Spatial 0.52, Object 0.70; the top eligible arms are within noise (0.52 / 0.48 / 0.46 / 0.44). **ConSFT** (`a8250ce`; Table 5 constants) **bracket:** z ∈ {10, 30, 100, 300} × T ∈ {2000, 30000} plus Table 5's point (amended before any arm, `288c343`), calibrated at q50 0.653 (`9a90b6f`): Spatial 0.00 at every arm, Spatial probe loss never below seq_ft's (best 0.730). **Selected z = 1000, T = 30000** (τ_start 0.0163; upper edge extension, `all_eligible_spatial_zero`, `optimum_at_boundary`); Object 0.92; in `configs/method/consft.yaml` (`5b4ae22`). The 4-task baseline runs are next (Track 2 is frozen) | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md`, `runs/2026-10-11_lora_bracket.md`, `runs/2026-10-12_lora_bracket_v2.md`, `runs/2026-10-18_consft_bracket.md` |
 | **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **step 2 done: the measures M0–M3** (`d213ddb`/`99e8083`): 449 cells, bundle `5be958cc…`, instrument checks 281/281 within 2.1e-5; descriptive only (`runs/2026-10-13_track2_measures.md`). **Step 1 done: the development manifest** (`2ec4c03`, merged): 449 cells (checkpoint × trained task, 50 rollouts) under 24 roots; seed 0's shared stage 0 holds 214; 63 bitwise duplicates collapsed (one disagrees by 2/50 rollouts); 114 depth-1 / 147 first-divergence branches (branch definition changed in `thesis_plan.md` §D, the literal one kept as sensitivity); held-out key set published. **Next: step 3's rule**, then validation and the freeze | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct**; `runs/2026-10-12_track2_manifest.md` |
@@ -163,17 +181,32 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 
 ## 4. Next, when back on the plan (priority order)
 
-0. **Next on the GPU: the seed-0 4-task baseline queue** (Track 2's held-out test set). It needs a
-   plan, the production configs for `projected_lora` / `inflora`, and identity checks against the
-   bracket arms. The recovery line is closed (E1-B `fail`), and D2 resolves to the minimum thesis.
-1. **Track 2 (D):** brought forward (see item 3). The baselines' brackets are done; their 4-task runs
-   follow the freeze. Before the 4-task baseline runs, `sequence_report` must become
-   method-conditional (`frozen_from_stage1`, the pilot comparison).
+0. **Next on the GPU: the seed-0 4-task baseline queue** (Track 2's held-out test set): replay,
+   EWC, LoRA, ConSFT, `projected_lora` and `inflora`.
+   - **Needed first:**
+     - a plan;
+     - the production configs for `projected_lora` / `inflora` (`consft.yaml` is done);
+     - `sequence_report` made method-conditional (`frozen_from_stage1`, the pilot comparison).
+   - **Identity checks:** each method's stage 1 against its selected bracket arm. For ConSFT that is
+     `results/baseline_selection_consft/consft/seed0/consftb__z1000__T30000__seed0/checkpoints/final.pt`,
+     tensor fingerprint `3b6cd54d…`.
+   - The recovery line is closed (E1-B `fail`), and D2 resolves to the minimum thesis.
+1. **Track 2 (D), step 4: post-freeze bracket arms must be excluded.**
+   - **The gap:** the frozen rule excludes test cells whose (fingerprint, task) is in the published
+     `development_keys`. Those come from the 12 Oct manifest, so they cover the EWC and LoRA bracket
+     arms but not the brackets that ran after it.
+   - **ConSFT:** step 4 must exclude the union of the development keys and ConSFT's bundle's
+     `track2_exclusion_keys`. That is 20 keys, recomputed by `verify` from the checkpoints.
+   - **`projected_lora` (13 arms) and `inflora` (12 arms):** their 14 Oct bundles carry no keys.
+     Step 4 must derive them from those bundles' arm checkpoints (`ewc.tensor_fingerprint`, both
+     trained tasks).
+   - **The acceptance check, for each method:** a production stage-1 cell identity-checked against
+     its selected arm is actually excluded by the union.
+   - The frozen rule and its bundle are not modified.
 2. **Thesis wording from C1:** raising T2 protection removes the Object forgetting; the new-energy
    allocation adds at most a small, seed-dependent amount at that cell (significant on one seed of
    three). Its consistent edge is final Object retention at about 15 pp more capacity (E3's frontier).
 3. **Track 2 (D):** frozen on Thu 15 Oct. Angle B no longer depends on it (E1-B closed angle B), so
-   the held-out test is reported for its own sake. The 4-task replay, EWC and LoRA runs come first.
+   the held-out test is reported for its own sake. The 4-task baseline runs (item 0) come first.
 4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).
-5. **ConSFT notes** (W5).
-6. **Hardware:** F1 engineering on AgileX (adapter, `hw_env`, proof) continues in parallel to the GPU work; reuse the `dobot-hw` pieces (§3).
+5. **Hardware:** F1 engineering on AgileX (adapter, `hw_env`, proof) continues in parallel to the GPU work; reuse the `dobot-hw` pieces (§3).
