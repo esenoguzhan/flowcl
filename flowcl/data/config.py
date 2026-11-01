@@ -11,7 +11,13 @@ from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
 
-from flowcl.data.spec import ActionSpec, EmbodimentSpec, ObservationSpec
+from flowcl.data.spec import (
+    ActionSpec,
+    EmbodimentSpec,
+    ObservationSpec,
+    parse_hw,
+    parse_image_masks,
+)
 from flowcl.utils.libero_paths import repo_root
 
 
@@ -54,6 +60,8 @@ def load_embodiment_spec(cfg: DictConfig | dict | str | Path) -> EmbodimentSpec:
         image_size=tuple(obs["image_size"]),
         d_state=int(obs["d_state"]),
         state_keys=tuple((str(k), int(v)) for k, v in obs.get("state_keys", [])),
+        image_masks=parse_image_masks(obs.get("image_masks")),
+        mask_source_hw=parse_hw(obs.get("mask_source_hw")),
     )
     action = ActionSpec(
         d_action=int(act["d_action"]),

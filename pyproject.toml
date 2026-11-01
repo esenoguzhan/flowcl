@@ -39,6 +39,7 @@ dependencies = [
     "huggingface-hub>=0.24",    # LIBERO dataset download (§ prepare_libero)
     "wandb>=0.17,<0.19",
     "matplotlib>=3.8,<4",
+    "pyarrow>=25.0.1",
 ]
 
 [dependency-groups]

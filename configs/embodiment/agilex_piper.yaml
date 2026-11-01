@@ -1,0 +1,51 @@
+# AgileX Piper, one 6-DoF arm with a parallel gripper, teleoperated from a leader arm
+# (Stage B robot, thesis plan F1). Demos are LeRobot v3.0 recordings at 15 fps in
+# ~/piper_datasets, read by flowcl/data/piper_adapter.py.
+name: agilex_piper
+
+observation:
+  # Order is load-bearing (token order into the trunk). front = the recordings'
+  # observation.images.image (third person), wrist = observation.images.wrist_image.
+  cameras:
+    - front
+    - wrist
+  # Recorded at 640x480 and reduced by flowcl.data.images.policy_frame for both the
+  # training cache and serving.
+  image_size: [128, 128]
+  # Measured joint positions (rad) and the measured gripper opening (m, 0 = closed).
+  # Both are what the robot reports live; the gripper reads the object's width while
+  # holding it.
+  d_state: 7
+  state_keys:
+    - [joints, 6]
+    - [gripper, 1]
+  # The front camera sees the operator and the leader arm (top left). The leader arm's
+  # pose is the action, and it sits still at home when the policy runs alone, so that
+  # corner is blacked out in training and serving alike. Vertices are (x, y) pixels of
+  # the recorded 640x480 frame, checked against frames from every episode.
+  mask_source_hw: [480, 640]
+  image_masks:
+    front:
+      - [[0, 0], [260, 0], [260, 115], [150, 250], [0, 260]]
+
+action:
+  # Absolute joint targets (rad) + gripper target (m) from the leader arm. The
+  # measured state follows them 1-2 ticks later.
+  d_action: 7
+  control_mode: joint_position
+  # The recording rate; no subsampling.
+  control_rate_hz: 15.0
+  # 1.07 s of future actions.
+  chunk_horizon: 16
+  # 0.53 s open-loop, then replan.
+  execute_k: 8
+  already_normalized: false
+  component_keys:
+    - [joints, 6]
+    - [gripper, 1]
+
+notes: >
+  AgileX Piper single arm, leader-follower teleop recorded with LeRobot (robot_type
+  piper) at 15 fps. The recordings also carry observation.eef / action.eef (end-effector
+  pose and deltas); they are not used. No std floor yet: a floor matters only for later
+  tasks under frozen Task-1 stats, and it would have to spare the gripper (std 0.018 m).

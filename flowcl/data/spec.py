@@ -34,12 +34,22 @@ class ObservationSpec:
         state_keys: Ordered, human-readable names of the state components, with the
             width of each. Recorded so a state-layout change is visible in configs
             and in every run's ``config.yaml`` rather than being implicit.
+        image_masks: ``(camera, polygons)`` pairs. Each polygon is a tuple of
+            ``(x, y)`` pixel vertices in the camera's recorded frame, filled black
+            before resizing by :func:`flowcl.data.images.policy_frame`. For hardware
+            cameras that see the teleoperator: the leader arm's pose is the action,
+            and it sits still when the policy runs alone. Part of the spec so every
+            checkpoint carries the masks it was trained with.
+        mask_source_hw: ``(H, W)`` of the recorded frames the mask vertices refer
+            to. Required exactly when ``image_masks`` is set.
     """
 
     cameras: tuple[str, ...]
     image_size: tuple[int, int]
     d_state: int
     state_keys: tuple[tuple[str, int], ...] = ()
+    image_masks: tuple[tuple[str, tuple[tuple[tuple[int, int], ...], ...]], ...] = ()
+    mask_source_hw: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if not self.cameras:
@@ -57,6 +67,45 @@ class ObservationSpec:
                     f"state_keys widths sum to {total} but d_state is {self.d_state}; "
                     f"keys={self.state_keys}"
                 )
+        self._validate_masks()
+
+    def _validate_masks(self) -> None:
+        if not self.image_masks:
+            if self.mask_source_hw is not None:
+                raise ValueError("mask_source_hw is set but image_masks is empty")
+            return
+        if self.mask_source_hw is None or len(self.mask_source_hw) != 2 or any(
+            v <= 0 for v in self.mask_source_hw
+        ):
+            raise ValueError(
+                f"image_masks need a positive mask_source_hw (H, W), got {self.mask_source_hw}"
+            )
+        height, width = self.mask_source_hw
+        named = [camera for camera, _ in self.image_masks]
+        if len(set(named)) != len(named):
+            raise ValueError(f"image_masks names a camera twice: {named}")
+        for camera, polygons in self.image_masks:
+            if camera not in self.cameras:
+                raise ValueError(
+                    f"image_masks camera {camera!r} is not one of {self.cameras}"
+                )
+            if not polygons:
+                raise ValueError(f"image_masks[{camera!r}] has no polygons")
+            for polygon in polygons:
+                if len(polygon) < 3:
+                    raise ValueError(
+                        f"image_masks[{camera!r}]: a polygon needs >= 3 vertices, got {polygon}"
+                    )
+                for x, y in polygon:
+                    if not (0 <= x <= width and 0 <= y <= height):
+                        raise ValueError(
+                            f"image_masks[{camera!r}]: vertex {(x, y)} lies outside the "
+                            f"{width}x{height} recorded frame"
+                        )
+
+    def masks_for(self, camera: str) -> tuple[tuple[tuple[int, int], ...], ...]:
+        """The polygons masked out of ``camera``'s frames (empty when unmasked)."""
+        return dict(self.image_masks).get(camera, ())
 
     def flat_names(self) -> tuple[str, ...]:
         """One name per state dimension, from ``state_keys``."""
@@ -152,17 +201,25 @@ class EmbodimentSpec:
         """Plain-data form, for embedding in checkpoints and run artifacts.
 
         Checkpoints carry the spec rather than a config *name* so that evaluating an
-        old checkpoint cannot silently pick up an edited YAML.
+        old checkpoint cannot silently pick up an edited YAML. The image masks appear
+        only when set, so unmasked specs serialise exactly as before.
         """
+        observation = {
+            "cameras": list(self.observation.cameras),
+            "image_size": list(self.observation.image_size),
+            "d_state": self.observation.d_state,
+            "state_keys": [[k, w] for k, w in self.observation.state_keys],
+        }
+        if self.observation.image_masks:
+            observation["image_masks"] = {
+                camera: [[[x, y] for x, y in polygon] for polygon in polygons]
+                for camera, polygons in self.observation.image_masks
+            }
+            observation["mask_source_hw"] = list(self.observation.mask_source_hw)
         return {
             "name": self.name,
             "notes": self.notes,
-            "observation": {
-                "cameras": list(self.observation.cameras),
-                "image_size": list(self.observation.image_size),
-                "d_state": self.observation.d_state,
-                "state_keys": [[k, w] for k, w in self.observation.state_keys],
-            },
+            "observation": observation,
             "action": {
                 "d_action": self.action.d_action,
                 "control_mode": self.action.control_mode,
@@ -187,6 +244,8 @@ class EmbodimentSpec:
                 image_size=tuple(obs["image_size"]),
                 d_state=int(obs["d_state"]),
                 state_keys=tuple((k, int(w)) for k, w in obs.get("state_keys", [])),
+                image_masks=parse_image_masks(obs.get("image_masks")),
+                mask_source_hw=parse_hw(obs.get("mask_source_hw")),
             ),
             action=ActionSpec(
                 d_action=int(act["d_action"]),
@@ -222,6 +281,25 @@ class EmbodimentSpec:
                 f"Episode incompatible with embodiment {self.name!r}: "
                 + "; ".join(problems)
             )
+
+
+def parse_image_masks(
+    raw: dict | None,
+) -> tuple[tuple[str, tuple[tuple[tuple[int, int], ...], ...]], ...]:
+    """``{camera: [[[x, y], ...], ...]}`` (YAML or ``to_dict`` form) -> spec tuples."""
+    if not raw:
+        return ()
+    return tuple(
+        (
+            str(camera),
+            tuple(tuple((int(x), int(y)) for x, y in polygon) for polygon in polygons),
+        )
+        for camera, polygons in raw.items()
+    )
+
+
+def parse_hw(raw) -> tuple[int, int] | None:
+    return None if raw is None else tuple(int(v) for v in raw)
 
 
 def flatten_named_widths(

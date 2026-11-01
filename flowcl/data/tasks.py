@@ -43,8 +43,22 @@ def _benchmark(suite: str):
     return registry[suite]()
 
 
+def _is_piper(suite: str) -> bool:
+    from flowcl.data.piper_tasks import SUITE
+
+    return suite == SUITE
+
+
 def suite_task_names(suite: str) -> tuple[str, ...]:
-    """Task names for a suite, in LIBERO's own index order."""
+    """Task names for a suite, in LIBERO's own index order.
+
+    The ``piper`` suite (AgileX Piper recordings) comes from
+    :mod:`flowcl.data.piper_tasks` instead of LIBERO's registry.
+    """
+    if _is_piper(suite):
+        from flowcl.data.piper_tasks import TASKS
+
+        return tuple(TASKS)
     bench = _benchmark(suite)
     return tuple(bench.get_task_names())
 
@@ -102,10 +116,24 @@ class TaskRef:
     @property
     def language(self) -> str:
         """The natural-language instruction LIBERO ships with the task."""
+        if _is_piper(self.suite):
+            from flowcl.data.piper_tasks import get_task
+
+            return get_task(self.name).language
         return _benchmark(self.suite).get_task(self.task_idx).language
 
     def demo_path(self, dataset_dir: Path | None = None) -> Path:
-        """Absolute path to this task's HDF5 demos."""
+        """Absolute path to this task's HDF5 demos (the decoded cache for ``piper``)."""
+        if _is_piper(self.suite):
+            from flowcl.data.piper_tasks import cache_path
+
+            path = cache_path(self.name, dataset_dir)
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"Cache for {self.task_key} not found at {path}. Run "
+                    f"`uv run python scripts/prepare_piper.py --build --task {self.name}`."
+                )
+            return path
         root = Path(dataset_dir) if dataset_dir else default_dataset_dir()
         relative = _benchmark(self.suite).get_task_demonstration(self.task_idx)
         path = root / relative
@@ -124,6 +152,12 @@ class TaskRef:
         builds. That would train the policy on one instruction and evaluate it on
         another, which no loss curve would reveal.
         """
+        if _is_piper(self.suite):
+            from flowcl.data.piper_adapter import verify_cache
+            from flowcl.data.piper_tasks import get_task
+
+            verify_cache(self.demo_path(dataset_dir), get_task(self.name))
+            return
         from flowcl.data.libero_adapter import default_task_id, read_task_metadata
 
         path = self.demo_path(dataset_dir)
@@ -175,7 +209,20 @@ def load_task_episodes(
         dataset_dir: Dataset root; defaults to LIBERO's own location.
         verify: Run the §3.2 demo-count and action-stats check first. Leave on
             outside of tight loops; it is the check that catches a corrupt download.
+
+    For ``piper`` tasks ``n_demos=None`` means every training demo: the registry's
+    held-out episodes are never loaded here.
     """
+    if _is_piper(ref.suite):
+        from flowcl.data.piper_adapter import iter_cache_episodes, verify_cache
+        from flowcl.data.piper_tasks import get_task
+
+        task = get_task(ref.name)
+        n = task.n_train if n_demos is None else n_demos
+        path = ref.demo_path(dataset_dir)
+        if verify or n > task.n_train:
+            verify_cache(path, task, n_demos=n)
+        return list(iter_cache_episodes(path, spec, n_demos=n, task_id=ref.task_key))
     from flowcl.data.libero_adapter import iter_episodes, verify_task_file
 
     path = ref.demo_path(dataset_dir)
