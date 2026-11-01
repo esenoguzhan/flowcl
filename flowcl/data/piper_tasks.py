@@ -49,31 +49,42 @@ class PiperTask:
         return self.n_episodes - self.holdout
 
 
+# The 30 Oct 2026 sessions, labelled 'pick the sausage'. Every demo puts the sausage in the
+# pot and then the lid on the pot, from and back to the home pose. pick_sausage episode 0
+# was filmed with the front camera in another pose; episode 15 is a 3.7 s arm return with
+# no task. The v3 session's operator is faster (22-33 s per episode against 24-47 s).
+PICK_SAUSAGE = PiperSource(
+    folder="pick_sausage",
+    sha256="31459649316c92d4884883d65d030531f56f8e0d60bb2e9f84112dc6ac587202",
+    exclude=(0, 15),
+)
+PICK_SAUSAGE_V3 = PiperSource(
+    folder="pick_sausage_v3",
+    sha256="4618ba974fb38292b077f70c27700798acdc85a3d6eeb7128999d615d248cf40",
+)
+SAUSAGE_POT_LID = "put the sausage in the pot and cover it with the lid"
+
 TASKS: dict[str, PiperTask] = {
     t.name: t
     for t in (
         PiperTask(
             name="sausage_pot_lid",
-            language="put the sausage in the pot and cover it with the lid",
-            sources=(
-                PiperSource(
-                    folder="pick_sausage",
-                    sha256="31459649316c92d4884883d65d030531f56f8e0d60bb2e9f84112dc6ac587202",
-                    exclude=(0, 15),
-                ),
-                PiperSource(
-                    folder="pick_sausage_v3",
-                    sha256="4618ba974fb38292b077f70c27700798acdc85a3d6eeb7128999d615d248cf40",
-                ),
-            ),
+            language=SAUSAGE_POT_LID,
+            sources=(PICK_SAUSAGE, PICK_SAUSAGE_V3),
             n_episodes=36,
             holdout=6,
+            notes="Both sessions. The hold-out is pick_sausage_v3 episodes 10-15, the latest session.",
+        ),
+        PiperTask(
+            name="sausage_pot_lid_v3",
+            language=SAUSAGE_POT_LID,
+            sources=(PICK_SAUSAGE_V3,),
+            n_episodes=16,
+            holdout=6,
             notes=(
-                "Recorded 30 Oct 2026 with the label 'pick the sausage', but every demo puts "
-                "the sausage in the pot and then the lid on the pot, from and back to the home "
-                "pose. pick_sausage episode 0 was filmed with the front camera in another pose; "
-                "episode 15 is a 3.7 s arm return with no task. The hold-out is "
-                "pick_sausage_v3 episodes 10-15, the latest session."
+                "The v3 session only: trains on v3 0-9 and holds out v3 10-15, the same six "
+                "episodes sausage_pot_lid holds out, so the two are compared on identical "
+                "episodes (session style against demo count)."
             ),
         ),
     )

@@ -6,6 +6,14 @@ recorded actions. Held-out episodes (the registry's last ``holdout``) against th
 number of training episodes is a first look at generalisation. Open-loop error is not
 closed-loop success: the robot decides.
 
+Two do-nothing baselines on the same ticks give the scale: holding the current measured
+joints, and repeating the last recorded command. A policy that does not beat them on
+held-out episodes has not learned anything that transfers.
+
+``--task`` picks the episodes; a checkpoint trained on another task of the same
+recordings can be checked on them too (with ``--out``), since every Piper task shares the
+embodiment and its mask.
+
     uv run python scripts/hw/piper_offline_check.py \
         --checkpoint results/single__piper__sausage_pot_lid__seed0/checkpoints/final.pt
 """
@@ -15,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +62,8 @@ def check_episode(policy, spec, stats, episode, device, seed: int, batch_size: i
     executed = valid.copy()
     executed[:, k:] = False
     joint_k = err[..., JOINTS][executed]
+    hold_state = episode.state[ticks][:, None, JOINTS]
+    hold_last = episode.action[np.maximum(np.asarray(ticks) - 1, 0)][:, None, JOINTS]
     return {
         "episode_index": episode.meta["episode_index"],
         "source": episode.meta["source"],
@@ -62,12 +73,21 @@ def check_episode(policy, spec, stats, episode, device, seed: int, batch_size: i
         "joint_mae_chunk_rad": float(err[..., JOINTS][valid].mean()),
         "worst_joint_mae_executed_rad": float(joint_k.mean(axis=0).max()),
         "gripper_mae_executed_mm": float(1000 * err[..., GRIPPER][executed].mean()),
+        "hold_state_mae_executed_rad": float(np.abs(recorded[..., JOINTS] - hold_state)[executed].mean()),
+        "hold_last_command_mae_executed_rad": float(np.abs(recorded[..., JOINTS] - hold_last)[executed].mean()),
     }
+
+
+def episode_seed(seed: int, episode) -> int:
+    """Sampling noise keyed by the recording, so every task and checkpoint sees the same noise
+    on the same raw episode."""
+    return seed + zlib.crc32(f"{episode.meta['source']}/{episode.meta['raw_episode_index']}".encode())
 
 
 def summarize(rows: list[dict]) -> dict:
     keys = ("joint_mae_executed_rad", "joint_mae_chunk_rad", "worst_joint_mae_executed_rad",
-            "gripper_mae_executed_mm")
+            "gripper_mae_executed_mm", "hold_state_mae_executed_rad",
+            "hold_last_command_mae_executed_rad")
     weights = np.array([r["n_chunks"] for r in rows], dtype=float)
     out = {"episodes": [r["episode_index"] for r in rows], "n_chunks": int(weights.sum())}
     for key in keys:
@@ -104,14 +124,15 @@ def main() -> None:
     report = {"checkpoint": str(args.checkpoint), "task": task.name, "seed": args.seed,
               "execute_k": spec.action.execute_k, "chunk_horizon": spec.action.chunk_horizon}
     for name, indices in groups.items():
-        rows = [check_episode(policy, spec, stats, ep, device, args.seed + ep.meta["episode_index"], args.batch_size)
+        rows = [check_episode(policy, spec, stats, ep, device, episode_seed(args.seed, ep), args.batch_size)
                 for ep in iter_cache_episodes(path, spec, episode_indices=indices)]
         report[name] = {"summary": summarize(rows), "per_episode": rows}
         s = report[name]["summary"]
         print(f"[offline_check] {name:9s} episodes {indices[0]}-{indices[-1]}: joint MAE "
               f"{s['joint_mae_executed_rad']:.4f} rad over the executed {spec.action.execute_k} ticks "
-              f"({s['joint_mae_chunk_rad']:.4f} over the chunk), gripper {s['gripper_mae_executed_mm']:.2f} mm",
-              flush=True)
+              f"({s['joint_mae_chunk_rad']:.4f} over the chunk), gripper {s['gripper_mae_executed_mm']:.2f} mm; "
+              f"holding the state {s['hold_state_mae_executed_rad']:.4f}, the last command "
+              f"{s['hold_last_command_mae_executed_rad']:.4f}", flush=True)
     out = args.out or args.checkpoint.parent.parent / "offline_check.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     print(f"[offline_check] wrote {out}", flush=True)
