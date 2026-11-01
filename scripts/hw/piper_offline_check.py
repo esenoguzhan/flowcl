@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import zlib
 from pathlib import Path
 
 import numpy as np
@@ -31,11 +30,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from flowcl.data.dataset import ChunkedActionDataset, collate_chunks  # noqa: E402
+from flowcl.analysis import open_loop  # noqa: E402
 from flowcl.data.piper_adapter import iter_cache_episodes, verify_cache  # noqa: E402
 from flowcl.data.piper_tasks import cache_path, get_task  # noqa: E402
 from flowcl.train.checkpoint import load_checkpoint  # noqa: E402
-from flowcl.train.trainer import move_batch  # noqa: E402
 
 JOINTS = slice(0, 6)
 GRIPPER = 6
@@ -44,26 +42,13 @@ GRIPPER = 6
 @torch.no_grad()
 def check_episode(policy, spec, stats, episode, device, seed: int, batch_size: int) -> dict:
     """Errors of the predicted chunks at ticks 0, k, 2k, ... of one episode."""
-    k, horizon = spec.action.execute_k, spec.action.chunk_horizon
-    dataset = ChunkedActionDataset([episode], spec, stats, horizon=horizon)
-    ticks = list(range(0, episode.length, k))
-    generator = torch.Generator().manual_seed(seed)
-    predicted, recorded, valid = [], [], []
-    for i in range(0, len(ticks), batch_size):
-        batch = collate_chunks([dataset[t] for t in ticks[i:i + batch_size]])
-        size = batch["actions"].shape[0]
-        noise = torch.randn((size, horizon, spec.d_action), generator=generator).to(device)
-        chunk = policy.sample(move_batch(batch, device), noise=noise).float().cpu().numpy()
-        predicted.append(stats.denormalize_action(chunk))
-        recorded.append(stats.denormalize_action(batch["actions"].numpy()))
-        valid.append(batch["action_mask"].numpy().astype(bool))
-    predicted, recorded, valid = map(np.concatenate, (predicted, recorded, valid))
+    chunks = open_loop.predict_chunks(policy, spec, stats, episode, device, seed, batch_size)
+    ticks, predicted, recorded, valid = chunks.ticks, chunks.predicted, chunks.recorded, chunks.valid
     err = np.abs(predicted - recorded)
-    executed = valid.copy()
-    executed[:, k:] = False
+    executed = chunks.executed(spec.action.execute_k)
     joint_k = err[..., JOINTS][executed]
     hold_state = episode.state[ticks][:, None, JOINTS]
-    hold_last = episode.action[np.maximum(np.asarray(ticks) - 1, 0)][:, None, JOINTS]
+    hold_last = episode.action[np.maximum(ticks - 1, 0)][:, None, JOINTS]
     return {
         "episode_index": episode.meta["episode_index"],
         "source": episode.meta["source"],
@@ -81,20 +66,16 @@ def check_episode(policy, spec, stats, episode, device, seed: int, batch_size: i
 def episode_seed(seed: int, episode) -> int:
     """Sampling noise keyed by the recording, so every task and checkpoint sees the same noise
     on the same raw episode."""
-    return seed + zlib.crc32(f"{episode.meta['source']}/{episode.meta['raw_episode_index']}".encode())
+    return open_loop.episode_seed(seed, f"{episode.meta['source']}/{episode.meta['raw_episode_index']}")
+
+
+SUMMARY_KEYS = ("joint_mae_executed_rad", "joint_mae_chunk_rad", "worst_joint_mae_executed_rad",
+                "gripper_mae_executed_mm", "hold_state_mae_executed_rad",
+                "hold_last_command_mae_executed_rad")
 
 
 def summarize(rows: list[dict]) -> dict:
-    keys = ("joint_mae_executed_rad", "joint_mae_chunk_rad", "worst_joint_mae_executed_rad",
-            "gripper_mae_executed_mm", "hold_state_mae_executed_rad",
-            "hold_last_command_mae_executed_rad")
-    weights = np.array([r["n_chunks"] for r in rows], dtype=float)
-    out = {"episodes": [r["episode_index"] for r in rows], "n_chunks": int(weights.sum())}
-    for key in keys:
-        values = np.array([r[key] for r in rows])
-        out[key] = float((values * weights).sum() / weights.sum())
-        out[f"{key}_range"] = [float(values.min()), float(values.max())]
-    return out
+    return open_loop.summarize(rows, SUMMARY_KEYS, id_key="episode_index")
 
 
 def main() -> None:
