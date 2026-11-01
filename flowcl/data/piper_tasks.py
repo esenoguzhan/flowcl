@@ -80,11 +80,11 @@ TASKS: dict[str, PiperTask] = {
             language=SAUSAGE_POT_LID,
             sources=(PICK_SAUSAGE_V3,),
             n_episodes=16,
-            holdout=6,
+            holdout=4,
             notes=(
-                "The v3 session only: trains on v3 0-9 and holds out v3 10-15, the same six "
-                "episodes sausage_pot_lid holds out, so the two are compared on identical "
-                "episodes (session style against demo count)."
+                "The v3 session only: trains on v3 0-11 and holds out v3 12-15. sausage_pot_lid "
+                "never trains on those four either (it holds out v3 10-15), so the two are "
+                "compared on identical unseen episodes (session style against demo count)."
             ),
         ),
     )

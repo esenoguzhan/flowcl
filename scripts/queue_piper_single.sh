@@ -6,7 +6,7 @@
 #
 # Usage:   bash scripts/queue_piper_single.sh [TASK] [N_DEMOS]   (default: sausage_pot_lid 30)
 # Needs the cache: uv run python scripts/prepare_piper.py --build --task TASK
-# Launch:  tmux new-session -d -s piper "bash scripts/queue_piper_single.sh sausage_pot_lid_v3 10; exec bash"
+# Launch:  tmux new-session -d -s piper "bash scripts/queue_piper_single.sh sausage_pot_lid_v3 12; exec bash"
 # Status:  the last line of results/piper_queue/<TASK>/queue.log is "QUEUE DONE ok" or
 #          "QUEUE DONE FAILED: <step>".
 set -u
