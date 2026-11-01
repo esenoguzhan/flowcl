@@ -84,6 +84,12 @@ def main() -> None:
         help="Train the single-task policies and stop: no rollouts and no Gate 0 verdict. "
         "For embodiments without a simulator (the piper suite).",
     )
+    parser.add_argument("--augment-shift-px", type=int, default=0,
+                        help="Random image shifts of up to this many pixels while training (0 = off).")
+    parser.add_argument("--augment-color", type=float, default=0.0,
+                        help="Brightness/contrast/saturation jitter in [1-c, 1+c] while training (0 = off).")
+    parser.add_argument("--checkpoint-every", type=int, default=0,
+                        help="Also write checkpoints/step_N.pt every N steps (0 = final.pt only).")
     args = parser.parse_args()
 
     if args.n_episodes is not None or args.train_steps < 30000:
@@ -112,6 +118,9 @@ def main() -> None:
         num_workers=args.num_workers,
         device=args.device,
         amp=args.amp,
+        augment_shift_px=args.augment_shift_px,
+        augment_color=args.augment_color,
+        checkpoint_every=args.checkpoint_every,
     )
     if args.no_eval:
         for ref in refs:

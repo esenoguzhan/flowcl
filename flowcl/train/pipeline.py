@@ -177,8 +177,30 @@ def train_on_tasks(
     )
 
     generator = torch.Generator(device="cpu").manual_seed(resolved_seed)
+    every = int(train_cfg.checkpoint_every)
+    if every < 0:
+        raise ValueError(f"checkpoint_every must be >= 0, got {every}")
+    n_steps = train_cfg.steps if train_cfg.stop_after is None else int(train_cfg.stop_after)
+
+    def save_periodic(step: int, outputs: dict) -> None:
+        # After optimiser step ``step + 1``; the last step is final.pt's.
+        done = step + 1
+        if done % every == 0 and done < n_steps:
+            save_checkpoint(
+                run.subdir("checkpoints") / f"step_{done:06d}.pt",
+                policy=policy,
+                policy_config=raw_policy_cfg,
+                spec=spec,
+                stats=stats,
+                run_id=run_id,
+                stage=0,
+                task_key=refs[0].task_key,
+                extra={"task_keys": [ref.task_key for ref in refs], "step": done},
+            )
+
     started = time.perf_counter()
-    log = train_one_task(policy, dataset, train_cfg, generator=generator)
+    log = train_one_task(policy, dataset, train_cfg, generator=generator,
+                         on_step=save_periodic if every else None)
     log.wall_clock_s = time.perf_counter() - started
 
     checkpoint = save_checkpoint(

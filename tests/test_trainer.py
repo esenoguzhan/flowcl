@@ -90,3 +90,21 @@ def test_stop_after_trains_a_bitwise_prefix_of_the_full_schedule(spec):
     for bad in (0, 7):
         with pytest.raises(ValueError, match="stop_after"):
             train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, stop_after=bad))
+
+
+def test_augmentation_draws_from_its_own_generator(spec):
+    """Augmentation changes what the policy sees, but batch order, flow times and noise come
+    from the run generator exactly as without it."""
+    eps = episodes(spec, KEYS[3])
+    stats = compute_stats(eps, embodiment=spec.name, task_id=KEYS[3])
+    dataset = ChunkedActionDataset(eps, spec, stats)
+    base = dict(steps=3, batch_size=2, warmup_steps=1, device="cpu", log_every=0, num_workers=0)
+    runs = {}
+    for name, extra in (("plain", {}), ("augmented", dict(augment_shift_px=4, augment_color=0.2))):
+        g = torch.Generator().manual_seed(0)
+        log = train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, **extra), generator=g)
+        runs[name] = (log.losses, g.get_state())
+    assert torch.equal(runs["plain"][1], runs["augmented"][1])
+    assert runs["plain"][0] != runs["augmented"][0]
+    with pytest.raises(ValueError, match="augment"):
+        train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, augment_color=1.5))

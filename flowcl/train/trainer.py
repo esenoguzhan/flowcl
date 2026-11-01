@@ -22,8 +22,10 @@ from typing import Callable, Iterable
 import torch
 from torch.utils.data import DataLoader
 
+from flowcl.data.augment import augment_images
 from flowcl.data.dataset import ChunkedActionDataset, collate_chunks
 from flowcl.models.policy import FlowPolicy
+from flowcl.utils.seeding import derive_seed
 
 
 @dataclass
@@ -51,6 +53,14 @@ class TrainConfig:
     # Train only the first ``stop_after`` steps of the ``steps``-step schedule (a pilot is
     # then the exact prefix of the full run). ``None`` trains all ``steps``.
     stop_after: int | None = None
+    # Image augmentation (flowcl.data.augment): random shifts of up to ``augment_shift_px``
+    # pixels and colour jitter of strength ``augment_color``. 0 = off, the setting of every
+    # registered LIBERO run. Its draws come from a generator of its own.
+    augment_shift_px: int = 0
+    augment_color: float = 0.0
+    # Write ``checkpoints/step_{N}.pt`` every ``checkpoint_every`` steps besides final.pt
+    # (honoured by flowcl.train.pipeline.train_on_tasks). 0 = off.
+    checkpoint_every: int = 0
 
 
 @dataclass
@@ -161,6 +171,25 @@ def build_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: schedule_factor(cfg, step))
 
 
+def augment_generator(
+    cfg: TrainConfig, generator: torch.Generator | None, device: torch.device
+) -> torch.Generator | None:
+    """The augmentation's own RNG, or None when the config asks for no augmentation.
+
+    Seeded from the run generator's seed without drawing from it, so batch order, flow
+    times and noise are exactly those of the same run without augmentation.
+    """
+    if cfg.augment_shift_px < 0 or not 0.0 <= cfg.augment_color < 1.0:
+        raise ValueError(
+            f"augment_shift_px must be >= 0 and augment_color in [0, 1); got "
+            f"{cfg.augment_shift_px}, {cfg.augment_color}"
+        )
+    if not (cfg.augment_shift_px or cfg.augment_color):
+        return None
+    base = generator.initial_seed() if generator is not None else 0
+    return torch.Generator(device=device).manual_seed(derive_seed(str(base), "augment", 0))
+
+
 def move_batch(batch: dict, device: torch.device) -> dict:
     """Move tensors to ``device``, leaving the string fields alone."""
     out = dict(batch)
@@ -241,6 +270,7 @@ def train_one_task(
 
     scaler = torch.amp.GradScaler(device.type, enabled=cfg.amp and device.type == "cuda")
     log = TrainLog(trainable_params=trainable_params, config=dataclasses.asdict(cfg))
+    augment = augment_generator(cfg, generator, device)
     started = time.perf_counter()
 
     for step in range(n_steps):
@@ -255,6 +285,10 @@ def train_one_task(
             if batch is None:
                 batch = next(batches)
             batch = move_batch(batch, device)
+            if augment is not None:
+                batch["images"] = augment_images(
+                    batch["images"], cfg.augment_shift_px, cfg.augment_color, augment
+                )
 
             with torch.autocast(
                 device_type=device.type, enabled=cfg.amp and device.type == "cuda"
