@@ -87,6 +87,18 @@ TASKS: dict[str, PiperTask] = {
                 "compared on identical unseen episodes (session style against demo count)."
             ),
         ),
+        PiperTask(
+            name="sausage_pot_lid_v1",
+            language=SAUSAGE_POT_LID,
+            sources=(PICK_SAUSAGE,),
+            n_episodes=20,
+            holdout=4,
+            notes=(
+                "The first session (pick_sausage) only: trains on its first 16 kept episodes "
+                "(raw 1-14, 16, 17) and holds out raw 18-21. sausage_pot_lid trained on those "
+                "four, so the common unseen ground of all Piper policies is v3 12-15."
+            ),
+        ),
     )
 }
 
