@@ -134,8 +134,8 @@ robot runner, open-loop replay of 3 demos on the robot, closed-loop rollouts) is
 - **Further out, the policy carries some information.** From tick 11 on it beats holding still
   (0.102 vs 0.114; 0.121 vs 0.146): it predicts the direction of motion, roughly.
 - **The held-out episodes are all from the faster `v3` session,** while two thirds of the training
-  demos are from the slower one. Part of the gap may be session style rather than new object
-  placements; this check cannot separate the two.
+  demos are from the slower one. The follow-up in §8 rules this out as the main cause: a `v3`-only
+  policy does worse on the same unseen episodes.
 - **Open-loop error is not closed-loop success.** A memorising policy can still succeed on the
   robot if the scene stays close to the demos. The F1 proof decides.
 
@@ -177,7 +177,50 @@ robot runner, open-loop replay of 3 demos on the robot, closed-loop rollouts) is
     passed file by file; `test_twosided_gonogo` alone takes 14 min.
 - **Smoke run:** 200 steps on 2 demos, then the offline check, end to end.
 
-## 7. Still to do in F1
+## 7. Why it does not transfer: input probes (`final.pt`, no retraining)
+
+- **It follows the measured arm position.** With the state from 8 ticks later, the first command
+  moves 0.070 rad (the state moved 0.074).
+- **It uses the cameras.** With another held-out episode's frames at the same phase of the task, the
+  16-tick plan changes by 0.07–0.10 rad; with black frames, by 0.14.
+- **On a new layout it does not replay a demo.** Its held-out plans are as far from the nearest
+  recorded training chunk (0.078) as from the truth (0.081).
+- **Reading:** each object layout appears in one demo, and 30 demos at about 140 epochs are
+  memorised demo by demo rather than as a rule. This is overfitting, not a pipeline fault.
+- **Not in the trainer yet:** image augmentation and periodic checkpoints (for earlier stopping).
+
+## 8. Follow-up: `v3` only, 12 demos (`f04786a`)
+
+**Question:** does the slower `pick_sausage` session's style explain the held-out gap?
+
+**Setup:** task `sausage_pot_lid_v3` trains on `v3` 0–11 (4,492 samples) and holds out `v3` 12–15.
+The 30-demo policy never trained on those four either.
+- The recipe is the same: 30k steps, about 430 epochs here against 140.
+- The offline check now keys the sampling noise by recording, so both policies see the same
+  noise on each episode. The 30-demo numbers below come from that rerun
+  (`offline_check_v3split.json`).
+- The run: `results/single__piper__sausage_pot_lid_v3__seed0`, 17:35–18:14. The logged loss was
+  0.0092 over the last 1k steps.
+
+| Held out (`v3`) | `v3` only, 12 demos | Both sessions, 30 demos | Hold last command |
+|---|---:|---:|---:|
+| 12 | 0.1029 | 0.0542 | 0.0443 |
+| 13 | 0.1137 | 0.0586 | 0.0483 |
+| 14 | 0.0750 | 0.0490 | 0.0455 |
+| 15 | 0.1006 | 0.0557 | 0.0495 |
+| **all, executed 8 ticks** | **0.0987** | **0.0545** | **0.0469** (hold state 0.0538) |
+| all, 16 ticks | 0.1313 | 0.0775 | |
+| worst joint | 0.2188 | 0.0795 | |
+| training episodes 0–3 | 0.0021 | 0.0036 | 0.0373 |
+
+**Reading:**
+- **Session style is not the problem.** Dropping the other session makes every unseen episode
+  worse: the error nearly doubles.
+- **The 20 slower demos help.** More layouts beat matching the operator's style.
+- **Fewer demos memorise harder.** Training error falls (0.0021) while held-out error rises.
+- **The direction is more data per task (and augmentation), not filtering by session.**
+
+## 9. Still to do in F1
 
 - **The robot side:**
   - a policy server built from the checkpoint (it applies the checkpoint's mask);
@@ -187,4 +230,4 @@ robot runner, open-loop replay of 3 demos on the robot, closed-loop rollouts) is
   - the 10 closed-loop rollouts from the held-out photos, with the measured cycle time.
 - **Keep the front camera where it is** until the proof is done; mark its mount. The demos and the
   rollouts must share its pose.
-- **Decide** whether to try the cheap levers (§5) before the robot or after the first rollouts.
+- **Decide** whether to try the cheap levers (§5) before the robot or after the first rollouts. §8 says more demos help; filtering by session does not.
