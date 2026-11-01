@@ -10,6 +10,13 @@ changes.
 - **The Dobot demo was cancelled on Wed 7 Oct:** the robot is not available.
 - **AgileX stays the Stage B robot.** The user is setting up the arms in the lab; hardware
   deployment comes later.
+- **Piper F1, data and training half, done Sun 1 Nov** (`runs/2026-11-01_piper_f1_prep.md`).
+  - 36 demos of one task: sausage into the pot, then the lid on the pot.
+  - The front camera is masked where the operator and the leader arm are.
+  - A 30-demo single-task policy is trained.
+  - Offline, it memorises: held-out open-loop error 0.054 rad, no better than holding the last
+    command (0.044); training 0.0036.
+  - The robot side (server, runner, replay, rollouts) is next.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
@@ -108,7 +115,8 @@ changes.
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
 | **E1-B** angle-B capacity gate (recovery-weighted executed prefix) | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933, the same as E1 to three decimals; every weighting 0.850–0.870) | `runs/2026-10-17_twosided_angleb.md` |
 | **E2** pilots | **not run:** angle A is off (E1), angle B is off (E1-B). **D2 resolves to the minimum thesis** (pre-written in E1-B's rule) | `runs/2026-10-02_twosided_gonogo.md`, `runs/2026-10-17_twosided_angleb.md` |
-| **F0** hardware readiness | **not started on AgileX**. The Dobot try-out was cancelled before any robot time | branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
+| **F0** hardware readiness | **log format inspected on AgileX Piper** (LeRobot v3.0, 15 fps, absolute joint targets, measured gripper); access, reset time and cycle time not measured yet. The Dobot try-out was cancelled before any robot time | `runs/2026-11-01_piper_f1_prep.md`; branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
+| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still. **Not started:** server, robot runner, replay of 3 demos, 10 rollouts | `runs/2026-11-01_piper_f1_prep.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
 ## 2. Side line, outside the plan: similar tasks and language (closed for now)
@@ -209,4 +217,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 3. **Track 2 (D):** frozen on Thu 15 Oct. Angle B no longer depends on it (E1-B closed angle B), so
    the held-out test is reported for its own sake. The 4-task baseline runs (item 0) come first.
 4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).
-5. **Hardware:** F1 engineering on AgileX (adapter, `hw_env`, proof) continues in parallel to the GPU work; reuse the `dobot-hw` pieces (§3).
+5. **Hardware:** F1 engineering on AgileX continues in parallel to the GPU work.
+   - **Done:** the Piper adapter, mask and first policy (`runs/2026-11-01_piper_f1_prep.md`).
+   - **Next:** the policy server and robot runner, reusing the `dobot-hw` pieces (§3), then the
+     replay of 3 demos and the rollouts.
+   - **Keep the front camera's pose fixed** until the proof is done.
