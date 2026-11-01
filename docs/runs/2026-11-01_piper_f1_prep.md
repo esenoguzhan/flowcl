@@ -220,7 +220,58 @@ The 30-demo policy never trained on those four either.
 - **Fewer demos memorise harder.** Training error falls (0.0021) while held-out error rises.
 - **The direction is more data per task (and augmentation), not filtering by session.**
 
-## 9. Still to do in F1
+## 9. Follow-up: v1 (`pick_sausage`) only, 16 demos (`2abf389`)
+
+**Setup:**
+- Task `sausage_pot_lid_v1` is the first session alone, split 80/20: it trains on its first 16 kept
+  episodes (raw 1–14, 16, 17; 7,943 samples) and holds out raw 18–21.
+- Raw 19 starts with the arm raised, and raw 21 stops before the home pose.
+- The recipe is the same: 30k steps, about 240 epochs. The run: 19:04–19:43; loss 0.0177 over the
+  last 1k steps.
+- Each policy was also checked on the other split's unseen episodes, with the same noise per
+  recording (`offline_check_v3split.json`, `offline_check_v1split.json` in the run directories).
+- `v3` 12–15 is the only ground all three policies share unseen. The 30-demo policy trained on
+  v1 18–21, so it is not tested there.
+
+**On `v3` 12–15**, unseen by all three (joint MAE over the 8 executed ticks, rad):
+
+| Episode | 30 demos (20 v1 + 10 `v3`) | 16 v1 only | 12 `v3` only | Hold last command |
+|---|---:|---:|---:|---:|
+| 12 | 0.0542 | 0.0556 | 0.1029 | 0.0443 |
+| 13 | 0.0586 | 0.0903 | 0.1137 | 0.0483 |
+| 14 | 0.0490 | 0.0620 | 0.0750 | 0.0455 |
+| 15 | 0.0557 | 0.0815 | 0.1006 | 0.0495 |
+| **all** | **0.0545** | **0.0725** | **0.0987** | **0.0469** |
+| all, 16 ticks | 0.0775 | 0.1077 | 0.1313 | |
+
+**On v1 18–21**, unseen by the two single-session policies:
+
+| Episode | 16 v1 only | 12 `v3` only | Hold last command |
+|---|---:|---:|---:|
+| 18 | 0.0456 | 0.0886 | 0.0368 |
+| 19 | 0.0577 | 0.0922 | 0.0255 |
+| 20 | 0.1039 | 0.1772 | 0.0411 |
+| 21 | 0.0610 | 0.1081 | 0.0354 |
+| **all** | **0.0690** | **0.1194** | **0.0347** (hold state 0.0406) |
+
+**Readings:**
+- **Held-out error orders by demo count, not by session.**
+  - On `v3` 12–15: 12 demos 0.099, 16 demos 0.073, 30 demos 0.055.
+  - The v1-only policy has never seen a `v3` demo, yet it beats the `v3`-only policy on every
+    `v3` episode.
+- **On its own session, the v1-only policy does better than the `v3`-only one** (0.069 vs 0.119).
+  It is still twice the hold-last error there: v1's slower operator makes holding still an even
+  stronger baseline.
+- **No policy beats holding the last command anywhere.** The 30-demo policy comes closest
+  (0.055 vs 0.047).
+- **Caveats:**
+  - These are single seeds.
+  - The fixed 30k steps give the smaller sets more epochs (430 / 240 / 140), so demo count and
+    epochs move together.
+  - With three points, the curve says "more demos help" and nothing about how many would be
+    enough.
+
+## 10. Still to do in F1
 
 - **The robot side:**
   - a policy server built from the checkpoint (it applies the checkpoint's mask);
@@ -230,4 +281,4 @@ The 30-demo policy never trained on those four either.
   - the 10 closed-loop rollouts from the held-out photos, with the measured cycle time.
 - **Keep the front camera where it is** until the proof is done; mark its mount. The demos and the
   rollouts must share its pose.
-- **Decide** whether to try the cheap levers (§5) before the robot or after the first rollouts. §8 says more demos help; filtering by session does not.
+- **Decide** whether to try the cheap levers (§5) before the robot or after the first rollouts. §8 and §9 say more demos help (held-out error orders by demo count across sessions); filtering by session does not.
