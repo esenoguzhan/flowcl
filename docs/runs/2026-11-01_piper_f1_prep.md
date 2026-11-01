@@ -139,11 +139,11 @@ robot runner, open-loop replay of 3 demos on the robot, closed-loop rollouts) is
 - **Open-loop error is not closed-loop success.** A memorising policy can still succeed on the
   robot if the scene stays close to the demos. The F1 proof decides.
 
-**Cheap levers, untested:**
-- **Fewer steps:** about 140 epochs at 30k steps; held-out error against intermediate checkpoints
-  would show whether earlier stopping helps.
-- **Actions relative to the current state:** this bounds the tick-0 offset.
-- **Image augmentation.**
+**Cheap levers** (two of them tried in §10):
+- **Fewer steps:** about 140 epochs at 30k steps. §10: earlier stopping does not help; held-out
+  error falls at every checkpoint.
+- **Actions relative to the current state:** this bounds the tick-0 offset. Untested.
+- **Image augmentation.** §10: 6 % lower held-out error, still above holding the last command.
 - **More demos:** F2 budgets about 50 per task.
 
 ## 6. Code (`9ec29d9`)
@@ -271,7 +271,76 @@ The 30-demo policy never trained on those four either.
   - With three points, the curve says "more demos help" and nothing about how many would be
     enough.
 
-## 10. Still to do in F1
+## 10. Follow-up: the two cheap levers, earlier stopping and image augmentation (`41cc359`)
+
+**Question:** with the same 30 demos, does stopping earlier or augmenting the images bring
+held-out error below holding still?
+
+**Setup:**
+- **Code `41cc359`:** image augmentation and periodic checkpoints, both off by default.
+  - **Augmentation:** random shifts of up to 8 px (replicate-padded; about 6 % of 128) and
+    brightness, contrast and saturation factors in [0.8, 1.2], drawn per sample and per camera,
+    on both cameras.
+  - It draws from a generator of its own, so batch order and the flow-time and noise draws are
+    exactly the un-augmented run's.
+- **Queue `scripts/queue_piper_levers.sh`,** 19:53–21:18. Both runs use the 30-demo recipe (§4)
+  with a checkpoint every 5k steps:
+  - **A,** `results/piper_ckpt/`: no augmentation. Last 1k steps' logged loss 0.0175, as in §4.
+  - **B,** `results/piper_aug/`: with augmentation. Last 1k steps' logged loss 0.0338.
+- **Every checkpoint gets the offline check** (held out `v3` 10–15, training 0–5, noise keyed by
+  recording): `<run>/offline_check_<checkpoint>.json`. The summary lines are collected in
+  `results/piper_queue/levers/curve.txt`.
+- **Identity:** A's `final.pt` equals the reference run's (§4) in 656 of 656 tensors. The
+  checkpoint hook does not perturb training, and the 30-demo run reproduces bit for bit.
+
+**Error against training step** (joint MAE over the 8 executed ticks, rad):
+
+| Step | A held out | B held out | A training | B training |
+|---|---:|---:|---:|---:|
+| 5k | 0.0621 | 0.0594 | 0.0262 | 0.0330 |
+| 10k | 0.0571 | 0.0562 | 0.0165 | 0.0259 |
+| 15k | 0.0565 | 0.0523 | 0.0124 | 0.0182 |
+| 20k | 0.0548 | 0.0516 | 0.0083 | 0.0136 |
+| 25k | 0.0547 | 0.0513 | 0.0046 | 0.0100 |
+| **30k (final)** | **0.0542** | **0.0508** | **0.0036** | **0.0090** |
+| hold state | 0.0512 | | 0.0362 | |
+| hold last command | 0.0443 | | 0.0303 | |
+
+**Final checkpoints per held-out episode:**
+
+| Held out (`v3`) | A | B (augmented) | Hold state | Hold last command |
+|---|---:|---:|---:|---:|
+| 10 | 0.0583 | 0.0510 | 0.0463 | 0.0396 |
+| 11 | 0.0497 | 0.0467 | 0.0462 | 0.0394 |
+| 12 | 0.0542 | 0.0540 | 0.0509 | 0.0443 |
+| 13 | 0.0586 | 0.0515 | 0.0557 | 0.0483 |
+| 14 | 0.0490 | 0.0478 | 0.0524 | 0.0455 |
+| 15 | 0.0557 | 0.0543 | 0.0563 | 0.0495 |
+| **all, executed 8 ticks** | **0.0542** | **0.0508** | **0.0512** | **0.0443** |
+| all, 16 ticks | 0.0782 | 0.0767 | | |
+| worst joint | 0.0855 | 0.0783 | | |
+| gripper (mm) | 5.51 | 5.69 | | |
+
+**Readings:**
+- **Earlier stopping does not help.** A's held-out error falls at every checkpoint (0.062 → 0.054)
+  while its training error falls too. There is no point where held-out error turns up, so the
+  gap is not over-training in the usual sense, and the final checkpoint is the best one.
+- **Augmentation helps a little.**
+  - B's held-out error is 6 % lower (0.0508 against 0.0542). It is lower or level on every
+    episode, most on 10 and 13, and the worst joint drops from 0.085 to 0.078.
+  - It memorises less: training error 0.0090 against 0.0036.
+  - Its curve is still falling at 30k.
+- **It still does not beat holding the last command,** on any episode (0.0508 against 0.0443). It
+  is level with holding the state overall (0.0508 against 0.0512) and better on 3 of 6 episodes
+  (13, 14, 15).
+- **Neither cheap lever closes the gap.** Across §8–§10, demo count moves held-out error most
+  (on `v3` 12–15: 12 demos 0.099, 16 demos 0.073, 30 demos 0.055).
+- **Caveats:**
+  - These are single seeds.
+  - Only one augmentation setting was tried (8 px, 0.2); it was not tuned.
+  - Open-loop error is not closed-loop success.
+
+## 11. Still to do in F1
 
 - **The robot side:**
   - a policy server built from the checkpoint (it applies the checkpoint's mask);
@@ -281,4 +350,8 @@ The 30-demo policy never trained on those four either.
   - the 10 closed-loop rollouts from the held-out photos, with the measured cycle time.
 - **Keep the front camera where it is** until the proof is done; mark its mount. The demos and the
   rollouts must share its pose.
-- **Decide** whether to try the cheap levers (§5) before the robot or after the first rollouts. §8 and §9 say more demos help (held-out error orders by demo count across sessions); filtering by session does not.
+- **Which policy goes to the robot:** B's `final.pt` (`results/piper_aug/`, augmented) is the best
+  offline (§10). No policy beats holding the last command open-loop, so only the robot can say
+  whether that matters closed-loop.
+- **More demos** moved held-out error most (§8–§10); filtering by session does not help, and the
+  two cheap levers are tried.

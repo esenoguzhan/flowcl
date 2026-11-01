@@ -16,6 +16,9 @@ changes.
   - A 30-demo single-task policy is trained.
   - Offline, it memorises: held-out open-loop error 0.054 rad, no better than holding the last
     command (0.044); training 0.0036.
+  - Follow-ups (record §8–§10): held-out error orders by demo count, not by session. Earlier
+    stopping does not help. Image augmentation (`41cc359`) lowers it to 0.051, level with holding
+    the state and still above holding the last command.
   - The robot side (server, runner, replay, rollouts) is next.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
@@ -116,7 +119,7 @@ changes.
 | **E1-B** angle-B capacity gate (recovery-weighted executed prefix) | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933, the same as E1 to three decimals; every weighting 0.850–0.870) | `runs/2026-10-17_twosided_angleb.md` |
 | **E2** pilots | **not run:** angle A is off (E1), angle B is off (E1-B). **D2 resolves to the minimum thesis** (pre-written in E1-B's rule) | `runs/2026-10-02_twosided_gonogo.md`, `runs/2026-10-17_twosided_angleb.md` |
 | **F0** hardware readiness | **log format inspected on AgileX Piper** (LeRobot v3.0, 15 fps, absolute joint targets, measured gripper); access, reset time and cycle time not measured yet. The Dobot try-out was cancelled before any robot time | `runs/2026-11-01_piper_f1_prep.md`; branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
-| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still. **Not started:** server, robot runner, replay of 3 demos, 10 rollouts | `runs/2026-11-01_piper_f1_prep.md` |
+| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still; augmentation (`41cc359`) brings it level with holding the state, not below holding the last command. **Not started:** server, robot runner, replay of 3 demos, 10 rollouts | `runs/2026-11-01_piper_f1_prep.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
 ## 2. Side line, outside the plan: similar tasks and language (closed for now)
