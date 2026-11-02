@@ -221,8 +221,11 @@ On the reply, start following at `p = (now − t_obs) × 15`.
 - the reply is a 200 with `actions` of shape 16×7, all finite;
 - every value of the chunk lies within `metadata.envelope`;
 - **first-command jump:** at the entry point `p`, the interpolated target is within
-  `policy.max_first_jump_rad` (0.15 rad) of the last sent command on every joint. Offline, the
-  policy's first command is typically 0.03 rad off.
+  `policy.max_first_jump_rad` (0.15 rad) of the span between the last sent command and the arm's
+  measured joints, on every joint. Offline, the policy's first command is typically 0.03 rad off.
+  (Until 2 Nov the reference was the last command alone. On the 53-demo policy's first 29 rollouts,
+  10 of 20 stops were a new chunk that started where the arm was, while the arm lagged its command
+  by 0.09–0.15 rad.)
 
 **Every control tick** (any failure stops the run):
 - arm2 is `ENABLED`, not E-stopped, and `fb.alive`. This is the same test as
