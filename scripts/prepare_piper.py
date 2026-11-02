@@ -40,8 +40,6 @@ from flowcl.data.piper_adapter import (  # noqa: E402
 )
 from flowcl.data.piper_tasks import cache_path, get_task, piper_root, raw_root  # noqa: E402
 
-EMBODIMENT = "agilex_piper"
-
 
 def kept_episodes(task) -> list[tuple[str, int]]:
     """``(folder, raw episode index)`` in cache order."""
@@ -231,7 +229,7 @@ def main() -> None:
     args = parser.parse_args()
 
     task = get_task(args.task)
-    spec = load_embodiment_spec(EMBODIMENT)
+    spec = load_embodiment_spec(task.embodiment)
     if args.review:
         review(task, spec, seed=args.seed)
     elif args.build:

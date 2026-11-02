@@ -43,6 +43,9 @@ class PiperTask:
     n_episodes: int
     holdout: int
     notes: str = ""
+    # The embodiment config (configs/embodiment/) the cache is built and trained with. It
+    # fixes the image masks, so two tasks on the same recordings can differ only in it.
+    embodiment: str = "agilex_piper"
 
     @property
     def n_train(self) -> int:
@@ -70,6 +73,14 @@ PICK_SAUSAGE_V4 = PiperSource(
     sha256="9e059e744398f1d953daaa2474090c461518a1cce063b2c5d7f2cd6917b2778d",
 )
 SAUSAGE_POT_LID = "put the sausage in the pot and cover it with the lid"
+# The 2 Nov 2026 afternoon session (16:53-17:22), labelled 'pick up the milk'. Every demo
+# picks a small milk carton off the table, puts it on the plate and returns home; the
+# carton and plate positions vary. The plate is turquoise-blue on both cameras.
+PICK_MILK = PiperSource(
+    folder="pick_milk",
+    sha256="b198239c8ad825fa38cc45ac427fcb812b7099586a9ca54330f56e21c942daf2",
+)
+MILK_PLATE = "pick up the milk carton and put it on the blue plate"
 
 TASKS: dict[str, PiperTask] = {
     t.name: t
@@ -117,6 +128,29 @@ TASKS: dict[str, PiperTask] = {
                 "(raw 1-14, 16, 17) and holds out raw 18-21. sausage_pot_lid trained on those "
                 "four, so the common unseen ground of all Piper policies is v3 12-15."
             ),
+        ),
+        PiperTask(
+            name="milk_plate",
+            language=MILK_PLATE,
+            sources=(PICK_MILK,),
+            n_episodes=40,
+            holdout=0,
+            notes=(
+                "Every demo of the milk session, all trained on (as sausage_pot_lid_all). The "
+                "front camera is masked where the operator and the leader arm are."
+            ),
+        ),
+        PiperTask(
+            name="milk_plate_unmasked",
+            language=MILK_PLATE,
+            sources=(PICK_MILK,),
+            n_episodes=40,
+            holdout=0,
+            notes=(
+                "milk_plate with the front camera as recorded: the policy also sees the operator "
+                "and the leader arm, whose pose is the action. The mask ablation."
+            ),
+            embodiment="agilex_piper_unmasked",
         ),
     )
 }

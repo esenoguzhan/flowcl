@@ -88,6 +88,9 @@ def main() -> None:
                         help="Random image shifts of up to this many pixels while training (0 = off).")
     parser.add_argument("--augment-color", type=float, default=0.0,
                         help="Brightness/contrast/saturation jitter in [1-c, 1+c] while training (0 = off).")
+    parser.add_argument("--augment-daylight", type=float, default=0.0,
+                        help="Daylight relighting of this strength while training: colour temperature, "
+                        "an illumination ramp and colour jitter (flowcl.data.augment; 0 = off).")
     parser.add_argument("--checkpoint-every", type=int, default=0,
                         help="Also write checkpoints/step_N.pt every N steps (0 = final.pt only).")
     args = parser.parse_args()
@@ -120,6 +123,7 @@ def main() -> None:
         amp=args.amp,
         augment_shift_px=args.augment_shift_px,
         augment_color=args.augment_color,
+        augment_daylight=args.augment_daylight,
         checkpoint_every=args.checkpoint_every,
     )
     if args.no_eval:

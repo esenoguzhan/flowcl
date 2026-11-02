@@ -100,11 +100,14 @@ def test_augmentation_draws_from_its_own_generator(spec):
     dataset = ChunkedActionDataset(eps, spec, stats)
     base = dict(steps=3, batch_size=2, warmup_steps=1, device="cpu", log_every=0, num_workers=0)
     runs = {}
-    for name, extra in (("plain", {}), ("augmented", dict(augment_shift_px=4, augment_color=0.2))):
+    for name, extra in (("plain", {}), ("augmented", dict(augment_shift_px=4, augment_color=0.2)),
+                        ("daylight", dict(augment_daylight=0.3))):
         g = torch.Generator().manual_seed(0)
         log = train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, **extra), generator=g)
         runs[name] = (log.losses, g.get_state())
-    assert torch.equal(runs["plain"][1], runs["augmented"][1])
-    assert runs["plain"][0] != runs["augmented"][0]
-    with pytest.raises(ValueError, match="augment"):
-        train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, augment_color=1.5))
+    for name in ("augmented", "daylight"):
+        assert torch.equal(runs["plain"][1], runs[name][1])
+        assert runs["plain"][0] != runs[name][0]
+    for bad in (dict(augment_color=1.5), dict(augment_daylight=1.0)):
+        with pytest.raises(ValueError, match="augment"):
+            train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, **bad))

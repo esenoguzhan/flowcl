@@ -201,3 +201,32 @@ def test_a_task_with_nothing_held_out_trains_on_every_episode(tmp_path, spec, mo
     assert all(e.language == "put the toy away" for e in episodes)
     meta = training_summary(task, dataset_dir=tmp_path)
     assert meta["n_demos"] == 3 and meta["held_out"] == []
+
+
+def test_every_registered_task_names_a_loadable_embodiment():
+    import flowcl.data.piper_tasks as piper_tasks
+
+    for task in piper_tasks.TASKS.values():
+        assert load_embodiment_spec(task.embodiment).d_action == 7
+    # the mask ablation: the same recordings and instruction, only the camera treatment differs
+    masked, unmasked = piper_tasks.get_task("milk_plate"), piper_tasks.get_task("milk_plate_unmasked")
+    assert dataclasses.replace(unmasked, name=masked.name, notes=masked.notes, embodiment=masked.embodiment) == masked
+    assert load_embodiment_spec(masked.embodiment).observation.masks_for("front")
+    assert not load_embodiment_spec(unmasked.embodiment).observation.image_masks
+
+
+def test_an_unmasked_cache_keeps_the_corner_and_loads_only_unmasked(tmp_path, spec):
+    unmasked = load_embodiment_spec("agilex_piper_unmasked")
+    write_dataset(tmp_path / "toy")
+    task = toy_task(tmp_path, holdout=0)
+    build_cache(task, tmp_path, tmp_path / "masked.h5", spec)
+    build_cache(task, tmp_path, tmp_path / "unmasked.h5", unmasked)
+    corner = (slice(0, 10), slice(0, 10))
+    masked_frame = next(iter_cache_episodes(tmp_path / "masked.h5", spec)).images["front"][2]
+    plain_frame = next(iter_cache_episodes(tmp_path / "unmasked.h5", unmasked)).images["front"][2]
+    assert masked_frame[corner].max() == 0 and level(plain_frame[corner]) == 2
+    # a run of the wrong embodiment must not read either cache
+    with pytest.raises(ValueError, match="masks"):
+        list(iter_cache_episodes(tmp_path / "unmasked.h5", spec))
+    with pytest.raises(ValueError, match="masks"):
+        list(iter_cache_episodes(tmp_path / "masked.h5", unmasked))

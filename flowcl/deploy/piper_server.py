@@ -45,7 +45,6 @@ from flowcl.data.piper_tasks import SUITE, PiperTask, cache_path, get_task
 from flowcl.train.checkpoint import load_checkpoint
 
 PROTOCOL = 1
-EMBODIMENT = "agilex_piper"
 DEFAULT_PORT = 8765  # PiperStudio itself serves on 8000
 GRIPPER = 6
 COMPONENTS = (("joints", 6), ("gripper", 1))
@@ -159,12 +158,13 @@ class PiperPolicyService:
         self.device = torch.device(device)
         loaded = load_checkpoint(self.checkpoint, device=self.device)
         self.policy, self.spec, self.stats, self.payload = loaded.policy, loaded.spec, loaded.stats, loaded.payload
-        if self.spec.name != EMBODIMENT:
-            raise ValueError(f"{checkpoint} is a {self.spec.name!r} checkpoint, not {EMBODIMENT}")
+        self.task = task_of(loaded.task_key)
+        if self.spec.name != self.task.embodiment:
+            raise ValueError(f"{checkpoint} is a {self.spec.name!r} checkpoint, but task "
+                             f"{self.task.name} is trained as {self.task.embodiment}")
         if tuple(self.spec.action.component_keys) != COMPONENTS:
             raise ValueError(f"{checkpoint}: action components {self.spec.action.component_keys}, "
                              f"expected {COMPONENTS}")
-        self.task = task_of(loaded.task_key)
         self.summary = training_summary(self.task, n_demos, dataset_dir)
         self.sha256 = _sha256(self.checkpoint)
         self.seed = int(seed)

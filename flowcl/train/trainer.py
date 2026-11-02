@@ -54,10 +54,12 @@ class TrainConfig:
     # then the exact prefix of the full run). ``None`` trains all ``steps``.
     stop_after: int | None = None
     # Image augmentation (flowcl.data.augment): random shifts of up to ``augment_shift_px``
-    # pixels and colour jitter of strength ``augment_color``. 0 = off, the setting of every
-    # registered LIBERO run. Its draws come from a generator of its own.
+    # pixels, colour jitter of strength ``augment_color`` and daylight relighting of strength
+    # ``augment_daylight``. 0 = off, the setting of every registered LIBERO run. Its draws
+    # come from a generator of its own.
     augment_shift_px: int = 0
     augment_color: float = 0.0
+    augment_daylight: float = 0.0
     # Write ``checkpoints/step_{N}.pt`` every ``checkpoint_every`` steps besides final.pt
     # (honoured by flowcl.train.pipeline.train_on_tasks). 0 = off.
     checkpoint_every: int = 0
@@ -179,12 +181,13 @@ def augment_generator(
     Seeded from the run generator's seed without drawing from it, so batch order, flow
     times and noise are exactly those of the same run without augmentation.
     """
-    if cfg.augment_shift_px < 0 or not 0.0 <= cfg.augment_color < 1.0:
+    if (cfg.augment_shift_px < 0 or not 0.0 <= cfg.augment_color < 1.0
+            or not 0.0 <= cfg.augment_daylight < 1.0):
         raise ValueError(
-            f"augment_shift_px must be >= 0 and augment_color in [0, 1); got "
-            f"{cfg.augment_shift_px}, {cfg.augment_color}"
+            f"augment_shift_px must be >= 0 and augment_color, augment_daylight in [0, 1); got "
+            f"{cfg.augment_shift_px}, {cfg.augment_color}, {cfg.augment_daylight}"
         )
-    if not (cfg.augment_shift_px or cfg.augment_color):
+    if not (cfg.augment_shift_px or cfg.augment_color or cfg.augment_daylight):
         return None
     base = generator.initial_seed() if generator is not None else 0
     return torch.Generator(device=device).manual_seed(derive_seed(str(base), "augment", 0))
@@ -287,7 +290,8 @@ def train_one_task(
             batch = move_batch(batch, device)
             if augment is not None:
                 batch["images"] = augment_images(
-                    batch["images"], cfg.augment_shift_px, cfg.augment_color, augment
+                    batch["images"], cfg.augment_shift_px, cfg.augment_color, augment,
+                    daylight_strength=cfg.augment_daylight,
                 )
 
             with torch.autocast(
