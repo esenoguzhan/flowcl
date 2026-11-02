@@ -221,8 +221,8 @@ On the reply, start following at `p = (now − t_obs) × 15`.
 - the reply is a 200 with `actions` of shape 16×7, all finite;
 - every value of the chunk lies within `metadata.envelope`;
 - **first-command jump:** at the entry point `p`, the interpolated target is within
-  `policy.max_first_jump_rad` (0.15 rad) of the span between the last sent command and the arm's
-  measured joints, on every joint. Offline, the policy's first command is typically 0.03 rad off.
+  `policy.max_first_jump_rad` (0.15 rad; J6, the wrist roll, `policy.max_first_jump_j6_rad`, 0.5 rad)
+  of the span between the last sent command and the arm's measured joints, on every joint. Offline, the policy's first command is typically 0.03 rad off.
   (Until 2 Nov the reference was the last command alone. On the 53-demo policy's first 29 rollouts,
   10 of 20 stops were a new chunk that started where the arm was, while the arm lagged its command
   by 0.09–0.15 rad.)
@@ -364,6 +364,7 @@ policy:
   max_joint_speed_rad_s: 1.5    # demos' p99 per joint is at most 1.3 rad/s
   max_gripper_speed_m_s: 0.25
   max_first_jump_rad: 0.15
+  max_first_jump_j6_rad: 0.5
   floor_z_mm: 75                # demos' lowest end pose: 95 mm
   max_episode_s: 60
   return_speed_dps: 20
