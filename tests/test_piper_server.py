@@ -136,7 +136,7 @@ def test_metadata_comes_from_the_training_episodes(world):
     assert meta["run_id"] == "toy_run" and meta["task_key"] == "piper/toy"
     assert meta["cameras"] == {"front": CAMERA_KEYS["front"], "wrist": CAMERA_KEYS["wrist"]}
     assert meta["frame_hw"] == [480, 640] and meta["policy_image_hw"] == [128, 128]
-    assert meta["image_masks"]["front"] == [[[0, 0], [260, 0], [260, 115], [150, 250], [0, 260]]]
+    assert meta["image_masks"]["front"] == [[[0, 0], [290, 0], [290, 180], [255, 300], [0, 310]]]
     assert (meta["control_rate_hz"], meta["chunk_horizon"], meta["execute_k"]) == (15.0, 16, 8)
     assert meta["n_demos_trained"] == 2 and meta["euler_steps"] == 2
     # actions are row index + 0.5: episode 0 holds rows 0-3, episode 1 rows 4-6

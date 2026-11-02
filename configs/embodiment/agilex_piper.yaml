@@ -22,11 +22,14 @@ observation:
   # The front camera sees the operator and the leader arm (top left). The leader arm's
   # pose is the action, and it sits still at home when the policy runs alone, so that
   # corner is blacked out in training and serving alike. Vertices are (x, y) pixels of
-  # the recorded 640x480 frame, checked against frames from every episode.
+  # the recorded 640x480 frame, checked against frames from every episode. Widened on
+  # 2 Nov 2026 for the pick_sausage_v4 session, where the scene sits lower in the frame
+  # and the leader arm and the operator's hands reach past the first polygon,
+  # [[0,0],[260,0],[260,115],[150,250],[0,260]] (every checkpoint carries its own).
   mask_source_hw: [480, 640]
   image_masks:
     front:
-      - [[0, 0], [260, 0], [260, 115], [150, 250], [0, 260]]
+      - [[0, 0], [290, 0], [290, 180], [255, 300], [0, 310]]
 
 action:
   # Absolute joint targets (rad) + gripper target (m) from the leader arm. The

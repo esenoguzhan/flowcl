@@ -138,7 +138,7 @@ def test_cache_round_trip_and_checks(tmp_path, spec):
     cache = tmp_path / "cache" / "toy.h5"
     summary = build_cache(task, tmp_path, cache, spec)
     assert summary["n_episodes"] == 2 and summary["frames"] == 8
-    assert summary["raw_labels"] == {"toy": "pick the toy"}
+    assert summary["raw_labels"] == {"toy": ["pick the toy"]}
     verify_cache(cache, task, n_demos=1)
     with pytest.raises(ValueError, match="held out"):
         verify_cache(cache, task, n_demos=2)
@@ -182,3 +182,22 @@ def test_taskref_dispatches_the_piper_suite(tmp_path, spec, monkeypatch):
     assert [e.meta["raw_episode_index"] for e in episodes] == [0, 1]
     with pytest.raises(ValueError, match="held out"):
         load_task_episodes(toy, spec, n_demos=3, dataset_dir=tmp_path)
+
+
+def test_a_task_with_nothing_held_out_trains_on_every_episode(tmp_path, spec, monkeypatch):
+    import flowcl.data.piper_tasks as piper_tasks
+    from flowcl.deploy.piper_server import training_summary
+
+    root = write_dataset(tmp_path / "raw" / "toy")
+    # the operator retyped the label mid-session: two recorded tasks, listed out of order
+    pq.write_table(pa.table({"task_index": [1, 0], "__index_level_0__": ["pick up the toy", "pick the toy"]}),
+                   root / "meta" / "tasks.parquet")
+    task = toy_task(tmp_path / "raw", holdout=0)
+    monkeypatch.setitem(piper_tasks.TASKS, "toy", task)
+    summary = build_cache(task, tmp_path / "raw", piper_tasks.cache_path("toy", tmp_path), spec)
+    assert summary["raw_labels"] == {"toy": ["pick the toy", "pick up the toy"]}
+    episodes = load_task_episodes(TaskRef.from_key("piper/toy"), spec, dataset_dir=tmp_path)
+    assert [e.meta["raw_episode_index"] for e in episodes] == [0, 1, 2]
+    assert all(e.language == "put the toy away" for e in episodes)
+    meta = training_summary(task, dataset_dir=tmp_path)
+    assert meta["n_demos"] == 3 and meta["held_out"] == []

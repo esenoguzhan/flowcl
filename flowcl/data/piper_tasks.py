@@ -62,6 +62,13 @@ PICK_SAUSAGE_V3 = PiperSource(
     folder="pick_sausage_v3",
     sha256="4618ba974fb38292b077f70c27700798acdc85a3d6eeb7128999d615d248cf40",
 )
+# The 2 Nov 2026 session, the same task (episode 0 labelled 'pick the sausage', the rest
+# 'pick up the sausage'). The scene sits lower in the front camera than on 30 Oct and the
+# lid starts off the pot. Episode 0 ends with the arm over the pot, not at home.
+PICK_SAUSAGE_V4 = PiperSource(
+    folder="pick_sausage_v4",
+    sha256="9e059e744398f1d953daaa2474090c461518a1cce063b2c5d7f2cd6917b2778d",
+)
 SAUSAGE_POT_LID = "put the sausage in the pot and cover it with the lid"
 
 TASKS: dict[str, PiperTask] = {
@@ -85,6 +92,18 @@ TASKS: dict[str, PiperTask] = {
                 "The v3 session only: trains on v3 0-11 and holds out v3 12-15. sausage_pot_lid "
                 "never trains on those four either (it holds out v3 10-15), so the two are "
                 "compared on identical unseen episodes (session style against demo count)."
+            ),
+        ),
+        PiperTask(
+            name="sausage_pot_lid_all",
+            language=SAUSAGE_POT_LID,
+            sources=(PICK_SAUSAGE, PICK_SAUSAGE_V3, PICK_SAUSAGE_V4),
+            n_episodes=53,
+            holdout=0,
+            notes=(
+                "Every usable demo of the three sessions (20 + 16 + 17), all trained on, the "
+                "user's choice for the robot: nothing is held out, so the offline check has "
+                "only training episodes."
             ),
         ),
         PiperTask(

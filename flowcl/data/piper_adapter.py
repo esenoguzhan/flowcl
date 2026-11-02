@@ -98,13 +98,19 @@ def _read_parquets(paths: list[Path]):
     return pa.concat_tables([pq.read_table(p) for p in paths])
 
 
-def read_raw_label(source: Path) -> str:
-    """The task string LeRobot recorded (``meta/tasks.parquet``); one task per folder."""
+def read_raw_labels(source: Path) -> list[str]:
+    """The task strings LeRobot recorded (``meta/tasks.parquet``), by task index.
+
+    A folder can hold several (the operator retyped the label mid-session); the registry's
+    instruction replaces them all.
+    """
     table = _read_parquets([Path(source) / "meta" / "tasks.parquet"])
     labels = [c for c in table.column_names if c != "task_index"]
-    if table.num_rows != 1 or len(labels) != 1:
-        raise ValueError(f"{source}: expected one recorded task, got {table.to_pydict()}")
-    return str(table.column(labels[0])[0].as_py())
+    if table.num_rows < 1 or len(labels) != 1:
+        raise ValueError(f"{source}: expected one label column, got {table.to_pydict()}")
+    order = np.argsort(np.asarray(table.column("task_index").to_pylist()))
+    names = table.column(labels[0]).to_pylist()
+    return [str(names[i]) for i in order]
 
 
 def read_episode_table(source: Path) -> list[dict]:
@@ -295,7 +301,7 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
         group = f.create_group("episodes")
         for src in task.sources:
             folder = raw_root / src.folder
-            raw_labels[src.folder] = read_raw_label(folder)
+            raw_labels[src.folder] = read_raw_labels(folder)
             for ep in read_source(folder, spec, src.exclude):
                 g = group.create_group(f"{len(lengths):06d}")
                 g.attrs.update({"source": src.folder, "raw_episode_index": ep["raw_episode_index"]})

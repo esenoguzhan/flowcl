@@ -37,6 +37,8 @@ from flowcl.train.checkpoint import load_checkpoint  # noqa: E402
 
 JOINTS = slice(0, 6)
 GRIPPER = 6
+# Training episodes checked when the task holds out none (sausage_pot_lid_all).
+DEFAULT_TRAIN_EPISODES = 6
 
 
 @torch.no_grad()
@@ -83,7 +85,8 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--task", default="sausage_pot_lid")
     parser.add_argument("--n-train-episodes", type=int, default=None,
-                        help="Training episodes to compare (the first n); default = the hold-out size.")
+                        help="Training episodes to compare (the first n); default = the hold-out "
+                             f"size, or {DEFAULT_TRAIN_EPISODES} when nothing is held out.")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -97,7 +100,7 @@ def main() -> None:
     loaded = load_checkpoint(args.checkpoint, device=args.device)
     policy, spec, stats = loaded.policy, loaded.spec, loaded.stats
     device = torch.device(args.device)
-    n_train = args.n_train_episodes or task.holdout
+    n_train = args.n_train_episodes or task.holdout or DEFAULT_TRAIN_EPISODES
     groups = {
         "held_out": list(range(task.n_train, task.n_episodes)),
         "training": list(range(n_train)),
@@ -105,6 +108,9 @@ def main() -> None:
     report = {"checkpoint": str(args.checkpoint), "task": task.name, "seed": args.seed,
               "execute_k": spec.action.execute_k, "chunk_horizon": spec.action.chunk_horizon}
     for name, indices in groups.items():
+        if not indices:
+            print(f"[offline_check] {name:9s} none: {task.name} holds out nothing", flush=True)
+            continue
         rows = [check_episode(policy, spec, stats, ep, device, episode_seed(args.seed, ep), args.batch_size)
                 for ep in iter_cache_episodes(path, spec, episode_indices=indices)]
         report[name] = {"summary": summarize(rows), "per_episode": rows}
