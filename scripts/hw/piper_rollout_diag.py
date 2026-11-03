@@ -1,6 +1,6 @@
 """Why a Piper policy fails on the robot: read PiperStudio's rollout logs against the demos.
 
-Five checks, each a subcommand, each printing a summary and writing JSON with --out:
+Six checks, each a subcommand, each printing a summary and writing JSON with --out:
 
     logs    per run: how far the arm moved, the gripper, the lowest end pose, the limiter,
             how much consecutive chunks disagree, tracking, how often a chunk plans motion
@@ -11,12 +11,17 @@ Five checks, each a subcommand, each printing a summary and writing JSON with --
             (first plan at the start pose; and, at states the rollout stalled in, both cameras
             or one swapped). Shows whether the images, not the state, change the plan
     sheet   front and wrist frames at the moment each run's gripper closes
+    grip    per run: after the gripper first closes, the commanded and measured opening, and
+            how far the arm then lifts. A held object stops the fingers short of the command,
+            so measured - commanded (the squeeze) is the grip; ~0 means nothing is held
 
     uv run python scripts/hw/piper_rollout_diag.py logs --day ~/piper_rollouts/2026-11-03
     uv run python scripts/hw/piper_rollout_diag.py path --run ~/piper_rollouts/2026-11-03/115601_rollout --episode 20
+    uv run python scripts/hw/piper_rollout_diag.py grip --day ~/piper_rollouts/2026-11-03 --since 160900
     uv run python scripts/hw/piper_rollout_diag.py images --run ~/piper_rollouts/2026-11-03/115601_rollout \
         --episode 20 --checkpoint results/piper_color/single__piper__milk_plate__seed0/checkpoints/final.pt
 
+--since / --until / --checkpoint-has select runs by folder name (HHMMSS) and checkpoint path.
 Logs follow docs/piper_deploy_spec.md §7. Joint quantities are over J1-J6 in rad; a chunk
 "plans motion" when its first 8 ticks move faster than 0.2 rad/s.
 """
@@ -68,6 +73,32 @@ def grasp_index(gripper: np.ndarray, open_m: float = 0.02) -> int | None:
     widest = np.maximum.accumulate(gripper[opened[0]:])
     closed = np.where(gripper[opened[0]:] < 0.7 * widest)[0]
     return int(opened[0] + closed[0]) if closed.size else len(gripper) - 1
+
+
+def first_close(gripper_mm: np.ndarray, open_mm: float = 30.0, frac: float = 0.85) -> int | None:
+    """The first tick after the gripper first opened past ``open_mm`` where it has closed below
+    ``frac`` of its widest opening so far (the tick-level rule of ``grip`` and ``demos``). An
+    object about 50 mm wide stops fingers opened to 70-80 mm at 0.6-0.7 of their widest."""
+    opened = np.where(gripper_mm > open_mm)[0]
+    if not opened.size:
+        return None
+    widest = np.maximum.accumulate(gripper_mm[opened[0]:])
+    closed = np.where(gripper_mm[opened[0]:] < frac * widest)[0]
+    return int(opened[0] + closed[0]) if closed.size else None
+
+
+def select_runs(args) -> list[Path]:
+    """Run folders of ``--day`` with logs, filtered by name range and checkpoint."""
+    out = []
+    for run in sorted(p for p in Path(args.day).expanduser().iterdir() if (p / "inferences.jsonl").is_file()):
+        if (args.since and run.name < args.since) or (args.until and run.name > args.until):
+            continue
+        if args.checkpoint_has:
+            meta = json.loads((run / "meta.json").read_text())
+            if args.checkpoint_has not in ((meta.get("server_metadata") or {}).get("checkpoint") or ""):
+                continue
+        out.append(run)
+    return out
 
 
 class Source:
@@ -143,7 +174,7 @@ def chunk_disagreement(inf: list[dict]) -> np.ndarray:
 
 def cmd_logs(args) -> dict:
     out = {}
-    for run in sorted(p for p in Path(args.day).expanduser().iterdir() if (p / "inferences.jsonl").is_file()):
+    for run in select_runs(args):
         meta, inf, t = load_run(run)
         if not inf:
             continue
@@ -189,7 +220,7 @@ def cmd_demos(args) -> dict:
     speed = np.linalg.norm(vel, axis=1)
     mv = speed > MOVING_RAD_S
     gap = np.abs(a - s).max(1)
-    idle, gz = [], []
+    idle, gz, hold = [], [], []
     for e in range(len(src.episodes)):
         r = src.rows(e)
         dev = np.abs(f["action"][r, :6] - f["action"][r.start, :6]).max(1)
@@ -197,6 +228,12 @@ def cmd_demos(args) -> dict:
         g = grasp_index(f["action"][r, 6])
         if g is not None:
             gz.append(float(src.eef[r.start + g, 2] * 1000))
+        # while holding: the 2 s from 5 ticks after the measured gripper first closes
+        c = first_close(f["state"][r, 6] * 1000)
+        if c is not None:
+            w = slice(r.start + c + 5, min(r.start + c + 35, r.stop))
+            hold.append((float(np.median(f["action"][w, 6])) * 1000, float(np.median(f["state"][w, 6])) * 1000))
+    hold = np.asarray(hold)
     out = {
         "command_minus_measured_rad": {"p50": float(np.median(gap)), "p95": float(np.percentile(gap, 95)),
                                        "max": float(gap.max())},
@@ -205,6 +242,11 @@ def cmd_demos(args) -> dict:
         "moving_lead_rad": float(np.median((lead[mv] * vel[mv]).sum(1) / speed[mv])),
         "idle_start_ticks": {"p50": float(np.median(idle)), "min": int(min(idle)), "max": int(max(idle))},
         "grasp_end_z_mm": {"min": min(gz), "p50": float(np.median(gz)), "max": max(gz)},
+        "holding_gripper_mm": {"episodes": int(len(hold)), "commanded_p50": float(np.median(hold[:, 0])),
+                               "commanded_range": [float(hold[:, 0].min()), float(hold[:, 0].max())],
+                               "measured_p50": float(np.median(hold[:, 1])),
+                               "squeeze_p50": float(np.median(hold[:, 1] - hold[:, 0])),
+                               "squeeze_min": float((hold[:, 1] - hold[:, 0]).min())},
     }
     print(json.dumps(out, indent=1))
     return out
@@ -299,20 +341,34 @@ def cmd_images(args) -> dict:
 
 
 def cmd_sheet(args) -> dict:
+    """Without --before: 2 observations before the gripper closes, by the observation-level rule
+    (``grasp_index``). With --before S: the observation nearest S seconds before the tick-level
+    close (``first_close``), plus the wrist S2 seconds after it with --after S2."""
     import cv2
 
     rows, out = [], {}
-    for run in sorted(p for p in Path(args.day).expanduser().iterdir() if (p / "inferences.jsonl").is_file()):
-        meta, inf, _ = load_run(run)
+    for run in select_runs(args):
+        meta, inf, ticks = load_run(run)
         if not inf or meta.get("mode") == "replay" or (args.masked_only and "unmasked" in run_name(meta)):
             continue
-        g = np.asarray([r["state"][6] for r in inf])
-        i = grasp_index(g)
-        if i is None:
-            continue
-        r = inf[max(i - 2, 0)]
+        if args.before is None:
+            i = grasp_index(np.asarray([r["state"][6] for r in inf]))
+            if i is None:
+                continue
+            r, later = inf[max(i - 2, 0)], None
+        else:
+            g = ticks["gripper"] * (1000 if np.nanmax(ticks["gripper"]) < 1 else 1)
+            c = first_close(g)
+            if c is None:
+                continue
+            tc = float(ticks["t"][c])
+            r = min(inf, key=lambda x: abs(x["t_obs"] - (tc - args.before)))
+            later = min(inf, key=lambda x: abs(x["t_obs"] - (tc + args.after))) if args.after else None
         out[run.name] = {"run": run_name(meta), "t": r["t_obs"], "end_z_mm": r["end_pose"][2], "gripper_mm": r["state"][6] * 1000}
         imgs = [cv2.imread(str(run / "frames" / f"{r['seq']}_{c}.jpg")) for c in ("front", "wrist")]
+        if later is not None:
+            imgs.append(cv2.imread(str(run / "frames" / f"{later['seq']}_wrist.jpg")))
+            cv2.putText(imgs[2], f"+{args.after:g} s", (8, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
         text = f"{run.name[:6]} {run_name(meta).replace('single__piper__', '')[:30]}  z {r['end_pose'][2]:.0f} mm"
         cv2.putText(imgs[0], text, (8, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
         rows.append(np.hstack(imgs))
@@ -322,10 +378,47 @@ def cmd_sheet(args) -> dict:
     return out
 
 
+def cmd_grip(args) -> dict:
+    out = {}
+    for run in select_runs(args):
+        meta, _, t = load_run(run)
+        if meta.get("mode") == "replay":
+            continue
+        g = t["gripper"] * (1000 if np.nanmax(t["gripper"]) < 1 else 1)
+        cmd, tt, z = t["sent_target"][:, 6] * 1000, t["t"], t["end_pose"][:, 2]
+        c = first_close(g)
+        if c is None:
+            out[run.name] = {"run": run_name(meta), "closed": False, "gripper_max_mm": float(np.nanmax(g))}
+            print(f"{run.name[:6]} {run_name(meta)[:44]:44s} opened to {np.nanmax(g):4.0f} mm, never closed")
+            continue
+        w = (tt >= tt[c] + 0.5) & (tt <= tt[c] + 1.5)
+        w2 = (tt >= tt[c]) & (tt <= tt[c] + 2.0)
+        row = {"run": run_name(meta), "closed": True, "t_close": float(tt[c]), "end_z_at_close_mm": float(z[c]),
+               "commanded_mm": float(np.nanmedian(cmd[w])) if w.any() else None,
+               "measured_mm": float(np.nanmedian(g[w])) if w.any() else None,
+               "commanded_min_mm": float(np.nanmin(cmd[w2])),
+               "lift_mm": float(np.nanmax(z[tt > tt[c]]) - z[c]) if (tt > tt[c]).any() else 0.0}
+        row["squeeze_mm"] = (row["measured_mm"] - row["commanded_mm"]) if w.any() else None
+        out[run.name] = row
+        if w.any():
+            print(f"{run.name[:6]} {row['run'][:44]:44s} close {row['t_close']:4.1f} s at z {row['end_z_at_close_mm']:4.0f} | "
+                  f"commanded {row['commanded_mm']:5.1f} (min {row['commanded_min_mm']:4.1f}) measured {row['measured_mm']:5.1f} "
+                  f"squeeze {row['squeeze_mm']:+5.1f} mm | lift {row['lift_mm']:4.0f} mm")
+        else:
+            print(f"{run.name[:6]} {row['run'][:44]:44s} close {row['t_close']:4.1f} s; the run ended within 0.5 s")
+    sq = [r["commanded_mm"] for r in out.values() if r.get("commanded_mm") is not None]
+    if sq:
+        print(f"{len(out)} runs, {len(sq)} closed: commanded after the close p50 {np.median(sq):.1f} mm "
+              f"({min(sq):.1f}-{max(sq):.1f})")
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("logs")
+    s.add_argument("--day", required=True)
+    s = sub.add_parser("grip")
     s.add_argument("--day", required=True)
     s = sub.add_parser("demos")
     s = sub.add_parser("path")
@@ -346,11 +439,18 @@ def main() -> None:
     s.add_argument("--image", type=Path, required=True)
     s.add_argument("--masked-only", action="store_true")
     s.add_argument("--scale", type=float, default=0.5)
-    for s in sub.choices.values():
+    s.add_argument("--before", type=float, default=None, help="seconds before the tick-level close")
+    s.add_argument("--after", type=float, default=None, help="add the wrist frame this long after it")
+    for name, s in sub.choices.items():
         s.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
         s.add_argument("--out", type=Path, default=None)
+        if name in ("logs", "sheet", "grip"):
+            s.add_argument("--since", default=None, help="first run folder name, e.g. 160900")
+            s.add_argument("--until", default=None)
+            s.add_argument("--checkpoint-has", default=None)
     args = p.parse_args()
-    result = {"logs": cmd_logs, "demos": cmd_demos, "path": cmd_path, "images": cmd_images, "sheet": cmd_sheet}[args.cmd](args)
+    result = {"logs": cmd_logs, "demos": cmd_demos, "path": cmd_path, "images": cmd_images, "sheet": cmd_sheet,
+              "grip": cmd_grip}[args.cmd](args)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=1))

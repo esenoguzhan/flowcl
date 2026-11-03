@@ -53,6 +53,20 @@ changes.
       Augmentation cuts this about 2.5×.
     - **Next:** the same layout under the recording light decides it. Then demos in daylight, with
       more carton positions.
+- **Piper grape task, Tue 3 Nov** (`runs/2026-11-03_piper_grape.md`). 40 demos recorded at midday,
+  in the light the robot is tested in. Two policies: masked, and masked + the front camera cropped
+  to the table the user outlined (new `image_crops` in the spec, carried into the checkpoint).
+  - **On a training layout the masked policy follows its demo** (0.05–0.18 rad off its path for
+    10 s), unlike the milk policies under other light. It grasped, then dropped the grape just
+    short of the plate.
+  - **Cropped, on free scenes: 4 of 21 put the grape on the plate,** and a fifth carried it there
+    before being stopped. The masked policy managed 0 of 4.
+  - **The misses:**
+    - **aim:** 12 of 21 closed with the grape ahead of, beside or out of the fingers' view;
+    - **grip:** after closing, the command goes back to about the grape's width (p50 48 mm),
+      while the demos squeeze 12 mm past it (38.9 against 50.8 mm).
+  - **Next, zero-shot (the user's choice):** more demos at more positions, with the leader gripper
+    closed fully while carrying; then the cropped policy on all of them.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
@@ -152,7 +166,7 @@ changes.
 | **E1-B** angle-B capacity gate (recovery-weighted executed prefix) | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933, the same as E1 to three decimals; every weighting 0.850–0.870) | `runs/2026-10-17_twosided_angleb.md` |
 | **E2** pilots | **not run:** angle A is off (E1), angle B is off (E1-B). **D2 resolves to the minimum thesis** (pre-written in E1-B's rule) | `runs/2026-10-02_twosided_gonogo.md`, `runs/2026-10-17_twosided_angleb.md` |
 | **F0** hardware readiness | **log format inspected on AgileX Piper** (LeRobot v3.0, 15 fps, absolute joint targets, measured gripper); access, reset time and cycle time not measured yet. The Dobot try-out was cancelled before any robot time | `runs/2026-11-01_piper_f1_prep.md`; branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
-| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still; augmentation (`41cc359`) brings it level with holding the state, not below holding the last command; LIBERO policies that succeed closed-loop are at 0.48 of standing still on the same check, so the shortfall is real (`b89fd2e`). **Policy server built** (`flowcl/deploy/piper_server.py`; spec `docs/piper_deploy_spec.md`). **Not started:** replay of 3 demos, 10 rollouts. **Milk task** (2 Nov, 40 demos): six policies, mask × {none, daylight, colour}; the unmasked ones read the leader arm (corner probe), so the masked three go to the robot. **PiperStudio runner built** (PiperStudio `a9e82e7`). **Milk rollouts (3 Nov): 0 picked.** The unmasked never open the gripper. The masked follow other demos' paths and stall, even on a training layout; the same demo replayed through the executor succeeds (all replay tolerances pass). The images, most likely the light, move the plan 5–12×. Next: the recording-light test, then daylight demos | `runs/2026-11-01_piper_f1_prep.md`; `runs/2026-11-02_libero_offline_calibration.md`; `runs/2026-11-02_piper_milk.md`; `runs/2026-11-03_piper_milk_rollouts.md` |
+| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still; augmentation (`41cc359`) brings it level with holding the state, not below holding the last command; LIBERO policies that succeed closed-loop are at 0.48 of standing still on the same check, so the shortfall is real (`b89fd2e`). **Policy server built** (`flowcl/deploy/piper_server.py`; spec `docs/piper_deploy_spec.md`). **Not started:** replay of 3 demos, 10 rollouts. **Milk task** (2 Nov, 40 demos): six policies, mask × {none, daylight, colour}; the unmasked ones read the leader arm (corner probe), so the masked three go to the robot. **PiperStudio runner built** (PiperStudio `a9e82e7`). **Milk rollouts (3 Nov): 0 picked.** The unmasked never open the gripper. The masked follow other demos' paths and stall, even on a training layout; the same demo replayed through the executor succeeds (all replay tolerances pass). The images, most likely the light, move the plan 5–12×. Next: the recording-light test, then daylight demos. **Grape (3 Nov, recorded in the test light):** masked and masked + table crop; the cropped policy placed the grape in 4 of 21 free-scene tries. The misses are aim and a loose grip. Next: more demos with a firm grip | `runs/2026-11-01_piper_f1_prep.md`; `runs/2026-11-02_libero_offline_calibration.md`; `runs/2026-11-02_piper_milk.md`; `runs/2026-11-03_piper_milk_rollouts.md`; `runs/2026-11-03_piper_grape.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
 ## 2. Side line, outside the plan: similar tasks and language (closed for now)
