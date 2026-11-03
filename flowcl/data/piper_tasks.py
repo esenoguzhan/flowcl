@@ -81,6 +81,13 @@ PICK_MILK = PiperSource(
     sha256="b198239c8ad825fa38cc45ac427fcb812b7099586a9ca54330f56e21c942daf2",
 )
 MILK_PLATE = "pick up the milk carton and put it on the blue plate"
+# The 3 Nov 2026 midday session (12:14-12:59, daylight), labelled 'pick up the grape and put
+# it on blue plate'. Every demo picks a grape off the table and puts it on the blue plate.
+PICK_GRAPE = PiperSource(
+    folder="pick_grape",
+    sha256="a7318705b9430b0fcf6f0e8210c2521ce75ac893a9ac836f08f410c7f73f5c0f",
+)
+GRAPE_PLATE = "pick up the grape and put it on the blue plate"
 
 TASKS: dict[str, PiperTask] = {
     t.name: t
@@ -151,6 +158,17 @@ TASKS: dict[str, PiperTask] = {
                 "and the leader arm, whose pose is the action. The mask ablation."
             ),
             embodiment="agilex_piper_unmasked",
+        ),
+        PiperTask(
+            name="grape_plate",
+            language=GRAPE_PLATE,
+            sources=(PICK_GRAPE,),
+            n_episodes=40,
+            holdout=0,
+            notes=(
+                "Every demo of the grape session, all trained on (as milk_plate), recorded in the "
+                "daylight the robot is tested in. The front camera is masked as for milk_plate."
+            ),
         ),
     )
 }
