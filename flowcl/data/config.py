@@ -16,6 +16,7 @@ from flowcl.data.spec import (
     EmbodimentSpec,
     ObservationSpec,
     parse_hw,
+    parse_image_crops,
     parse_image_masks,
 )
 from flowcl.utils.libero_paths import repo_root
@@ -62,6 +63,7 @@ def load_embodiment_spec(cfg: DictConfig | dict | str | Path) -> EmbodimentSpec:
         state_keys=tuple((str(k), int(v)) for k, v in obs.get("state_keys", [])),
         image_masks=parse_image_masks(obs.get("image_masks")),
         mask_source_hw=parse_hw(obs.get("mask_source_hw")),
+        image_crops=parse_image_crops(obs.get("image_crops")),
     )
     action = ActionSpec(
         d_action=int(act["d_action"]),

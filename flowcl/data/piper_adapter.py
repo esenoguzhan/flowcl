@@ -255,9 +255,13 @@ def read_source(source: Path, spec: EmbodimentSpec, exclude: tuple[int, ...] = (
 
 
 def _masks_json(spec: EmbodimentSpec) -> str:
+    """The masks and crops a cache is built with; crops only when set, so caches built
+    before crops existed still verify."""
     obs = spec.to_dict()["observation"]
-    return json.dumps({"image_masks": obs.get("image_masks", {}),
-                       "mask_source_hw": obs.get("mask_source_hw")}, sort_keys=True)
+    preprocess = {"image_masks": obs.get("image_masks", {}), "mask_source_hw": obs.get("mask_source_hw")}
+    if obs.get("image_crops"):
+        preprocess["image_crops"] = obs["image_crops"]
+    return json.dumps(preprocess, sort_keys=True)
 
 
 def _sources_json(task) -> str:

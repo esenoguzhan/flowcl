@@ -170,6 +170,18 @@ TASKS: dict[str, PiperTask] = {
                 "daylight the robot is tested in. The front camera is masked as for milk_plate."
             ),
         ),
+        PiperTask(
+            name="grape_plate_crop",
+            language=GRAPE_PLATE,
+            sources=(PICK_GRAPE,),
+            n_episodes=40,
+            holdout=0,
+            notes=(
+                "grape_plate with the front camera also cut to the table the user outlined: "
+                "outside it is black and the policy image is its bounding box."
+            ),
+            embodiment="agilex_piper_crop",
+        ),
     )
 }
 

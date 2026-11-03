@@ -109,7 +109,8 @@ returns
   decoded, resized, cropped, masked or colour-converted.
   - The server decodes them as the recorder does (`cv2.imdecode`, BGR→RGB).
   - It refuses any other size.
-  - It applies the checkpoint's mask and resize to 128×128.
+  - It applies the checkpoint's mask, its crop (a working-area polygon, when it has one; listed
+    in `metadata.image_crops`) and the resize to 128×128.
   - Doing any image processing on the client would break the match with training.
 - `seed` is optional. Without it the server draws noise from its own generator. Sending it, and
   logging it, makes a request reproducible offline.

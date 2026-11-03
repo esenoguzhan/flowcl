@@ -230,3 +230,23 @@ def test_an_unmasked_cache_keeps_the_corner_and_loads_only_unmasked(tmp_path, sp
         list(iter_cache_episodes(tmp_path / "unmasked.h5", spec))
     with pytest.raises(ValueError, match="masks"):
         list(iter_cache_episodes(tmp_path / "masked.h5", unmasked))
+
+
+def test_a_cropped_cache_loads_only_under_its_embodiment(tmp_path, spec):
+    cropped = load_embodiment_spec("agilex_piper_crop")
+    import flowcl.data.piper_tasks as piper_tasks
+
+    plain, crop = piper_tasks.get_task("grape_plate"), piper_tasks.get_task("grape_plate_crop")
+    assert dataclasses.replace(crop, name=plain.name, notes=plain.notes, embodiment=plain.embodiment) == plain
+    assert cropped.observation.masks_for("front") == spec.observation.masks_for("front")
+    write_dataset(tmp_path / "toy")
+    task = toy_task(tmp_path, holdout=0)
+    build_cache(task, tmp_path, tmp_path / "masked.h5", spec)
+    build_cache(task, tmp_path, tmp_path / "cropped.h5", cropped)
+    a = next(iter_cache_episodes(tmp_path / "masked.h5", spec)).images["front"][2]
+    b = next(iter_cache_episodes(tmp_path / "cropped.h5", cropped)).images["front"][2]
+    assert a.shape == b.shape and not np.array_equal(a, b)
+    with pytest.raises(ValueError, match="masks"):
+        list(iter_cache_episodes(tmp_path / "cropped.h5", spec))
+    with pytest.raises(ValueError, match="masks"):
+        list(iter_cache_episodes(tmp_path / "masked.h5", cropped))

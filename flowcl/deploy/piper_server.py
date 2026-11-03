@@ -202,6 +202,7 @@ class PiperPolicyService:
             "cameras": {c: CAMERA_KEYS[c] for c in self.spec.cameras},
             "frame_hw": list(RECORDED_HW),
             "image_masks": self.spec.to_dict()["observation"].get("image_masks", {}),
+            "image_crops": self.spec.to_dict()["observation"].get("image_crops", {}),
             "policy_image_hw": list(obs.image_size),
             "state_names": [f"joint_{i}" for i in range(1, 7)] + ["gripper"],
             "units": {"joints": "rad", "gripper": "m"},

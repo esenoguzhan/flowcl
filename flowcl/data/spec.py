@@ -40,8 +40,14 @@ class ObservationSpec:
             cameras that see the teleoperator: the leader arm's pose is the action,
             and it sits still when the policy runs alone. Part of the spec so every
             checkpoint carries the masks it was trained with.
-        mask_source_hw: ``(H, W)`` of the recorded frames the mask vertices refer
-            to. Required exactly when ``image_masks`` is set.
+        mask_source_hw: ``(H, W)`` of the recorded frames the mask vertices and crop
+            boxes refer to. Required exactly when ``image_masks`` or ``image_crops``
+            is set.
+        image_crops: ``(camera, polygon)`` pairs: the working area of the recorded
+            frame, ``(x, y)`` pixel vertices. After masking, everything outside the
+            polygon is filled black and the frame is cut to the polygon's bounding
+            box, then resized. For a fixed scene camera, it spends the policy's pixels
+            on the workspace rather than the room.
     """
 
     cameras: tuple[str, ...]
@@ -50,6 +56,7 @@ class ObservationSpec:
     state_keys: tuple[tuple[str, int], ...] = ()
     image_masks: tuple[tuple[str, tuple[tuple[tuple[int, int], ...], ...]], ...] = ()
     mask_source_hw: tuple[int, int] | None = None
+    image_crops: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.cameras:
@@ -70,7 +77,7 @@ class ObservationSpec:
         self._validate_masks()
 
     def _validate_masks(self) -> None:
-        if not self.image_masks:
+        if not self.image_masks and not self.image_crops:
             if self.mask_source_hw is not None:
                 raise ValueError("mask_source_hw is set but image_masks is empty")
             return
@@ -78,8 +85,10 @@ class ObservationSpec:
             v <= 0 for v in self.mask_source_hw
         ):
             raise ValueError(
-                f"image_masks need a positive mask_source_hw (H, W), got {self.mask_source_hw}"
+                f"image_masks and image_crops need a positive mask_source_hw (H, W), "
+                f"got {self.mask_source_hw}"
             )
+        self._validate_crops()
         height, width = self.mask_source_hw
         named = [camera for camera, _ in self.image_masks]
         if len(set(named)) != len(named):
@@ -102,6 +111,30 @@ class ObservationSpec:
                             f"image_masks[{camera!r}]: vertex {(x, y)} lies outside the "
                             f"{width}x{height} recorded frame"
                         )
+
+    def _validate_crops(self) -> None:
+        height, width = self.mask_source_hw
+        named = [camera for camera, _ in self.image_crops]
+        if len(set(named)) != len(named):
+            raise ValueError(f"image_crops names a camera twice: {named}")
+        for camera, polygon in self.image_crops:
+            if camera not in self.cameras:
+                raise ValueError(f"image_crops camera {camera!r} is not one of {self.cameras}")
+            if len(polygon) < 3:
+                raise ValueError(f"image_crops[{camera!r}]: a polygon needs >= 3 vertices, got {polygon}")
+            for x, y in polygon:
+                if not (0 <= x <= width and 0 <= y <= height):
+                    raise ValueError(
+                        f"image_crops[{camera!r}]: vertex {(x, y)} lies outside the "
+                        f"{width}x{height} recorded frame"
+                    )
+            xs, ys = [x for x, _ in polygon], [y for _, y in polygon]
+            if min(xs) == max(xs) or min(ys) == max(ys):
+                raise ValueError(f"image_crops[{camera!r}]: polygon {polygon} is empty")
+
+    def crop_for(self, camera: str) -> tuple[tuple[int, int], ...]:
+        """The polygon of ``camera``'s frames kept (empty when uncropped)."""
+        return dict(self.image_crops).get(camera, ())
 
     def masks_for(self, camera: str) -> tuple[tuple[tuple[int, int], ...], ...]:
         """The polygons masked out of ``camera``'s frames (empty when unmasked)."""
@@ -202,7 +235,7 @@ class EmbodimentSpec:
 
         Checkpoints carry the spec rather than a config *name* so that evaluating an
         old checkpoint cannot silently pick up an edited YAML. The image masks appear
-        only when set, so unmasked specs serialise exactly as before.
+        and crops appear only when set, so unmasked specs serialise exactly as before.
         """
         observation = {
             "cameras": list(self.observation.cameras),
@@ -215,6 +248,11 @@ class EmbodimentSpec:
                 camera: [[[x, y] for x, y in polygon] for polygon in polygons]
                 for camera, polygons in self.observation.image_masks
             }
+        if self.observation.image_crops:
+            observation["image_crops"] = {
+                camera: [[x, y] for x, y in polygon] for camera, polygon in self.observation.image_crops
+            }
+        if self.observation.image_masks or self.observation.image_crops:
             observation["mask_source_hw"] = list(self.observation.mask_source_hw)
         return {
             "name": self.name,
@@ -246,6 +284,7 @@ class EmbodimentSpec:
                 state_keys=tuple((k, int(w)) for k, w in obs.get("state_keys", [])),
                 image_masks=parse_image_masks(obs.get("image_masks")),
                 mask_source_hw=parse_hw(obs.get("mask_source_hw")),
+                image_crops=parse_image_crops(obs.get("image_crops")),
             ),
             action=ActionSpec(
                 d_action=int(act["d_action"]),
@@ -296,6 +335,13 @@ def parse_image_masks(
         )
         for camera, polygons in raw.items()
     )
+
+
+def parse_image_crops(raw: dict | None) -> tuple[tuple[str, tuple[tuple[int, int], ...]], ...]:
+    """``{camera: [[x, y], ...]}`` (YAML or ``to_dict`` form) -> spec tuples."""
+    if not raw:
+        return ()
+    return tuple((str(camera), tuple((int(x), int(y)) for x, y in polygon)) for camera, polygon in raw.items())
 
 
 def parse_hw(raw) -> tuple[int, int] | None:
