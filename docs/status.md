@@ -29,6 +29,17 @@ changes.
     `docs/piper_deploy_spec.md`. Smoke run on held-out `v3` 10: round trip p50 50 ms; the served
     inputs are within 0.4/255 of the training cache's.
   - Next: the PiperStudio side (runner, replay through it, rollouts), built from that spec.
+- **Piper milk task: six policies trained Mon 2 – Tue 3 Nov** (`runs/2026-11-02_piper_milk.md`).
+  - **Data:** 40 demos (`pick_milk`), instruction "pick up the milk carton and put it on the blue
+    plate", nothing held out.
+  - **The six:** front camera masked or as recorded, crossed with no augmentation, daylight 0.3 (new:
+    a colour temperature, a light ramp, then the colour jitter) or colour 0.3.
+  - All six fit their demos: training-episode error 0.0029–0.0043 rad (holding the last command:
+    0.031).
+  - **The unmasked ones read the leader arm.** With the corner held still, their error rises 4–7×
+    and their plans move 0.02–0.03 rad; the masked ones' plans move ≤ 0.004.
+  - **Robot candidates: the masked three,** `results/{,piper_daylight/,piper_color/}single__piper__milk_plate__seed0`.
+    Rollouts choose between them.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
@@ -128,7 +139,7 @@ changes.
 | **E1-B** angle-B capacity gate (recovery-weighted executed prefix) | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933, the same as E1 to three decimals; every weighting 0.850–0.870) | `runs/2026-10-17_twosided_angleb.md` |
 | **E2** pilots | **not run:** angle A is off (E1), angle B is off (E1-B). **D2 resolves to the minimum thesis** (pre-written in E1-B's rule) | `runs/2026-10-02_twosided_gonogo.md`, `runs/2026-10-17_twosided_angleb.md` |
 | **F0** hardware readiness | **log format inspected on AgileX Piper** (LeRobot v3.0, 15 fps, absolute joint targets, measured gripper); access, reset time and cycle time not measured yet. The Dobot try-out was cancelled before any robot time | `runs/2026-11-01_piper_f1_prep.md`; branch `dobot-hw`: `runs/2026-10-06_dobot_hw_prep.md` |
-| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still; augmentation (`41cc359`) brings it level with holding the state, not below holding the last command; LIBERO policies that succeed closed-loop are at 0.48 of standing still on the same check, so the shortfall is real (`b89fd2e`). **Policy server built** (`flowcl/deploy/piper_server.py`; spec `docs/piper_deploy_spec.md`). **Not started:** the PiperStudio runner, replay of 3 demos, 10 rollouts | `runs/2026-11-01_piper_f1_prep.md`; `runs/2026-11-02_libero_offline_calibration.md` |
+| **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still; augmentation (`41cc359`) brings it level with holding the state, not below holding the last command; LIBERO policies that succeed closed-loop are at 0.48 of standing still on the same check, so the shortfall is real (`b89fd2e`). **Policy server built** (`flowcl/deploy/piper_server.py`; spec `docs/piper_deploy_spec.md`). **Not started:** the PiperStudio runner, replay of 3 demos, 10 rollouts. **Milk task** (2 Nov, 40 demos): six policies, mask × {none, daylight, colour}; the unmasked ones read the leader arm (corner probe), so the masked three go to the robot | `runs/2026-11-01_piper_f1_prep.md`; `runs/2026-11-02_libero_offline_calibration.md`; `runs/2026-11-02_piper_milk.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
 ## 2. Side line, outside the plan: similar tasks and language (closed for now)
