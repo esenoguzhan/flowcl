@@ -19,7 +19,7 @@ from flowcl.data.piper_adapter import (
     source_fingerprint,
     verify_cache,
 )
-from flowcl.data.piper_tasks import PiperSource, PiperTask
+from flowcl.data.piper_tasks import PiperSource, PiperTask, get_task
 from flowcl.data.tasks import TaskRef, load_task_episodes, suite_task_names
 
 # Episodes 0 and 1 share file 0; episode 2 is alone in file 1 (LeRobot v3 layout).
@@ -213,6 +213,18 @@ def test_every_registered_task_names_a_loadable_embodiment():
     assert dataclasses.replace(unmasked, name=masked.name, notes=masked.notes, embodiment=masked.embodiment) == masked
     assert load_embodiment_spec(masked.embodiment).observation.masks_for("front")
     assert not load_embodiment_spec(unmasked.embodiment).observation.image_masks
+
+
+@pytest.mark.parametrize("size", [224, 336])
+def test_a_larger_crop_changes_only_the_input_size(size):
+    base = load_embodiment_spec("agilex_piper_crop")
+    sized = load_embodiment_spec(f"agilex_piper_crop{size}")
+    assert sized.observation.image_size == (size, size)
+    assert dataclasses.replace(sized.observation, image_size=base.observation.image_size) == base.observation
+    assert sized.action == base.action
+    for name in ("grape_plate", "milk_plate"):
+        task = get_task(f"{name}_crop{size}")
+        assert (task.embodiment, task.n_episodes, task.holdout) == (sized.name, 40, 0)
 
 
 def test_an_unmasked_cache_keeps_the_corner_and_loads_only_unmasked(tmp_path, spec):

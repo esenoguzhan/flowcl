@@ -66,8 +66,10 @@ PICK_SAUSAGE_V3 = PiperSource(
     sha256="4618ba974fb38292b077f70c27700798acdc85a3d6eeb7128999d615d248cf40",
 )
 # The 2 Nov 2026 session, the same task (episode 0 labelled 'pick the sausage', the rest
-# 'pick up the sausage'). The scene sits lower in the front camera than on 30 Oct and the
-# lid starts off the pot. Episode 0 ends with the arm over the pot, not at home.
+# 'pick up the sausage'). The arm starts from a lower pose than on 30 Oct (joint 2 at 0.01
+# rad, not 0.52), so it sits lower in the front camera; the camera and table are unchanged
+# (sausage pixel to pick position matches 30 Oct to 9 mm). The lid starts off the pot.
+# Episode 0 ends with the arm over the pot, not at home.
 PICK_SAUSAGE_V4 = PiperSource(
     folder="pick_sausage_v4",
     sha256="9e059e744398f1d953daaa2474090c461518a1cce063b2c5d7f2cd6917b2778d",
@@ -88,6 +90,20 @@ PICK_GRAPE = PiperSource(
     sha256="a7318705b9430b0fcf6f0e8210c2521ce75ac893a9ac836f08f410c7f73f5c0f",
 )
 GRAPE_PLATE = "pick up the grape and put it on the blue plate"
+
+
+def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_episodes: int, size: int) -> PiperTask:
+    """A task at a larger input: the table crop at ``size`` px, nothing held out."""
+    return PiperTask(
+        name=f"{name}_crop{size}",
+        language=language,
+        sources=sources,
+        n_episodes=n_episodes,
+        holdout=0,
+        notes=f"The table crop at {size} x {size}, so the frozen encoder's patches are finer on the table.",
+        embodiment=f"agilex_piper_crop{size}",
+    )
+
 
 TASKS: dict[str, PiperTask] = {
     t.name: t
@@ -181,6 +197,15 @@ TASKS: dict[str, PiperTask] = {
                 "outside it is black and the policy image is its bounding box."
             ),
             embodiment="agilex_piper_crop",
+        ),
+        # At 128 x 128 a patch covers about 100 x 70 mm of table, more than the grape.
+        *(
+            task
+            for size in (224, 336)
+            for task in (
+                _sized_crop("grape_plate", GRAPE_PLATE, (PICK_GRAPE,), 40, size),
+                _sized_crop("milk_plate", MILK_PLATE, (PICK_MILK,), 40, size),
+            )
         ),
     )
 }
