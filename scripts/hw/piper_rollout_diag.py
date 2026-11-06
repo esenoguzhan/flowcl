@@ -90,7 +90,7 @@ def first_close(gripper_mm: np.ndarray, open_mm: float = 30.0, frac: float = 0.8
 def select_runs(args) -> list[Path]:
     """Run folders of ``--day`` with logs, filtered by name range and checkpoint."""
     out = []
-    for run in sorted(p for p in Path(args.day).expanduser().iterdir() if (p / "inferences.jsonl").is_file()):
+    for run in sorted(p for p in Path(args.day).expanduser().iterdir() if (p / "ticks.npz").is_file()):
         if (args.since and run.name < args.since) or (args.until and run.name > args.until):
             continue
         if args.checkpoint_has:
@@ -176,7 +176,7 @@ def cmd_logs(args) -> dict:
     out = {}
     for run in select_runs(args):
         meta, inf, t = load_run(run)
-        if not inf:
+        if len(inf) < 2:                        # refused at the first chunk: nothing to compare
             continue
         s = np.asarray([r["state"] for r in inf])
         z = np.asarray([r["end_pose"][2] for r in inf])

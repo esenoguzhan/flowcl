@@ -67,6 +67,25 @@ changes.
       while the demos squeeze 12 mm past it (38.9 against 50.8 mm).
   - **Next, zero-shot (the user's choice):** more demos at more positions, with the leader gripper
     closed fully while carrying; then the cropped policy on all of them.
+- **Piper resolution, Fri 6 Nov** (`runs/2026-11-06_piper_resolution.md`). The table crop at 224 and
+  336 px on grape and milk; seven of eight policies trained, the last paused. 54 rollouts.
+  - **Finer input aims better:** median miss 54 mm at 128 px, 31 at 224, 27 at 336. The grape reached
+    the plate in 12 of 30 tries at 336 px (128 px: 4 of 23). No grape was placed from a miss above
+    31 mm.
+  - **Grip came right from the same demos:** the command after the close is p50 41 mm (128 px: 48;
+    demos: 39), and all 14 placed runs squeezed by 9–16 mm.
+  - **Serving costs almost nothing:** 55 ms round trip at 336 px. Training costs 4.2×.
+  - **Two PiperStudio changes that keep runs zero-shot:** J5's own first-jump limit, 0.35 rad, without
+    which 7 of 8 336 px runs were refused; and a rollout ends back at the start pose.
+  - **Two open problems, both likely standing still memorised rather than learned:** plans start at
+    once on a new scene, and the arm restarts its reach at the start pose. The demos end there with no
+    hold.
+  - **The motion is rougher than the demos at each replan** (a backward target step, not sampling
+    noise). A blend at replans was smoother but not better. It breaks the zero-shot rule, so it stays
+    off, as a tick box reported apart.
+  - **Milk has not had a fair test:** it ran at midday, and it was recorded under the lamp.
+  - **Next:** milk 336 daylight (paused queue: `pkill -CONT -f 'scripts/[g]ate0.py'`), milk under the
+    lamp, plain against daylight on fixed scenes, annotated.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
