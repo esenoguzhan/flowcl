@@ -77,20 +77,24 @@ changes.
   - **Serving costs almost nothing:** 55 ms round trip at 336 px. Training costs 4.2×.
   - **Two PiperStudio changes that keep runs zero-shot:** J5's own first-jump limit, 0.35 rad, without
     which 7 of 8 336 px runs were refused; and a rollout ends back at the start pose.
-  - **Two open problems, both likely standing still memorised rather than learned:** plans start at
-    once on a new scene, and the arm restarts its reach at the start pose. The demos end there with no
-    hold.
+  - **The first-chunk jump and the restart at home came from compression** (below), not memorising.
   - **The motion is rougher than the demos at each replan** (a backward target step, not sampling
-    noise). A blend at replans was smoother but not better. It breaks the zero-shot rule, so it stays
-    off, as a tick box reported apart.
+    noise, not compression). A blend at replans was smoother but not better. It breaks the zero-shot
+    rule, so it stays off, as a tick box reported apart.
   - **Milk has not had a fair test:** it ran at midday, and it was recorded under the lamp.
   - **Replan interval** (`runs/2026-11-06_piper_replan.md`): 4 and 12 ticks are no better than 8, which
     stays. Execution tuning is finished.
   - **The scene decides:** the close follows the grape at slope 0.86 along the table's y, so aim is
     pulled sideways, about 27 mm short on one side. One zone places 10 of 14, the rest 9 of 34.
-  - **Next:** about 40 new demos by the map in that record, holding still at the end and starting at
-    once, with 5 held out; 336 px daylight on old and new; the paused queue (milk 336 daylight,
-    `pkill -CONT -f 'scripts/[g]ate0.py'`); milk under the lamp.
+  - **Compression** (`runs/2026-11-06_piper_compression.md`): training frames are H.264 at crf 30, live
+    frames sharper JPEGs. `serve_piper.py --video-crf 30` passes live frames through the same video.
+    - **On the arm, 13 runs:** first-chunk J5 +0.106 → +0.016 rad. Placed 5 of 13, miss 31 mm, roughness
+      1.40: no change. In replay the restart at home nearly goes (11 of 12 plans → 2).
+    - **Not settled:** only 4 runs were outside the working zone, and the error may have moved into x
+      (+28 mm).
+  - **Next:** about 10 tries in the weak zones with the step on, to decide whether new demos are needed
+    at all; make the step the default; milk with the step, which may also explain 3 Nov; the paused
+    queue (milk 336 daylight, `pkill -CONT -f 'scripts/[g]ate0.py'`).
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,

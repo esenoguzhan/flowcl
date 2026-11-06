@@ -1,7 +1,8 @@
 # Piper resolution (Fri 6 Nov): the table crop at 224 and 336 px on grape and milk. Finer input aims better: median miss 54 mm at 128 px, 31 at 224, 27 at 336, and the grape reached the plate in 12 of 30 tries at 336 px against 4 of 23 at 128. No grape was placed from a miss above 31 mm. A J5 first-jump limit had to be raised before 336 px could run at all. The motion is rougher than the demos at each replan, and the arm restarts its reach at the start pose. A blend at replans was smoother but not better, and stays off
 
-**Status: thesis plan F1, the grape task's question of 5 Nov answered on the robot.** Follow-up, including a
-correction of §6's reading on coverage: `runs/2026-11-06_piper_replan.md`.
+**Status: thesis plan F1, the grape task's question of 5 Nov answered on the robot.** Follow-ups: a correction of §6's
+reading on coverage in `runs/2026-11-06_piper_replan.md`, and of the "memorised" reading in §4, §8 and §10 in
+`runs/2026-11-06_piper_compression.md`.
 - **Why this:** on 3 Nov the 128 px cropped policy missed the grape in 12 of 21 tries. The record's
   reading was that aim needs more demos. An offline check on 5 Nov pointed at the input instead (§1).
 - **Zero-shot:** the user's rule stands: no robot-side changes to the actions and no relabelled
@@ -113,7 +114,9 @@ state (p50 over 6 live scenes or 5 training episodes, 2 seeds):
 - **Swapping the state changes nothing;** swapping the images changes everything. The replay matches the
   robot (+0.19 to +0.30 at 336 px).
 - **Most likely the policy memorised standing still for its 40 training images,** and on a new scene
-  starts moving. This is not proven: nothing is held out on grape.
+  starts moving. This is not proven: nothing is held out on grape. **Corrected the same day: it is the images'
+  compression.** The recorded frames are H.264 and the live ones far sharper JPEGs; through the same video, live frames
+  give −0.009 rad at 336 px and +0.014 with daylight (`runs/2026-11-06_piper_compression.md`).
 - **It is not simply resolution:** 224 px jumps less than 128 px. Daylight halves it at 336 px.
 - **At 336 px it needs both cameras live:** live front with recorded wrist gives +0.084, recorded front
   with live wrist −0.013.
@@ -224,7 +227,8 @@ about 0.1 rad in both).
 pose appears only as "about to begin", and the state cannot tell the two apart.
 
 **On the robot the policy sets off again**, with plans of about +0.2 rad on J2 and J5, the size of the first
-chunk's jump in §4, so very likely the same cause.
+chunk's jump in §4, so very likely the same cause. **Corrected the same day:** the cause is compression too. Through the
+same video, 2 of 12 plans leave the pose in `124619`, not 11, and the demos' lack of a hold is not the main reason.
 - `124619`: at the start pose from 17 s, the grape on the plate, no hand in view. 41 of 46 later plans point
   away, and the arm goes out and back until a J2 first jump stops it at 51.7 s. This is the oscillation the
   user saw.
@@ -243,7 +247,7 @@ held at Go, after one was 0.5 rad away. It changes no command, so runs stay zero
 - On 6 Nov it fires in 15 runs (9 replayed, 6 live) and **all 15 placed the grape.** The 16th placement,
   `122447`, was stopped before it got home.
 - The arm is moving at 0.2–0.5 rad/s when it fires, so it stops short and holds.
-- It hides the restart; it does not fix it. New demos that hold still at the end would.
+- It hides the restart; it does not fix it. Matching the compression does, in replay.
 
 ## 9. Third session (13:37–13:46, 19 runs): the blend is smoother, not better
 
@@ -283,8 +287,8 @@ that placed the grape.
   this, but it was not tested separately.
 - **336 px daylight is the robot candidate:** the most placed grapes and the most runs, and a smaller
   first-chunk jump than plain.
-- **Both remaining problems look like the same gap.** Standing still is memorised for the training images and not
-  learned as behaviour, at the start and at the end.
+- **Both remaining problems share one cause, compression, not a gap in the demos** (corrected the same day;
+  `runs/2026-11-06_piper_compression.md`).
 - **Cost:** 4.2× the training time and 15 GB of GPU memory for 336 px, and no cost in serving.
 - **Caveats:**
   - free scenes, not the same across policies or sessions;

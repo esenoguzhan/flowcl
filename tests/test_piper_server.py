@@ -35,6 +35,7 @@ from flowcl.deploy.piper_server import (
     make_server,
     task_of,
     training_summary,
+    video_roundtrip,
 )
 from flowcl.models.build import build_policy
 from flowcl.train.checkpoint import save_checkpoint
@@ -174,6 +175,31 @@ def test_frames_are_decoded_as_the_recorder_decodes_them(world):
     np.testing.assert_array_equal(inputs["wrist"], policy_frame(recorder, "wrist", world.spec))
     assert inputs["front"].shape == (128, 128, 3) and inputs["front"].dtype == np.uint8
     assert inputs["front"][0, 0].max() == 0 and inputs["wrist"][0, 0].max() > 0  # only front is masked
+
+
+def test_the_recorders_video_softens_a_frame_and_keeps_its_shape():
+    rng = np.random.default_rng(0)
+    frame = cv2.GaussianBlur(rng.integers(0, 256, (480, 640, 3), dtype=np.uint8), (0, 0), 0.7)
+    out = video_roundtrip(frame, 30)
+    assert out.shape == frame.shape and out.dtype == np.uint8
+    assert cv2.Laplacian(out, cv2.CV_32F).var() < 0.8 * cv2.Laplacian(frame, cv2.CV_32F).var()
+    assert np.array_equal(out, video_roundtrip(frame, 30))             # the same frame gives the same input
+    assert abs(float(out.mean()) - float(frame.mean())) < 2            # no colour shift
+
+
+def test_the_video_step_is_off_unless_asked_for(world, monkeypatch):
+    service = world.service
+    jpeg = base64.b64encode(cv2.imencode(".jpg", np.full((480, 640, 3), 128, np.uint8))[1].tobytes()).decode()
+    images = {c: jpeg for c in service.spec.cameras}
+    calls = []
+    monkeypatch.setattr("flowcl.deploy.piper_server.video_roundtrip", lambda f, crf: calls.append(crf) or f)
+    assert service.metadata()["video_crf"] is None
+    service.policy_inputs(images)
+    assert calls == []
+    monkeypatch.setattr(service, "video_crf", 30)
+    assert service.metadata()["video_crf"] == 30
+    service.policy_inputs(images)
+    assert calls == [30] * len(service.spec.cameras)
 
 
 def test_bad_frames_are_refused(world):

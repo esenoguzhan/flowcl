@@ -33,6 +33,7 @@ import json
 import threading
 import time
 import traceback
+from fractions import Fraction
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -111,6 +112,27 @@ def training_summary(
     }
 
 
+def video_roundtrip(rgb: np.ndarray, crf: int) -> np.ndarray:
+    """One frame through the recorder's video: libx264 at ``crf`` in yuv420p, then decoded.
+
+    Training saw the cameras through that video, and the server gets far sharper JPEGs. The
+    difference alone moves the plans (runs/2026-11-06_piper_replan.md). Each call encodes one key
+    frame; half of a recording's frames are P frames, which are close to it.
+    """
+    import av
+
+    h, w = rgb.shape[:2]
+    encoder = av.CodecContext.create("libx264", "w")
+    encoder.width, encoder.height, encoder.pix_fmt = w, h, "yuv420p"
+    encoder.time_base = Fraction(1, 15)
+    encoder.options = {"crf": str(crf), "g": "2"}
+    frame = av.VideoFrame.from_ndarray(np.ascontiguousarray(rgb), format="rgb24").reformat(format="yuv420p")
+    packets = list(encoder.encode(frame)) + list(encoder.encode(None))
+    decoder = av.CodecContext.create("h264", "r")
+    decoded = [f for packet in packets for f in decoder.decode(packet)] + list(decoder.decode(None))
+    return decoded[0].to_ndarray(format="rgb24")
+
+
 def decode_frame(data: str, camera: str) -> np.ndarray:
     """A base64 JPEG from the robot -> the 480x640 RGB frame the recorder stored."""
     import cv2
@@ -153,8 +175,10 @@ class PiperPolicyService:
         dataset_dir: Path | None = None,
         seed: int = 0,
         log_path: Path | None = None,
+        video_crf: int | None = None,
     ) -> None:
         self.checkpoint = Path(checkpoint)
+        self.video_crf = video_crf      # frames go through the recorder's video first; None: as sent
         self.device = torch.device(device)
         loaded = load_checkpoint(self.checkpoint, device=self.device)
         self.policy, self.spec, self.stats, self.payload = loaded.policy, loaded.spec, loaded.stats, loaded.payload
@@ -215,6 +239,7 @@ class PiperPolicyService:
             "n_demos_trained": self.summary["n_demos"],
             "euler_steps": self.policy.euler_steps,
             "server_seed": self.seed,
+            "video_crf": self.video_crf,
         }
 
     # ---- inference -------------------------------------------------------------------
@@ -226,7 +251,10 @@ class PiperPolicyService:
         missing = [c for c in self.spec.cameras if c not in images]
         if missing:
             raise RequestError(f"missing cameras {missing}; the policy needs {list(self.spec.cameras)}")
-        return {c: policy_frame(decode_frame(images[c], c), c, self.spec) for c in self.spec.cameras}
+        frames = {c: decode_frame(images[c], c) for c in self.spec.cameras}
+        if self.video_crf is not None:
+            frames = {c: video_roundtrip(f, self.video_crf) for c, f in frames.items()}
+        return {c: policy_frame(f, c, self.spec) for c, f in frames.items()}
 
     def sample(self, frames: dict[str, np.ndarray], state: np.ndarray, generator: torch.Generator) -> np.ndarray:
         """One chunk, ``(H, 7)`` in rad / m, from policy inputs and the measured state.

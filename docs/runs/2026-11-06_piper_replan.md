@@ -1,6 +1,7 @@
 # Piper replan interval (Fri 6 Nov, afternoon): replanning every 4 or 12 ticks is no better than the policy's 8. In six near-matched pairs, 8 and 12 tie (3 grapes placed each, 30 and 28 mm, roughness 1.45 and 1.46). The scene decides instead: the close follows the grape at slope 0.86 along the table's y, so aim is pulled sideways, and only one zone of the table works (10 of 14 placed, against 9 of 34 elsewhere). Stay on 8 and record better demos
 
-**Status: thesis plan F1, the follow-up to `runs/2026-11-06_piper_resolution.md`.**
+**Status: thesis plan F1, the follow-up to `runs/2026-11-06_piper_resolution.md`.** Later the same day
+`runs/2026-11-06_piper_compression.md` found the cause of the first-chunk jump and the restart, and changes §6–§8 below.
 - **Why this:** aim was the main loss left at 336 px, so the question was whether execution could improve it
   without new data or training.
 - **Zero-shot:** every command in these runs is one the policy sent, unlike the blend. But LIBERO's protocol
@@ -139,8 +140,8 @@ the upper left. They are not "the upper half of the view".
 - **Stay on 8.** Neither 4 nor 12 helps, and 8 keeps the robot on LIBERO's protocol. The choice stays on the tab, at 8.
 - **Execution tuning is finished.** Blend, 4 and 12 ticks all leave aim where it was.
 - **Why y and not x is not known.** It could be how the demos are spread, or how the view shows that direction. A shrink
-  towards the demos' centre is what a policy does when it generalises imperfectly, which fits the memorising seen in
-  the first plans.
+  towards the demos' centre is what a policy does when it generalises imperfectly. **The memorising this once pointed to
+  was wrong: see the compression record.** These numbers are all without compression matched.
 - **Caveats:**
   - six pairs, 12 ticks always first, scenes rebuilt by eye;
   - the user chose all the scenes, so the zones are not a random sample, and some tries repeat a scene;
@@ -149,8 +150,9 @@ the upper left. They are not "the upper half of the view".
 
 ## 8. Next
 
-1. **Record about 40 new demos** at midday, by the map: about 20 in zone 1, 15 in zone 2, 5 in zone 3. Hold still at home for
-   1–2 s at the end, and start moving straight away.
+1. **Superseded by the compression record: test the weak zones first.** The plan here was about 40 new demos at midday, by the
+   map: about 20 in zone 1, 15 in zone 2, 5 in zone 3, holding still at home for 1–2 s and starting straight away. The recorder
+   can't record that hold as it stands.
 2. **Train 336 px daylight on old and new demos,** with 5 held out for an offline check (about 2h50).
 3. **Compare on today's six scenes,** since pairs 3 and 6 fail at any interval: they are the test.
 4. **Train milk 336 daylight** (`pkill -CONT -f 'scripts/[g]ate0.py'`). Recording does not need the GPU; rollouts do.

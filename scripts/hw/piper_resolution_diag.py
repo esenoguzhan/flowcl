@@ -12,6 +12,8 @@ Companion to piper_rollout_diag.py, on the same logs. Each check is a subcommand
     zones    placed grapes by where the grape started, how far the close follows it, and a map of the table
     plans    in-process, no server: the first plan on recorded and live frames, states swapped
     seeds    in-process: the target's step at a chunk change with new or the same noise per request
+    video    in-process: the first plan and the plans at the start pose, live frames as sent and through
+             the recorder's video, how sharp each is, and a side-by-side figure
 
     uv run python scripts/hw/piper_resolution_diag.py aim --day results/piper_rollouts/2026-11-06 --since 124400
     uv run python scripts/hw/piper_resolution_diag.py home --day results/piper_rollouts/2026-11-06 \
@@ -64,7 +66,9 @@ def name(meta: dict) -> str:
     short = run_name(meta).replace("single__piper__", "").replace("__seed0", "").replace("piper_daylight/", "daylight ")
     own_k = (meta.get("server_metadata") or {}).get("execute_k")
     fast = meta.get("execute_k") is not None and meta.get("execute_k") != own_k
-    return short + (" +blend" if meta.get("blend_s") else "") + (f" +replan{meta['execute_k']}" if fast else "")
+    crf = (meta.get("server_metadata") or {}).get("video_crf")
+    return short + (" +blend" if meta.get("blend_s") else "") + (f" +replan{meta['execute_k']}" if fast else "") \
+        + (f" +video{crf}" if crf is not None else "")
 
 
 def grape_tasks(args) -> list[Path]:
@@ -237,7 +241,7 @@ def cmd_smooth(args) -> dict:
                 replays.append(roughness(on_grid(t["t"], t["joints"])))
     if replays:
         print(f"open-loop replays (n {len(replays)}): {np.median(replays):.2f}")
-    rough, steps, along, near, far = {}, [], [], [], []
+    rough, peaks, closes, steps, along, near, far = {}, {}, {}, [], [], [], []
     for run in select_runs(args):
         meta, inf, t = load_run(run)
         if len(t["t"]) < 400 or (args.interval and meta.get("execute_k") != args.interval):
@@ -246,6 +250,10 @@ def cmd_smooth(args) -> dict:
         ok = t["t"] < end
         x = on_grid(t["t"][ok], t["joints"][ok])
         rough.setdefault(name(meta), []).append(roughness(x))
+        peaks.setdefault(name(meta), []).append(float(np.abs(np.diff(x, 2, axis=0)).max() * RATE * RATE))
+        close = first_close(t["gripper"] * 1000)
+        if close is not None:
+            closes.setdefault(name(meta), []).append(float(t["t"][close]))
         used = [r for r in plans(inf) if r["t_reply"] < end]
         for a, b in zip(used[:-1], used[1:]):
             po, pn = (b["t_reply"] - a["t_obs"]) * RATE, (b["t_reply"] - b["t_obs"]) * RATE
@@ -264,7 +272,8 @@ def cmd_smooth(args) -> dict:
         near.append((dd[by_swap] ** 2).mean())
         far.append((dd[~by_swap] ** 2).mean())
     for k, v in rough.items():
-        print(f"{k:42s} n {len(v):2d}  roughness p50 {np.median(v):.2f}")
+        print(f"{k:42s} n {len(v):2d}  roughness p50 {np.median(v):.2f}  peak acceleration p50 "
+              f"{np.median(peaks[k]):.1f}  first close at p50 {np.median(closes.get(k, [np.nan])):.1f} s")
     along = np.asarray(along)
     print(f"chunk changes: {len(steps)}; worst joint step p50 {np.median(steps):.3f}, p95 {np.percentile(steps, 95):.3f} rad; "
           f"while moving ({len(along)}): backwards in {100 * (along < 0).mean():.0f} %, along the motion p50 {np.median(along):+.3f} rad")
@@ -405,6 +414,7 @@ def cmd_zones(args) -> dict:
         print(f"close {axis} against grape {axis}: slope {slope:.2f}, r {np.corrcoef(g[:, i], w[:, i])[0, 1]:.2f}, "
               f"scatter {scatter:.0f} mm (n {len(closed)})")
     err = w - g
+    print(f"median error: x {np.median(err[:, 0]):+.0f} mm, y {np.median(err[:, 1]):+.0f} mm")
     for label, (lo, hi) in (("-170 and over", (-170.0, 1e9)), ("-250 to -170", (-250.0, -170.0)), ("under -250", (-1e9, -250.0))):
         s = (g[:, 1] >= lo) & (g[:, 1] < hi)
         print(f"y error for grape y {label:13s}: median {np.median(err[s, 1]):+.0f} mm (n {s.sum()})")
@@ -556,6 +566,106 @@ def cmd_seeds(args) -> dict:
     return res
 
 
+def cmd_video(args) -> dict:
+    from flowcl.deploy.piper_server import video_roundtrip
+
+    def sharpness(bgr: np.ndarray) -> float:
+        x0, y0, x1, y1 = 144, 195, 593, 480                     # the table crop's box
+        return float(cv2.Laplacian(cv2.cvtColor(bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32), cv2.CV_32F).var())
+
+    src = Source(args.source)
+    day = Path(args.day).expanduser()
+    recorded = [cv2.imdecode(np.frombuffer(src.jpegs(e, FRONT, [0])[0], np.uint8), cv2.IMREAD_COLOR) for e in range(0, 40, 5)]
+    live, sizes = [], []
+    for r in args.live_runs:
+        d = day / f"{r}_rollout"
+        q = json.loads(open(d / "inferences.jsonl").readline())
+        live.append((np.asarray(q["state"], float), {c: (d / "frames" / f"{q['seq']}_{c}.jpg").read_bytes() for c in KEYS}))
+        sizes.append(len(live[-1][1]["front"]))
+    decoded = [cv2.imdecode(np.frombuffer(i["front"], np.uint8), cv2.IMREAD_COLOR) for _, i in live]
+    through = [cv2.cvtColor(video_roundtrip(cv2.cvtColor(b, cv2.COLOR_BGR2RGB), args.crf), cv2.COLOR_RGB2BGR) for b in decoded]
+    out = {"sharpness": {"recorded": float(np.median([sharpness(x) for x in recorded])),
+                         "live": float(np.median([sharpness(x) for x in decoded])),
+                         "through_video": float(np.median([sharpness(x) for x in through]))},
+           "live_jpeg_kB": float(np.median(sizes)) / 1e3}
+    print(f"sharpness (Laplacian variance): recorded {out['sharpness']['recorded']:.0f}, live {out['sharpness']['live']:.0f}, "
+          f"live through the video {out['sharpness']['through_video']:.0f}; live JPEG {out['live_jpeg_kB']:.0f} kB")
+    svc = service(args.checkpoint, args.device)
+
+    def first(crf):
+        svc.video_crf = crf
+        return np.asarray([(a[0] * 0.1 + a[1] * 0.9 - s)[4] for s, i in live for sd in (0, 1)
+                           for a in [chunk_for(svc, s, i, sd)]])
+
+    as_sent, matched = first(None), first(args.crf)
+    out["first_j5"] = {"as_sent": float(np.median(as_sent)), "through_video": float(np.median(matched))}
+    print(f"first plan, J5 entry: as sent {np.median(as_sent):+.3f} ({as_sent.min():+.3f}..{as_sent.max():+.3f}), "
+          f"through the video {np.median(matched):+.3f} ({matched.min():+.3f}..{matched.max():+.3f})")
+    run = day / f"{args.home_run}_rollout"
+    meta, inf, _ = load_run(run)
+    home = np.radians(np.asarray(meta["start_pose_deg_mm"][:6], float))
+    near = [r for r in plans(inf) if r["t_obs"] >= args.home_from and np.abs(np.asarray(r["state"])[:6] - home).max() < HOME_NEAR_RAD]
+    near = [near[i] for i in np.linspace(0, len(near) - 1, min(args.samples, len(near))).astype(int)]
+    away = {}
+    for label, crf in (("as_sent", None), ("through_video", args.crf)):
+        svc.video_crf = crf
+        n = 0
+        for r in near:
+            images = {c: (run / "frames" / f"{r['seq']}_{c}.jpg").read_bytes() for c in KEYS}
+            a = chunk_for(svc, r["state"], images, 0)[:, :6]
+            n += int(np.abs(a[15] - home).max() > np.abs(np.asarray(r["state"])[:6] - home).max() + 0.02)
+        away[label] = n
+    out["home"] = {"run": args.home_run, "plans": len(near), **away}
+    print(f"plans at the start pose in {args.home_run}, pointing away: as sent {away['as_sent']} of {len(near)}, "
+          f"through the video {away['through_video']} of {len(near)}")
+    if args.figure:
+        figure_video(day / f"{args.figure_run}_rollout", src, args.crf, args.figure)
+    return out
+
+
+def figure_video(run: Path, src: Source, crf: int, path: Path) -> None:
+    from flowcl.deploy.piper_server import video_roundtrip
+
+    _, inf, _ = load_run(run)
+
+    def live(q, camera):
+        return cv2.cvtColor(cv2.imread(str(run / "frames" / f"{q['seq']}_{camera}.jpg")), cv2.COLOR_BGR2RGB)
+
+    def tag(img, text):
+        img = img.copy()
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2)
+        cv2.rectangle(img, (0, 0), (tw + 16, th + 16), (255, 255, 255), -1)
+        cv2.putText(img, text, (8, th + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (20, 20, 20), 2, cv2.LINE_AA)
+        return img
+
+    def zoom(img, x, y, half=38, s=5):
+        x0, y0 = max(x - half, 0), max(y - half, 0)
+        return cv2.resize(img[y0:y0 + 2 * half, x0:x0 + 2 * half], None, fx=s, fy=s, interpolation=cv2.INTER_NEAREST)
+
+    def row(*panels, width=1288):
+        cells = []
+        for i, panel in enumerate(panels):
+            cells.append(panel)
+            if i < len(panels) - 1:
+                cells.append(np.full((panel.shape[0], 8, 3), 255, np.uint8))
+        joined = np.hstack(cells)
+        return np.hstack([joined, np.full((joined.shape[0], width - joined.shape[1], 3), 255, np.uint8)])
+
+    front = live(inf[0], "front")
+    wrist = live(min(inf, key=lambda r: abs(r["t_obs"] - 2.6)), "wrist")
+    cx, cy = (int(v) for v in grape_blob(cv2.cvtColor(front, cv2.COLOR_RGB2BGR))[0])
+    recorded = cv2.cvtColor(cv2.imdecode(np.frombuffer(src.jpegs(0, FRONT, [0])[0], np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+    rx, ry = (int(v) for v in grape_blob(cv2.cvtColor(recorded, cv2.COLOR_RGB2BGR))[0])
+    matched = video_roundtrip(front, crf)
+    sheet = np.vstack([row(tag(front, "LIVE: what the camera sends"), tag(matched, "COMPRESSED: what the policy sees now")),
+                       np.full((8, 1288, 3), 255, np.uint8),
+                       row(tag(zoom(front, cx, cy), "Live, 5x"), tag(zoom(matched, cx, cy), "Compressed, 5x"),
+                           tag(zoom(recorded, rx, ry), "Training video, demo 0, 5x")),
+                       np.full((8, 1288, 3), 255, np.uint8),
+                       row(tag(wrist, "LIVE: wrist camera"), tag(video_roundtrip(wrist, crf), "COMPRESSED: wrist camera"))])
+    cv2.imwrite(str(path), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
+
+
 args_threads = 6
 
 
@@ -563,7 +673,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
     cmds = {"aim": cmd_aim, "first": cmd_first, "smooth": cmd_smooth, "home": cmd_home, "blend": cmd_blend,
-            "zones": cmd_zones, "plans": cmd_plans, "seeds": cmd_seeds}
+            "zones": cmd_zones, "plans": cmd_plans, "seeds": cmd_seeds, "video": cmd_video}
     for key in cmds:
         s = sub.add_parser(key)
         s.add_argument("--day", required=True)
@@ -588,9 +698,17 @@ def main() -> None:
             s.add_argument("--figure", type=Path, default=None)
         if key == "blend":
             s.add_argument("--lengths", nargs="*", type=float, default=[0.0, 2 / 15, 4 / 15, 6 / 15])
-        if key in ("plans", "seeds"):
+        if key in ("plans", "seeds", "video"):
             s.add_argument("--checkpoint", type=Path, required=True)
             s.add_argument("--device", default="cpu")
+        if key == "video":
+            s.add_argument("--crf", type=int, default=30)
+            s.add_argument("--live-runs", nargs="*", default=["122604", "122611", "122621", "122635", "122726", "122731"])
+            s.add_argument("--home-run", default="124619")
+            s.add_argument("--home-from", type=float, default=17.0)
+            s.add_argument("--samples", type=int, default=12)
+            s.add_argument("--figure", type=Path, default=None)
+            s.add_argument("--figure-run", default="155319")
         if key == "plans":
             s.add_argument("--episodes", nargs="*", type=int, default=[0, 10, 20, 30, 39])
             s.add_argument("--live-runs", nargs="*", default=["122255", "122418", "122604", "122611", "122621", "122635"])

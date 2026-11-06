@@ -46,13 +46,15 @@ def main() -> None:
     parser.add_argument("--n-demos", type=int, default=None,
                         help="Training demos (cache episodes 0..n-1); default: the run's config.yaml.")
     parser.add_argument("--log-dir", type=Path, default=None)
+    parser.add_argument("--video-crf", type=int, default=None,
+                        help="Pass frames through the recorder's video at this crf (30), as training saw them.")
     args = parser.parse_args()
 
     n_demos = args.n_demos if args.n_demos is not None else trained_n_demos(args.checkpoint)
     run = args.checkpoint.resolve().parent.parent.name
     log_dir = args.log_dir or repo_root() / "results" / "piper_serve" / f"{run}__{args.checkpoint.stem}"
     service = PiperPolicyService(args.checkpoint, device=args.device, n_demos=n_demos, seed=args.seed,
-                                 log_path=log_dir / "requests.jsonl")
+                                 log_path=log_dir / "requests.jsonl", video_crf=args.video_crf)
     meta = service.metadata()
     print(f"[serve_piper] {meta['checkpoint']} (sha256 {meta['checkpoint_sha256'][:16]}…), "
           f"run {meta['run_id']}, {meta['n_demos_trained']} training demos", flush=True)
