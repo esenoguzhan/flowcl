@@ -87,14 +87,15 @@ changes.
   - **The scene decides:** the close follows the grape at slope 0.86 along the table's y, so aim is
     pulled sideways, about 27 mm short on one side. One zone places 10 of 14, the rest 9 of 34.
   - **Compression** (`runs/2026-11-06_piper_compression.md`): training frames are H.264 at crf 30, live
-    frames sharper JPEGs. `serve_piper.py --video-crf 30` passes live frames through the same video.
+    frames sharper JPEGs. `serve_piper.py` now passes live frames through the same video by default
+    (`--video-crf none` turns it off).
     - **On the arm, 13 runs:** first-chunk J5 +0.106 → +0.016 rad. Placed 5 of 13, miss 31 mm, roughness
       1.40: no change. In replay the restart at home nearly goes (11 of 12 plans → 2).
     - **Not settled:** only 4 runs were outside the working zone, and the error may have moved into x
       (+28 mm).
-  - **Next:** about 10 tries in the weak zones with the step on, to decide whether new demos are needed
-    at all; make the step the default; milk with the step, which may also explain 3 Nov; the paused
-    queue (milk 336 daylight, `pkill -CONT -f 'scripts/[g]ate0.py'`).
+  - **Next:** runs in the weak zones, to decide whether new demos are needed at all; milk with the
+    step, which may also explain 3 Nov; the paused queue (milk 336 daylight,
+    `pkill -CONT -f 'scripts/[g]ate0.py'`).
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,

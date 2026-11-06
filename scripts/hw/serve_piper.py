@@ -11,6 +11,9 @@ unless ``--log-dir`` says otherwise.
 The number of training demos comes from the run's ``config.yaml`` (``data.n_demos``),
 two levels above the checkpoint; ``--n-demos`` overrides it. Pause any training on the
 GPU first (``kill -STOP <pid>``), so inference latency stays steady.
+
+Frames go through the recorder's video before the policy sees them, as training saw them
+(runs/2026-11-06_piper_compression.md); ``--video-crf none`` gives it the frames as sent.
 """
 
 from __future__ import annotations
@@ -21,7 +24,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from flowcl.deploy.piper_server import DEFAULT_PORT, PiperPolicyService, make_server  # noqa: E402
+from flowcl.deploy.piper_server import (  # noqa: E402
+    DEFAULT_PORT,
+    VIDEO_CRF,
+    PiperPolicyService,
+    make_server,
+    video_crf_arg,
+)
 from flowcl.utils.libero_paths import repo_root  # noqa: E402
 
 
@@ -46,8 +55,8 @@ def main() -> None:
     parser.add_argument("--n-demos", type=int, default=None,
                         help="Training demos (cache episodes 0..n-1); default: the run's config.yaml.")
     parser.add_argument("--log-dir", type=Path, default=None)
-    parser.add_argument("--video-crf", type=int, default=None,
-                        help="Pass frames through the recorder's video at this crf (30), as training saw them.")
+    parser.add_argument("--video-crf", type=video_crf_arg, default=VIDEO_CRF,
+                        help="Pass frames through the recorder's video at this crf, as training saw them, or 'none'.")
     args = parser.parse_args()
 
     n_demos = args.n_demos if args.n_demos is not None else trained_n_demos(args.checkpoint)

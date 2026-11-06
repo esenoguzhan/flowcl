@@ -31,10 +31,12 @@ from flowcl.deploy.piper_server import (
     ENVELOPE_MARGIN_RAD,
     PiperPolicyService,
     RequestError,
+    VIDEO_CRF,
     decode_frame,
     make_server,
     task_of,
     training_summary,
+    video_crf_arg,
     video_roundtrip,
 )
 from flowcl.models.build import build_policy
@@ -200,6 +202,13 @@ def test_the_video_step_is_off_unless_asked_for(world, monkeypatch):
     assert service.metadata()["video_crf"] == 30
     service.policy_inputs(images)
     assert calls == [30] * len(service.spec.cameras)
+
+
+def test_the_served_default_is_the_recorders_video():
+    assert VIDEO_CRF == 30
+    assert video_crf_arg("30") == 30 and video_crf_arg("none") is None
+    with pytest.raises(ValueError):
+        video_crf_arg("soft")
 
 
 def test_bad_frames_are_refused(world):

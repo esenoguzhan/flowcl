@@ -49,8 +49,8 @@ msgpack; that is fine). Units are always rad for joints and m for the gripper. V
 cd ~/flowcl && uv run python scripts/hw/serve_piper.py --checkpoint results/piper_aug/single__piper__sausage_pot_lid__seed0/checkpoints/final.pt
 ```
 
-Add `--video-crf 30` to pass frames through the recorder's video first, as training saw them: without it the
-policy sees sharper images than it trained on (`runs/2026-11-06_piper_compression.md`).
+By default frames go through the recorder's video first, as training saw them; `--video-crf none` turns that
+off, and the policy then sees sharper images than it trained on (`runs/2026-11-06_piper_compression.md`).
 
 It prints `listening on http://127.0.0.1:8765/` once the checkpoint is loaded and warmed up,
 about 20 s. Every request is logged to `results/piper_serve/<run>__<checkpoint>/requests.jsonl`.

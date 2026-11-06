@@ -8,16 +8,16 @@
   training. This record treats it as zero-shot; the user asked for it to be built after being told so, and it is
   theirs to overrule.
 - **Code:**
-  - `video_roundtrip` and `PiperPolicyService(video_crf=)` in `flowcl/deploy/piper_server.py`, off by default, and
-    `--video-crf` in `scripts/hw/serve_piper.py`. The server's metadata lists `video_crf`, so each rollout's log has it.
+  - `video_roundtrip` and `PiperPolicyService(video_crf=)` in `flowcl/deploy/piper_server.py`, and `--video-crf` in
+    `scripts/hw/serve_piper.py`. The server's metadata lists `video_crf`, so each rollout's log has it.
   - `av==15.1.0` added to the project; nothing else in the lock changed.
   - `video` and `zones --until` in `scripts/hw/piper_resolution_diag.py`.
   - PiperStudio is unchanged, at `df0d6ff`.
 - **Logs:** `results/piper_rollouts/2026-11-06/`, runs from `155245` on; diagnostics in its `diag/`.
-- **How it ran:** by hand in tmux `piper_serve`, with PiperStudio's **Connect**. The Policy tab's **Start server** does not
-  pass the flag, so it would start a server without the step.
+- **How it ran:** by hand in tmux `piper_serve`, with PiperStudio's **Connect**. After the runs below, the step became the
+  server's default (`VIDEO_CRF`; `--video-crf none` turns it off), so the Policy tab's **Start server** has it too.
 - **Not done:**
-  - Only 4 of the 13 runs had the grape outside the zone that already worked.
+  - Only 4 of the 13 runs had the grape outside the zone that already worked, and no more were run.
   - The restart at home can't show on the arm, because the run now ends there.
   - The rollouts are not annotated. Outcomes are read from the frames (`diag/outcomes_by_eye.json`).
   - Milk has not been tried with the step.
@@ -133,12 +133,14 @@ The question that started this:
 
 ## 7. Next
 
-1. **About 10 tries in zones 1 and 2** of the map, with the step on. This decides whether new demos are needed.
+The user chose to stop testing here and make the step the default, without the weak-zone runs. All five Piper datasets, both
+cameras, were recorded at crf 30, so it fits every policy so far. Any later runs will show what this record could not.
+
+1. **Runs in zones 1 and 2** of the map, whenever the robot is next used. They decide whether new demos are needed.
 2. **Compare the x error** in those runs. If +28 mm is real, it is the next thing to explain.
 3. **Close the sharpness gap,** 348 against 329: P frames in the step, or a higher crf. Replay can check it before the arm does.
-4. **Make the step the default:** `--video-crf` in PiperStudio's `policy.server_command`, so the tab's **Start server** has it.
-5. **Try milk with the step** under the lamp, and in daylight.
-6. **Train milk 336 daylight** (`pkill -CONT -f 'scripts/[g]ate0.py'`), which is still paused.
+4. **Try milk with the step** under the lamp, and in daylight.
+5. **Train milk 336 daylight** (`pkill -CONT -f 'scripts/[g]ate0.py'`), which is still paused.
 
 **Reproducing the numbers:**
 

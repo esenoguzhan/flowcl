@@ -46,6 +46,7 @@ from flowcl.data.piper_tasks import SUITE, PiperTask, cache_path, get_task
 from flowcl.train.checkpoint import load_checkpoint
 
 PROTOCOL = 1
+VIDEO_CRF = 30      # PiperStudio's recorder: lerobot's default, in every Piper dataset so far
 DEFAULT_PORT = 8765  # PiperStudio itself serves on 8000
 GRIPPER = 6
 COMPONENTS = (("joints", 6), ("gripper", 1))
@@ -110,6 +111,11 @@ def training_summary(
                      "margin_rad": float(margin_rad), "margin_gripper_m": float(margin_gripper_m)},
         "held_out": held_out,
     }
+
+
+def video_crf_arg(text: str) -> int | None:
+    """``--video-crf``: a crf, or ``none`` to give the policy the frames as sent."""
+    return None if text == "none" else int(text)
 
 
 def video_roundtrip(rgb: np.ndarray, crf: int) -> np.ndarray:
