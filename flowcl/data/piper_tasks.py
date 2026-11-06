@@ -7,8 +7,9 @@ revision), plus the raw episodes left out and why. ``scripts/prepare_piper.py --
 turns a task into the HDF5 cache :mod:`flowcl.data.piper_adapter` reads.
 
 Cache episodes are numbered in registry order (sources in order, raw episodes ascending,
-exclusions skipped). The last ``holdout`` of them are never trained on: they supply the
-offline open-loop check and the rollouts' initial-condition photos.
+exclusions skipped), then each source's ``held_out`` episodes. The last ``holdout`` of them
+are never trained on: they supply the offline open-loop check and the rollouts'
+initial-condition photos.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ class PiperSource:
     sha256: str
     # Raw episode indices left out (reasons in the task's notes).
     exclude: tuple[int, ...] = ()
+    # Raw episode indices moved to the end of the cache, to be held out by name.
+    held_out: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,16 +93,27 @@ PICK_GRAPE = PiperSource(
     sha256="a7318705b9430b0fcf6f0e8210c2521ce75ac893a9ac836f08f410c7f73f5c0f",
 )
 GRAPE_PLATE = "pick up the grape and put it on the blue plate"
+# The 6 Nov 2026 session (16:30-17:21, same light and camera as pick_grape), 51 episodes placed
+# by the map of runs/2026-11-06_piper_replan.md, twice as slow as pick_grape, the leader closed
+# fully, and each demo holds 1.5 s at home. Episode 16 stops over the plate and never goes home.
+# Held out from each zone of the map: 38, 41 (zone 1), 24, 27 (zone 2), 31 (zone 3).
+PICK_GRAPE_V2 = PiperSource(
+    folder="pick_grape_v2",
+    sha256="afc7085bc3e2a9d637a84f8f3de7f98321638f8385213f907b870681057f762d",
+    exclude=(16,),
+    held_out=(24, 27, 31, 38, 41),
+)
 
 
-def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_episodes: int, size: int) -> PiperTask:
-    """A task at a larger input: the table crop at ``size`` px, nothing held out."""
+def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_episodes: int, size: int,
+                holdout: int = 0) -> PiperTask:
+    """A task at a larger input: the table crop at ``size`` px."""
     return PiperTask(
         name=f"{name}_crop{size}",
         language=language,
         sources=sources,
         n_episodes=n_episodes,
-        holdout=0,
+        holdout=holdout,
         notes=f"The table crop at {size} x {size}, so the frozen encoder's patches are finer on the table.",
         embodiment=f"agilex_piper_crop{size}",
     )
@@ -205,6 +219,15 @@ TASKS: dict[str, PiperTask] = {
             for task in (
                 _sized_crop("grape_plate", GRAPE_PLATE, (PICK_GRAPE,), 40, size),
                 _sized_crop("milk_plate", MILK_PLATE, (PICK_MILK,), 40, size),
+            )
+        ),
+        # The new demos alone, and with the old ones, 5 of the new held out either way.
+        *(
+            task
+            for size in (336, 448)
+            for task in (
+                _sized_crop("grape_v2", GRAPE_PLATE, (PICK_GRAPE_V2,), 50, size, holdout=5),
+                _sized_crop("grape_all", GRAPE_PLATE, (PICK_GRAPE, PICK_GRAPE_V2), 90, size, holdout=5),
             )
         ),
     )

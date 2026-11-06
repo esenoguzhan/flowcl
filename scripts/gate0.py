@@ -57,6 +57,8 @@ def main() -> None:
 
     parser.add_argument("--train-steps", type=int, default=30000)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--accumulation-steps", type=int, default=1,
+                        help="Batches per optimiser step: a smaller batch keeps the same effective one.")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--amp", action="store_true")
@@ -117,6 +119,7 @@ def main() -> None:
     train_cfg = TrainConfig(
         steps=args.train_steps,
         batch_size=args.batch_size,
+        accumulation_steps=args.accumulation_steps,
         lr=args.lr,
         num_workers=args.num_workers,
         device=args.device,

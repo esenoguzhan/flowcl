@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 
+import h5py
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -182,6 +183,18 @@ def test_taskref_dispatches_the_piper_suite(tmp_path, spec, monkeypatch):
     assert [e.meta["raw_episode_index"] for e in episodes] == [0, 1]
     with pytest.raises(ValueError, match="held out"):
         load_task_episodes(toy, spec, n_demos=3, dataset_dir=tmp_path)
+
+
+def test_named_episodes_go_last_in_the_cache(tmp_path, spec):
+    write_dataset(tmp_path / "raw" / "toy")
+    folder = tmp_path / "raw" / "toy"
+    src = PiperSource("toy", source_fingerprint(folder), held_out=(0,))
+    task = PiperTask(name="toy", language="put the toy away", sources=(src,), n_episodes=len(LENGTHS), holdout=1)
+    build_cache(task, tmp_path / "raw", tmp_path / "toy.h5", spec)
+    with h5py.File(tmp_path / "toy.h5") as f:
+        order = [f["episodes"][k].attrs["raw_episode_index"] for k in sorted(f["episodes"])]
+        assert "held_out" in f.attrs["sources"]
+    assert order == [*range(1, len(LENGTHS)), 0]
 
 
 def test_a_task_with_nothing_held_out_trains_on_every_episode(tmp_path, spec, monkeypatch):

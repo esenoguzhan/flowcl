@@ -43,11 +43,13 @@ from flowcl.data.piper_tasks import cache_path, get_task, piper_root, raw_root  
 
 def kept_episodes(task) -> list[tuple[str, int]]:
     """``(folder, raw episode index)`` in cache order."""
-    out = []
+    out, held_back = [], []
     for src in task.sources:
         n = len(read_episode_table(raw_root() / src.folder))
-        out.extend((src.folder, e) for e in range(n) if e not in src.exclude)
-    return out
+        for e in range(n):
+            if e not in src.exclude:
+                (held_back if e in src.held_out else out).append((src.folder, e))
+    return out + held_back
 
 
 def read_column(folder: str, key: str) -> tuple[np.ndarray, np.ndarray]:

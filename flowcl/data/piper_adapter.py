@@ -265,7 +265,8 @@ def _masks_json(spec: EmbodimentSpec) -> str:
 
 
 def _sources_json(task) -> str:
-    return json.dumps([{"folder": s.folder, "sha256": s.sha256, "exclude": list(s.exclude)}
+    return json.dumps([{"folder": s.folder, "sha256": s.sha256, "exclude": list(s.exclude),
+                        **({"held_out": list(s.held_out)} if s.held_out else {})}
                        for s in task.sources], sort_keys=True)
 
 
@@ -303,19 +304,29 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
             }
         )
         group = f.create_group("episodes")
+
+        def write(source: str, ep: dict) -> None:
+            g = group.create_group(f"{len(lengths):06d}")
+            g.attrs.update({"source": source, "raw_episode_index": ep["raw_episode_index"]})
+            g.create_dataset("action", data=ep["action"])
+            g.create_dataset("state", data=ep["state"])
+            g.create_dataset("timestamp", data=ep["timestamp"])
+            for cam, frames in ep["images"].items():
+                g.create_dataset(f"images/{cam}", data=frames,
+                                 chunks=(min(32, len(frames)), *frames.shape[1:]))
+            lengths.append(int(ep["action"].shape[0]))
+
+        held_back = []
         for src in task.sources:
             folder = raw_root / src.folder
             raw_labels[src.folder] = read_raw_labels(folder)
             for ep in read_source(folder, spec, src.exclude):
-                g = group.create_group(f"{len(lengths):06d}")
-                g.attrs.update({"source": src.folder, "raw_episode_index": ep["raw_episode_index"]})
-                g.create_dataset("action", data=ep["action"])
-                g.create_dataset("state", data=ep["state"])
-                g.create_dataset("timestamp", data=ep["timestamp"])
-                for cam, frames in ep["images"].items():
-                    g.create_dataset(f"images/{cam}", data=frames,
-                                     chunks=(min(32, len(frames)), *frames.shape[1:]))
-                lengths.append(int(ep["action"].shape[0]))
+                if ep["raw_episode_index"] in src.held_out:
+                    held_back.append((src.folder, ep))
+                else:
+                    write(src.folder, ep)
+        for source, ep in held_back:                    # after every source: the cache's last episodes
+            write(source, ep)
         if len(lengths) != task.n_episodes:
             raise ValueError(f"{task.name}: built {len(lengths)} episodes, the registry says {task.n_episodes}")
         f.attrs["raw_labels"] = json.dumps(raw_labels, sort_keys=True)
