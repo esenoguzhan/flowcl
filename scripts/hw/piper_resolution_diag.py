@@ -53,9 +53,11 @@ HOME_NEAR_RAD = 0.25
 
 
 def name(meta: dict) -> str:
-    """A run's short policy name, marked when its chunks were blended."""
+    """A run's short policy name, marked when its chunks were blended or it replanned faster."""
     short = run_name(meta).replace("single__piper__", "").replace("__seed0", "").replace("piper_daylight/", "daylight ")
-    return short + (" +blend" if meta.get("blend_s") else "")
+    own_k = (meta.get("server_metadata") or {}).get("execute_k")
+    fast = meta.get("execute_k") is not None and meta.get("execute_k") != own_k
+    return short + (" +blend" if meta.get("blend_s") else "") + (f" +replan{meta['execute_k']}" if fast else "")
 
 
 def grape_tasks(args) -> list[Path]:
