@@ -84,8 +84,13 @@ changes.
     noise). A blend at replans was smoother but not better. It breaks the zero-shot rule, so it stays
     off, as a tick box reported apart.
   - **Milk has not had a fair test:** it ran at midday, and it was recorded under the lamp.
-  - **Next:** milk 336 daylight (paused queue: `pkill -CONT -f 'scripts/[g]ate0.py'`), milk under the
-    lamp, plain against daylight on fixed scenes, annotated.
+  - **Replan interval** (`runs/2026-11-06_piper_replan.md`): 4 and 12 ticks are no better than 8, which
+    stays. Execution tuning is finished.
+  - **The scene decides:** the close follows the grape at slope 0.86 along the table's y, so aim is
+    pulled sideways, about 27 mm short on one side. One zone places 10 of 14, the rest 9 of 34.
+  - **Next:** about 40 new demos by the map in that record, holding still at the end and starting at
+    once, with 5 held out; 336 px daylight on old and new; the paused queue (milk 336 daylight,
+    `pkill -CONT -f 'scripts/[g]ate0.py'`); milk under the lamp.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,

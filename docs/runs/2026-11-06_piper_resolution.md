@@ -1,6 +1,7 @@
 # Piper resolution (Fri 6 Nov): the table crop at 224 and 336 px on grape and milk. Finer input aims better: median miss 54 mm at 128 px, 31 at 224, 27 at 336, and the grape reached the plate in 12 of 30 tries at 336 px against 4 of 23 at 128. No grape was placed from a miss above 31 mm. A J5 first-jump limit had to be raised before 336 px could run at all. The motion is rougher than the demos at each replan, and the arm restarts its reach at the start pose. A blend at replans was smoother but not better, and stays off
 
-**Status: thesis plan F1, the grape task's question of 5 Nov answered on the robot.**
+**Status: thesis plan F1, the grape task's question of 5 Nov answered on the robot.** Follow-up, including a
+correction of §6's reading on coverage: `runs/2026-11-06_piper_replan.md`.
 - **Why this:** on 3 Nov the 128 px cropped policy missed the grape in 12 of 21 tries. The record's
   reading was that aim needs more demos. An offline check on 5 Nov pointed at the input instead (§1).
 - **Zero-shot:** the user's rule stands: no robot-side changes to the actions and no relabelled

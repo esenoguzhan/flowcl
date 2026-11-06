@@ -9,12 +9,15 @@ Companion to piper_rollout_diag.py, on the same logs. Each check is a subcommand
     smooth   roughness of the arm against demos and replays, and what a chunk change does to the target
     home     where the rule "back at the start pose" fires, and what the plans ask for near home
     blend    in simulation on the logged plans: the target's roughness with a fade at each chunk change
+    zones    placed grapes by where the grape started, how far the close follows it, and a map of the table
     plans    in-process, no server: the first plan on recorded and live frames, states swapped
     seeds    in-process: the target's step at a chunk change with new or the same noise per request
 
     uv run python scripts/hw/piper_resolution_diag.py aim --day results/piper_rollouts/2026-11-06 --since 124400
     uv run python scripts/hw/piper_resolution_diag.py home --day results/piper_rollouts/2026-11-06 \
         --figure docs/assets/piper_home_restart.png --figure-run 124619
+    uv run python scripts/hw/piper_resolution_diag.py zones --day results/piper_rollouts/2026-11-06 --since 124400 \
+        --figure docs/assets/piper_demo_regions.jpg
     uv run python scripts/hw/piper_resolution_diag.py plans --day results/piper_rollouts/2026-11-06 \
         --checkpoint results/single__piper__grape_plate_crop336__seed0/checkpoints/final.pt
 
@@ -50,6 +53,10 @@ TICKS_MIN = 50                  # below this a run was refused before it moved
 ON_PLATE_PX = 25                # the grape's centre within this of the plate's: on the plate
 SEEDS_RUN = "124916_rollout"    # the `seeds` check's run
 HOME_NEAR_RAD = 0.25
+# Bands of the grape's y on the table, mm. In the front view they run diagonally, y growing to the upper left.
+ZONES = {"under -250": (-1e9, -250.0), "-250 to -170": (-250.0, -170.0), "-170 to -80": (-170.0, -80.0),
+         "-80 and over": (-80.0, 1e9)}
+OUTCOMES = "diag/outcomes_by_eye.json"      # placed and unclear runs, read from the frames
 
 
 def name(meta: dict) -> str:
@@ -233,7 +240,7 @@ def cmd_smooth(args) -> dict:
     rough, steps, along, near, far = {}, [], [], [], []
     for run in select_runs(args):
         meta, inf, t = load_run(run)
-        if len(t["t"]) < 400:
+        if len(t["t"]) < 400 or (args.interval and meta.get("execute_k") != args.interval):
             continue
         end = min(t["t"][-1], args.first_s)
         ok = t["t"] < end
@@ -354,6 +361,124 @@ def cmd_blend(args) -> dict:
     return {str(k): v for k, v in res.items()}
 
 
+def cmd_zones(args) -> dict:
+    H, _ = fit_table(args.source)
+    src = Source(args.source)
+    outcomes = json.loads((Path(args.day).expanduser() / OUTCOMES).read_text())
+    demo_px = []
+    for e in range(len(src.episodes)):
+        img = cv2.imdecode(np.frombuffer(src.jpegs(e, FRONT, [0])[0], np.uint8), cv2.IMREAD_COLOR)
+        centre, area = grape_blob(img)
+        if centre is not None and area >= 100:
+            demo_px.append(centre)
+    demo_px = np.asarray(demo_px)
+    demo_y = to_table(H, demo_px)[:, 1]
+    rows, starts = [], []
+    for run in select_runs(args):
+        meta, inf, t = load_run(run)
+        if meta.get("blend_s") or "grape" not in run_name(meta) or len(t["t"]) < TICKS_MIN:
+            continue
+        first = cv2.imread(str(run / "frames" / f"{inf[0]['seq']}_front.jpg"))
+        starts.append(first)
+        centre, area = grape_blob(first)
+        if centre is None or area < 100:
+            continue
+        close = first_close(t["gripper"] * 1000)
+        rows.append({"run": run.name[:6], "grape": to_table(H, centre[None])[0],
+                     "close": None if close is None else t["end_pose"][close, :2]})
+    grape = np.asarray([r["grape"] for r in rows])
+    placed = np.asarray([r["run"] in outcomes["placed"] for r in rows])
+    unclear = np.asarray([r["run"] in outcomes["unclear"] for r in rows])
+    out: dict = {"runs": len(rows), "placed": int(placed.sum()), "unclear": int(unclear.sum()), "zones": {}}
+    print(f"{len(rows)} runs, no blend: {placed.sum()} placed, {unclear.sum()} unclear")
+    for label, (lo, hi) in ZONES.items():
+        s = (grape[:, 1] >= lo) & (grape[:, 1] < hi)
+        d = int(((demo_y >= lo) & (demo_y < hi)).sum())
+        out["zones"][label] = {"tries": int(s.sum()), "placed": int(placed[s].sum()), "unclear": int(unclear[s].sum()), "demos": d}
+        print(f"grape y {label:13s} tries {s.sum():2d}  placed {placed[s].sum():2d}  unclear {unclear[s].sum()}  demo grapes {d:2d}")
+    closed = [r for r in rows if r["close"] is not None]
+    g, w = np.asarray([r["grape"] for r in closed]), np.asarray([r["close"] for r in closed])
+    for i, axis in enumerate("xy"):
+        slope, offset = np.polyfit(g[:, i], w[:, i], 1)
+        scatter = float(np.std(w[:, i] - (offset + slope * g[:, i])))
+        out[f"slope_{axis}"] = float(slope)
+        print(f"close {axis} against grape {axis}: slope {slope:.2f}, r {np.corrcoef(g[:, i], w[:, i])[0, 1]:.2f}, "
+              f"scatter {scatter:.0f} mm (n {len(closed)})")
+    err = w - g
+    for label, (lo, hi) in (("-170 and over", (-170.0, 1e9)), ("-250 to -170", (-250.0, -170.0)), ("under -250", (-1e9, -250.0))):
+        s = (g[:, 1] >= lo) & (g[:, 1] < hi)
+        print(f"y error for grape y {label:13s}: median {np.median(err[s, 1]):+.0f} mm (n {s.sum()})")
+    if args.figure:
+        figure_zones(np.median(np.stack(starts[:40]), axis=0).astype(np.uint8), H, demo_px, out["zones"], args.figure)
+    return out
+
+
+def figure_zones(base: np.ndarray, H: np.ndarray, demo_px: np.ndarray, zones: dict, path: Path) -> None:
+    """The zones on an empty table: the median of many start frames removes the grape and the plate."""
+    scale = 2
+    h, w = base.shape[:2]
+    xx, yy = np.meshgrid(np.arange(w), np.arange(h))
+    y = to_table(H, np.c_[xx.ravel(), yy.ravel()].astype(float)).reshape(h, w, 2)[..., 1]
+    hull = np.zeros((h, w), np.uint8)
+    cv2.fillConvexPoly(hull, cv2.convexHull(demo_px.astype(np.int32)), 255)
+    hull = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (71, 71)))
+    area = (hull > 0) & (table_mask((h, w)) > 0)
+
+    def big(m: np.ndarray) -> np.ndarray:
+        return cv2.resize(m.astype(np.uint8), None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST) > 0
+
+    orange, yellow, green, ink = (52, 104, 235), (0, 190, 237), (122, 175, 27), (20, 20, 20)
+    masks = [((y >= -170) & (y < -80), orange, 0.55), (y >= -80, yellow, 0.45),
+             ((y >= -250) & (y < -170), yellow, 0.45), (y < -250, green, 0.38)]
+    out = cv2.resize(base, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    for m, colour, alpha in masks:
+        z = big(m & area)
+        out[z] = (out[z] * (1 - alpha) + np.asarray(colour) * alpha).astype(np.uint8)
+    for edge in (-250, -170, -80):
+        out[big(area & (np.abs(y - edge) < 1.6))] = (255, 255, 255)
+    for p in demo_px * scale:
+        centre = tuple(int(v) for v in p)
+        cv2.circle(out, centre, 8, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(out, centre, 8, (30, 30, 30), 2, cv2.LINE_AA)
+
+    def text(s, org, size=0.68):
+        cv2.putText(out, s, org, cv2.FONT_HERSHEY_SIMPLEX, size, ink, 2, cv2.LINE_AA)
+
+    def badge(n, m, colour):
+        ys, xs = np.where(big(m & area))
+        c = np.c_[xs, ys][np.random.default_rng(0).choice(len(xs), min(4000, len(xs)), replace=False)].astype(float)
+        far = np.minimum(np.linalg.norm(c[:, None] - demo_px[None] * scale, axis=2).min(1), 90)
+        inside = np.minimum(cv2.distanceTransform(big(m & area).astype(np.uint8), cv2.DIST_L2, 5)[c[:, 1].astype(int), c[:, 0].astype(int)], 40)
+        x, y_ = c[np.argmax(far + inside - 1000 * (c[:, 1] > out.shape[0] - 110))].astype(int)
+        cv2.circle(out, (x, y_), 21, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(out, (x, y_), 21, colour, 4, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(n, cv2.FONT_HERSHEY_SIMPLEX, 0.85, 2)
+        text(n, (int(x) - tw // 2, int(y_) + th // 2), 0.85)
+
+    for n, (m, colour, _) in zip("1223", masks):
+        badge(n, m, colour)
+    out = out[120:]
+    z1, z2a, z2b, z3 = zones["-170 to -80"], zones["-80 and over"], zones["-250 to -170"], zones["under -250"]
+    legend = [("1", orange, f"About 20 new demos. Tried {z1['tries']} times, {z1['placed']} on the plate"),
+              ("2", yellow, f"About 15 new demos. Tried {z2a['tries'] + z2b['tries']} times, {z2a['placed'] + z2b['placed']} on the plate"),
+              ("3", green, f"About 5 new demos. This zone works: {z3['placed']} of {z3['tries']}")]
+    x0, y0 = 16, 14
+    panel = out.copy()
+    cv2.rectangle(panel, (x0, y0), (x0 + 810, y0 + 196), (255, 255, 255), -1)
+    out[:] = cv2.addWeighted(panel, 0.93, out, 0.07, 0)
+    text("Where to put the grape in the new demos", (x0 + 18, y0 + 36), 0.82)
+    for i, (n, colour, line) in enumerate(legend):
+        row = y0 + 74 + i * 38
+        cv2.circle(out, (x0 + 34, row - 8), 15, colour, -1, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(n, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        text(n, (x0 + 34 - tw // 2, row - 8 + th // 2), 0.6)
+        text(line, (x0 + 62, row))
+    cv2.circle(out, (x0 + 34, y0 + 175), 8, (255, 255, 255), -1, cv2.LINE_AA)
+    cv2.circle(out, (x0 + 34, y0 + 175), 8, (30, 30, 30), 2, cv2.LINE_AA)
+    text("White dots: the grape in your 40 demos", (x0 + 62, y0 + 182))
+    cv2.imwrite(str(path), cv2.resize(out, None, fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA), [cv2.IMWRITE_JPEG_QUALITY, 90])
+
+
 def chunk_for(svc, state, images: dict[str, bytes], seed: int) -> np.ndarray:
     req = {"instruction": svc.task.language, "state": [float(x) for x in state], "seed": seed,
            "images": {c: base64.b64encode(b).decode() for c, b in images.items()}}
@@ -438,7 +563,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
     cmds = {"aim": cmd_aim, "first": cmd_first, "smooth": cmd_smooth, "home": cmd_home, "blend": cmd_blend,
-            "plans": cmd_plans, "seeds": cmd_seeds}
+            "zones": cmd_zones, "plans": cmd_plans, "seeds": cmd_seeds}
     for key in cmds:
         s = sub.add_parser(key)
         s.add_argument("--day", required=True)
@@ -453,11 +578,14 @@ def main() -> None:
         if key == "smooth":
             s.add_argument("--replay-day", nargs="*", default=["results/piper_rollouts/2026-11-03", "~/piper_rollouts/2026-11-02"])
             s.add_argument("--first-s", type=float, default=16.0, help="only the first seconds of a run, before any return home")
+            s.add_argument("--interval", type=int, default=None, help="only runs that replanned every this many ticks")
         if key == "home":
             s.add_argument("--leave", type=float, default=0.5)
             s.add_argument("--tolerance", type=float, default=0.06)
             s.add_argument("--figure", type=Path, default=None)
             s.add_argument("--figure-run", default="124619")
+        if key == "zones":
+            s.add_argument("--figure", type=Path, default=None)
         if key == "blend":
             s.add_argument("--lengths", nargs="*", type=float, default=[0.0, 2 / 15, 4 / 15, 6 / 15])
         if key in ("plans", "seeds"):
