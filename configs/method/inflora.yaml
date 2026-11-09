@@ -1,0 +1,20 @@
+# inflora: an InfLoRA adaptation (Liang & Li, CVPR 2024) under the projected-LoRA protocol, not a
+# reproduction (docs/thesis_plan.md, Workstream B). Registry name projected_lora, variant `inflora`; see
+# flowcl/methods/projected_lora.py and configs/analysis/baseline_selection_inflora.yaml for the disclosed
+# protocol differences: A is fixed to the top-r eigenvectors of the task's input Gram inside the memory's
+# complement, only B trains (from 0), scale 1 (alpha is only the bound the shared rule machinery needs).
+# Task 1 and the memory rule are GPM's, as for projected_lora.
+#
+# rank and lr are the bracket's registered selection: rank 16, lr 1e-4, no flags, from the frozen bundle
+# results/baseline_selection_inflora/lora/selection/ (selection.json SHA-256 dda181af...; rule
+# configs/analysis/baseline_selection_inflora.yaml; record docs/runs/2026-10-14_projected_lora_comparison.md).
+# Production seed 0's stage 1 is identity-checked against that arm's checkpoint.
+name: projected_lora
+
+variant: inflora
+rank: 16
+lr: 1.0e-4
+alpha: 16.0
+eps: 0.95
+update_memory: true
+capture_config: subspace

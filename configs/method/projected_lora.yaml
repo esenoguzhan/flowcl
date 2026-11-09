@@ -1,0 +1,22 @@
+# projected_lora: low-rank adapters confined to the complement of GPM's input memory (the projected-LoRA
+# comparison; docs/thesis_plan.md, Workstream B). See flowcl/methods/projected_lora.py: Task 1 is full
+# fine-tuning that builds GPM's memory exactly as gpm_projected_adam does (stage 0 bitwise seq_ft's, the
+# Task-1 memory bitwise gpm_projected_adam's); from Task 2 the base is frozen and each registry layer gets
+# an adapter whose down-projection is A - (A M) M^T, merged at the task's end, after which the memory is
+# extended by GPM's rule (eps 0.95).
+#
+# rank and lr are the bracket's registered selection: rank 64, lr 3e-4 (variant `trained`), flagged
+# edge_extension (the owed extension, rank 256, ran and was not selected), from the frozen bundle
+# results/baseline_selection_projected_lora/lora/selection/ (selection.json SHA-256 e60d637c...; rule
+# configs/analysis/baseline_selection_projected_lora.yaml; record docs/runs/2026-10-14_projected_lora_comparison.md).
+# The keys are those of lora_selection.write_smoke_method, the config the 14 Oct smokes checked against
+# the bracket path. Production seed 0's stage 1 is identity-checked against that arm's checkpoint.
+name: projected_lora
+
+variant: trained
+rank: 64
+lr: 3.0e-4
+alpha: 16.0
+eps: 0.95
+update_memory: true
+capture_config: subspace

@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from flowcl.experiments.sequence_report import run_sequence_report
+from flowcl.experiments.sequence_report import ProvenanceError, run_sequence_report
 from flowcl.utils.libero_paths import repo_root
 
 
@@ -26,8 +26,17 @@ def main() -> None:
                         default=results / "seq_hetero__seq_ft__seed0")
     parser.add_argument("--pilot-json", type=Path, default=results / "gpm_pilot" / "pilot.json")
     parser.add_argument("--out", type=Path, default=results / "gpm_seq" / "report.json")
+    parser.add_argument("--strict-provenance", action="store_true",
+                        help="Exit 3 if any provenance check that applies did not pass (after writing).")
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="With --strict-provenance: excuse clean_git_sha (smoke runs only).")
     args = parser.parse_args()
-    run_sequence_report(args.method_run, args.reference_run, args.pilot_json, args.out)
+    try:
+        run_sequence_report(args.method_run, args.reference_run, args.pilot_json, args.out,
+                            strict=args.strict_provenance, allow_dirty=args.allow_dirty)
+    except ProvenanceError as err:
+        print(f"[flowcl] STRICT PROVENANCE FAILED: {'; '.join(err.failures)}", flush=True)
+        raise SystemExit(3) from err
 
 
 if __name__ == "__main__":

@@ -23,6 +23,11 @@ cell is paired: same initial state, same sampling seed) and reports:
   state-dict tensor outside the allowlist unchanged from stage 1 on, occupancy
   non-decreasing, each memory contained in the next (``memory_chained``), clean git SHA,
   and the T1 pairing numbers recorded by the runner.
+
+Which provenance checks apply depends on the method (``result.json``'s
+``method_registry_name``; see ``LEGACY_FAMILY`` below). With ``strict=True`` the report is
+written and then :class:`ProvenanceError` is raised if any check that applies did not pass;
+retention and plasticity outcomes never raise.
 """
 
 from __future__ import annotations
@@ -40,6 +45,38 @@ from flowcl.analysis.metrics import Estimate, paired_difference_ci
 from flowcl.envs.evaluation import EvaluationReport
 from flowcl.utils.libero_paths import repo_root
 from flowcl.utils.run import file_sha256
+
+
+# ---- method families -----------------------------------------------------------
+
+# GPM and SGP reports keep exactly the provenance checks they always had: frozen consumers read
+# them (reverse_order.report_check fails a `passed: null`). A run without the registry field (a
+# hand-built RunView) is treated the same way. Methods outside the GPM family get explicit
+# `{"passed": None, "not_applicable": ...}` records instead of checks that would pass vacuously.
+# Known debt: for GPM and SGP, residuals_within_bound does not yet require non-empty residual logs.
+LEGACY_FAMILY = frozenset({"gpm", "sgp"})
+# Keep a GPM input memory (memory_task{τ}.pt for every task).
+MEMORY_METHODS = frozenset({"gpm", "sgp", "projected_lora"})
+# Train only allowlisted weights from stage 1 on.
+ALLOWLIST_METHODS = frozenset({"gpm", "sgp", "lora", "projected_lora", "allowlist_ft"})
+# The T1 -> T2 pilot (results/gpm_pilot) is a GPM-family comparison.
+PILOT_METHODS = frozenset({"gpm", "sgp"})
+
+
+class ProvenanceError(RuntimeError):
+    """A strict report found a provenance check that applies and did not pass."""
+
+    def __init__(self, failures: list[str]):
+        super().__init__("provenance checks failed: " + "; ".join(failures))
+        self.failures = failures
+
+
+def not_applicable(reason: str) -> dict:
+    return {"passed": None, "not_applicable": reason}
+
+
+def _legacy(registry: str | None) -> bool:
+    return registry is None or registry in LEGACY_FAMILY
 
 
 # ---- loading -------------------------------------------------------------------
@@ -489,10 +526,174 @@ def t1_memory_overlap(
 # ---- provenance checks ---------------------------------------------------------
 
 
+def _provenance(run_dir: Path) -> dict:
+    """The runner's recorded ``provenance`` block from ``config.yaml`` (``{}`` if absent)."""
+    path = run_dir / "config.yaml"
+    if not path.is_file():
+        return {}
+    cfg = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    return cfg.get("provenance") or {}
+
+
+def t1_pairing_check(result: dict, provenance: dict) -> dict | None:
+    """The runner's T1 pairing record; fail-closed when a reference was configured but none recorded."""
+    pairing = result.get("t1_pairing")
+    if pairing is None and provenance.get("t1_reference_run"):
+        return {"passed": False,
+                "missing": f"configured against {provenance['t1_reference_run']} but not recorded"}
+    return pairing
+
+
+def expected_identity_stages(provenance: dict) -> list[int]:
+    """``identity_stages`` ∪ the stages of ``identity_reference_checkpoints``, as configured."""
+    explicit = provenance.get("identity_reference_checkpoints") or {}
+    return sorted(set(provenance.get("identity_stages") or []) | {int(k) for k in explicit})
+
+
+def identity_check(result: dict, provenance: dict) -> dict | None:
+    """Every configured identity stage has its check recorded, against the configured reference,
+    and passed (``None`` when no stage was configured)."""
+    stages = expected_identity_stages(provenance)
+    if not stages:
+        return None
+    explicit = provenance.get("identity_reference_checkpoints") or {}
+    recorded = result.get("identity_checks") or {}
+    problems, per_stage = [], {}
+    for stage in stages:
+        entry = recorded.get(str(stage))
+        if entry is None:
+            problems.append(f"stage {stage}: no identity check recorded")
+            continue
+        if str(stage) in explicit:
+            expected = Path(explicit[str(stage)])
+        elif provenance.get("identity_reference_run"):
+            expected = Path(provenance["identity_reference_run"]) / "checkpoints" / f"stage{stage}.pt"
+        else:
+            expected = None
+        got = entry.get("reference_checkpoint")
+        if expected is None or got is None or Path(got) != expected:
+            problems.append(f"stage {stage}: checked against {got}, configured {expected}")
+        if entry.get("passed") is not True:
+            problems.append(f"stage {stage}: {entry.get('n_different')} tensors differ")
+        per_stage[str(stage)] = {k: entry.get(k) for k in
+                                 ("reference_checkpoint", "reference_sha256", "n_tensors", "n_different", "passed")}
+    return {"passed": not problems, "expected_stages": stages, "stages": per_stage, "problems": problems}
+
+
+def bracket_eval_check(method: RunView, provenance: dict) -> dict | None:
+    """Stage 1 against its bracket arm's evaluation (``None`` unless stage 1 is identity-checked
+    against an arm's ``checkpoints/final.pt``).
+
+    The arm's tasks must be a unique subset of the run's stage-1 tasks, with equal episode seeds
+    (derived from the namespace, so a mismatch breaks the pairing). Success and step disagreements
+    are counted, never failed: identical checkpoints with the same seeds have scored 47 and 49 across
+    processes (docs/runs/2026-10-12_track2_manifest.md).
+    """
+    ref = (provenance.get("identity_reference_checkpoints") or {}).get("1")
+    if ref is None:
+        return None
+    ref = Path(ref)
+    if ref.name != "final.pt" or ref.parent.name != "checkpoints":
+        return None
+    arm_eval = ref.parent.parent / "eval.json"
+    if not arm_eval.is_file():
+        return {"passed": False, "missing": str(arm_eval)}
+    arm = EvaluationReport.load(arm_eval)
+    arm_keys = [t.task_key for t in arm.tasks]
+    if 1 not in method.evals:
+        return {"passed": False, "arm_eval": str(arm_eval), "problems": ["the run has no stage-1 evaluation"]}
+    mine = method.evals[1].by_task()
+    problems = []
+    if len(set(arm_keys)) != len(arm_keys):
+        problems.append(f"the arm evaluates a task twice: {arm_keys}")
+    outside = sorted(set(arm_keys) - set(mine))
+    if outside:
+        problems.append(f"arm tasks not in the run's stage 1: {outside}")
+    tasks = {}
+    for cell in arm.tasks:
+        if cell.task_key not in mine:
+            continue
+        run_cell = mine[cell.task_key]
+        if list(cell.seeds) != list(run_cell.seeds):
+            problems.append(f"{cell.task_key}: episode seeds differ")
+            continue
+        tasks[cell.task_key] = {
+            "n_episodes": len(cell.seeds),
+            "arm_successes": int(sum(cell.successes)),
+            "run_successes": int(sum(run_cell.successes)),
+            "success_disagreements": sum(a != b for a, b in zip(cell.successes, run_cell.successes)),
+            "n_steps_disagreements": sum(a != b for a, b in zip(cell.n_steps, run_cell.n_steps)),
+        }
+    return {"passed": not problems, "arm_eval": str(arm_eval), "tasks": tasks, "problems": problems,
+            "disagreements_fail": False}
+
+
+def merge_constraint_check(payloads: list[dict]) -> dict:
+    """projected_lora: each stage k >= 1 checkpoint records its merge (``history[k].merge``) with the
+    constraint met. GPM's residual logs are empty there, since the base is frozen from Task 2."""
+    problems, stages, worst = [], {}, 0.0
+    for k in range(1, len(payloads)):
+        state = payloads[k]["extra"].get("method_state") or {}
+        merge = ((state.get("history") or {}).get(str(k)) or {}).get("merge")
+        if merge is None:
+            problems.append(f"stage {k}: no merge record")
+            continue
+        over = float(merge["max_residual_over_tolerance"])
+        layer_worst = max((m["realized_residual"] / m["tolerance"] if m["tolerance"] > 0 else 0.0
+                           for m in merge["per_layer"].values()), default=0.0)
+        ok = merge.get("constraint_ok") is True and over <= 1.0
+        if not ok:
+            problems.append(f"stage {k}: constraint_ok {merge.get('constraint_ok')}, "
+                            f"max residual over tolerance {over}")
+        worst = max(worst, over)
+        stages[str(k)] = {"constraint_ok": merge.get("constraint_ok"), "max_residual_over_tolerance": over,
+                          "worst_layer_over_tolerance": layer_worst, "n_layers": len(merge["per_layer"])}
+    return {"passed": not problems, "worst_over_bound": worst, "source": "merge records",
+            "stages": stages, "problems": problems}
+
+
+def required_provenance(method: RunView, verify_checkpoints: bool = True) -> list[str]:
+    """The checks a strict report must hold, each passed or explicitly not applicable."""
+    provenance = _provenance(method.run_dir)
+    required = ["clean_git_sha", "seed_namespace", "t1_pairing", "occupancy_non_decreasing",
+                "residuals_within_bound"]
+    if method.n_tasks > 1:
+        required.append("memory_chained")
+    if verify_checkpoints:
+        required += ["artifact_hashes_match", "frozen_from_stage1"]
+    if expected_identity_stages(provenance):
+        required.append("identity")
+    if bracket_eval_check(method, provenance) is not None:
+        required.append("bracket_stage1_eval")
+    return required
+
+
+def strict_failures(report: dict, allow_dirty: bool = False) -> list[str]:
+    """The checks that make a strict report fail: absent required ones, and any check that neither
+    passed nor is an explicit not-applicable record (``clean_git_sha`` excused with ``allow_dirty``)."""
+    checks = report.get("provenance_checks") or {}
+    failures = [f"{name}: absent" for name in report.get("provenance_required", []) if name not in checks]
+    for name, check in checks.items():
+        if allow_dirty and name == "clean_git_sha":
+            continue
+        if not isinstance(check, dict):
+            failures.append(f"{name}: absent")
+        elif check.get("passed") is True:
+            continue
+        elif check.get("passed") is None and isinstance(check.get("not_applicable"), str):
+            continue
+        else:
+            failures.append(f"{name}: {'failed' if check.get('passed') is False else 'no verdict'}")
+    return failures
+
+
 def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: bool = True) -> dict:
     from flowcl.analysis.subspace import load_bases
 
     run_dir = method.run_dir
+    registry = method.result.get("method_registry_name")
+    legacy = _legacy(registry)
+    provenance = _provenance(run_dir)
     checks: dict = {}
     sha = (run_dir / "git_sha").read_text().strip()
     checks["clean_git_sha"] = {"passed": not sha.endswith("-dirty"), "git_sha": sha}
@@ -500,80 +701,109 @@ def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: b
         "passed": method.result.get("seed_namespace_run_id") == reference.run_dir.name,
         "seed_namespace_run_id": method.result.get("seed_namespace_run_id"),
     }
-    checks["t1_pairing"] = method.result.get("t1_pairing")
+    checks["t1_pairing"] = t1_pairing_check(method.result, provenance)
 
-    rho_prev: dict[str, float] = {}
-    rho_ok = True
-    chain: dict[str, dict] = {}
-    prev = None  # (task index, memory matrices, that task's history rows)
-    for i in range(method.n_tasks):
-        path = run_dir / "method" / f"memory_task{i}.pt"
-        if not path.is_file():
-            continue
-        bases, meta = load_bases(path)
-        for name, basis in bases.items():
-            rho = next(iter(basis.rhos.values()))  # the memory stores one eps
-            if rho < rho_prev.get(name, 0.0):
-                rho_ok = False
-            rho_prev[name] = rho
-        history = {str(k): v for k, v in meta["memory_history"].items()}
-        current = (i, {n: memory_matrix(b) for n, b in bases.items()}, history[str(i)])
-        if prev is not None:
-            chain[f"{prev[0]}->{i}"] = memory_chain_step(prev[1], current[1], prev[2], current[2])
-        prev = current
-    checks["occupancy_non_decreasing"] = {"passed": rho_ok}
-    if chain:
-        checks["memory_chained"] = {
-            "passed": all(step["passed"] for step in chain.values()),
-            "prefix_identical": all(step["prefix_identical"] for step in chain.values()),
-            "steps": chain,
-        }
+    if legacy or registry in MEMORY_METHODS:
+        rho_prev: dict[str, float] = {}
+        rho_ok = True
+        chain: dict[str, dict] = {}
+        missing: list[int] = []
+        prev = None  # (task index, memory matrices, that task's history rows)
+        for i in range(method.n_tasks):
+            path = run_dir / "method" / f"memory_task{i}.pt"
+            if not path.is_file():
+                missing.append(i)
+                continue
+            bases, meta = load_bases(path)
+            for name, basis in bases.items():
+                rho = next(iter(basis.rhos.values()))  # the memory stores one eps
+                if rho < rho_prev.get(name, 0.0):
+                    rho_ok = False
+                rho_prev[name] = rho
+            history = {str(k): v for k, v in meta["memory_history"].items()}
+            current = (i, {n: memory_matrix(b) for n, b in bases.items()}, history[str(i)])
+            if prev is not None:
+                chain[f"{prev[0]}->{i}"] = memory_chain_step(prev[1], current[1], prev[2], current[2])
+            prev = current
+        if registry in MEMORY_METHODS:  # a run that keeps a memory must have one for every task
+            checks["occupancy_non_decreasing"] = {"passed": rho_ok and not missing, "missing_memories": missing}
+        else:
+            checks["occupancy_non_decreasing"] = {"passed": rho_ok}
+        if chain:
+            checks["memory_chained"] = {
+                "passed": all(step["passed"] for step in chain.values()),
+                "prefix_identical": all(step["prefix_identical"] for step in chain.values()),
+                "steps": chain,
+            }
+    else:
+        reason = f"{registry} keeps no GPM memory"
+        checks["occupancy_non_decreasing"] = not_applicable(reason)
+        checks["memory_chained"] = not_applicable(reason)
 
-    worst = 0.0
-    for i in range(method.n_tasks):
-        path = run_dir / "method" / f"gpm_logs_task{i}.json"
-        if path.is_file():
-            logs = json.loads(path.read_text())
-            for r in logs.get("residuals", {}).values():
-                worst = max(worst, r["max_residual_over_bound"])
-    checks["residuals_within_bound"] = {"passed": worst <= 1.0, "worst_over_bound": worst}
+    payloads = None
+    if verify_checkpoints or registry == "projected_lora":
+        payloads = [
+            torch.load(run_dir / "checkpoints" / f"stage{i}.pt", map_location="cpu", weights_only=False)
+            for i in range(method.n_tasks)
+        ]
+
+    if legacy:
+        worst = 0.0
+        for i in range(method.n_tasks):
+            path = run_dir / "method" / f"gpm_logs_task{i}.json"
+            if path.is_file():
+                logs = json.loads(path.read_text())
+                for r in logs.get("residuals", {}).values():
+                    worst = max(worst, r["max_residual_over_bound"])
+        checks["residuals_within_bound"] = {"passed": worst <= 1.0, "worst_over_bound": worst}
+    elif registry == "projected_lora":
+        checks["residuals_within_bound"] = merge_constraint_check(payloads)
+    else:
+        checks["residuals_within_bound"] = not_applicable(f"{registry} projects nothing")
 
     if verify_checkpoints:
         from flowcl.methods.gpm import allowlist
         from flowcl.train.checkpoint import load_checkpoint
 
         mismatched, states = [], []
-        for i in range(method.n_tasks):
-            payload = torch.load(
-                run_dir / "checkpoints" / f"stage{i}.pt", map_location="cpu", weights_only=False
-            )
+        for payload in payloads:
             for artifact in payload["extra"].get("method_artifacts", []):
                 if file_sha256(run_dir / artifact["path"]) != artifact["sha256"]:
                     mismatched.append(artifact["path"])
             states.append(payload["state_dict"])
         checks["artifact_hashes_match"] = {"passed": not mismatched, "mismatched": mismatched}
-        loaded = load_checkpoint(run_dir / "checkpoints" / "stage0.pt")
-        allowed = set(allowlist(loaded.policy))
-        # Freezing starts at the beginning of stage 1, so every state-dict tensor outside
-        # the allowlist — parameters that trained at T1, never-trained backbones and
-        # persistent buffers alike — must equal its stage-0 value in every later checkpoint.
-        outside = sorted(set(states[0]) - allowed)
-        changed = [
-            n for n in outside
-            if any(not torch.equal(states[0][n], states[k][n]) for k in range(1, method.n_tasks))
-        ]
-        unmoved = {
-            str(k): sorted(n for n in allowed if torch.equal(states[k - 1][n], states[k][n]))
-            for k in range(1, method.n_tasks)
-        }
-        checks["frozen_from_stage1"] = {
-            "passed": not changed,
-            "changed": changed,
-            "n_tensors_outside_allowlist": len(outside),
-            "n_allowlisted": len(allowed),
-            "moved_allowlisted": {k: len(allowed) - len(v) for k, v in unmoved.items()},
-            "unmoved_allowlisted": unmoved,
-        }
+        if legacy or registry in ALLOWLIST_METHODS:
+            loaded = load_checkpoint(run_dir / "checkpoints" / "stage0.pt")
+            allowed = set(allowlist(loaded.policy))
+            # Freezing starts at the beginning of stage 1, so every state-dict tensor outside
+            # the allowlist — parameters that trained at T1, never-trained backbones and
+            # persistent buffers alike — must equal its stage-0 value in every later checkpoint.
+            outside = sorted(set(states[0]) - allowed)
+            changed = [
+                n for n in outside
+                if any(not torch.equal(states[0][n], states[k][n]) for k in range(1, method.n_tasks))
+            ]
+            unmoved = {
+                str(k): sorted(n for n in allowed if torch.equal(states[k - 1][n], states[k][n]))
+                for k in range(1, method.n_tasks)
+            }
+            checks["frozen_from_stage1"] = {
+                "passed": not changed,
+                "changed": changed,
+                "n_tensors_outside_allowlist": len(outside),
+                "n_allowlisted": len(allowed),
+                "moved_allowlisted": {k: len(allowed) - len(v) for k, v in unmoved.items()},
+                "unmoved_allowlisted": unmoved,
+            }
+        else:
+            checks["frozen_from_stage1"] = not_applicable(f"{registry} trains every parameter at every task")
+
+    identity = identity_check(method.result, provenance)
+    if identity is not None:
+        checks["identity"] = identity
+    bracket = bracket_eval_check(method, provenance)
+    if bracket is not None:
+        checks["bracket_stage1_eval"] = bracket
     return checks
 
 
@@ -606,6 +836,7 @@ def build_report(
     report = {
         "method_run_id": method.result.get("method_run_id", method.run_dir.name),
         "method": method.result.get("method"),
+        "method_registry_name": method.result.get("method_registry_name"),
         "reference_run_id": reference.run_dir.name,
         "seed_namespace_run_id": method.result.get("seed_namespace_run_id"),
         "task_keys": method.task_keys,
@@ -641,7 +872,10 @@ def build_report(
                 "update_c_per_step": dyn["update_c"]["per_step"],
             }
 
-    if pilot_json and Path(pilot_json).is_file():
+    registry = method.result.get("method_registry_name")
+    if not (_legacy(registry) or registry in PILOT_METHODS):
+        report["pilot_comparison"] = {"skipped": f"not a GPM-family method ({registry})"}
+    elif pilot_json and Path(pilot_json).is_file():
         payload = json.loads(Path(pilot_json).read_text())
         pilot_ns = payload.get("evaluation_seed_run_id")
         method_ns = method.result.get("seed_namespace_run_id")
@@ -674,6 +908,7 @@ def build_report(
         )
 
     report["provenance_checks"] = provenance_checks(method, reference, verify_checkpoints)
+    report["provenance_required"] = required_provenance(method, verify_checkpoints)
     return report
 
 
@@ -718,7 +953,9 @@ def print_report(report: dict) -> None:
     for j, v in o["final_retention"].items():
         print(f"  final retention T{j + 1}: {100 * v['value']:.1f}% (>= {100 * v['threshold']:.0f}%) "
               f"{'OK' if v['ok'] else 'FAIL'}{' borderline' if v['borderline'] else ''}")
-    print(f"  SGP fallback triggered: {o['sgp_fallback_triggered']} {o['sgp_fallback_tasks']}")
+    registry = report.get("method_registry_name")
+    if _legacy(registry) or registry in PILOT_METHODS:
+        print(f"  SGP fallback triggered: {o['sgp_fallback_triggered']} {o['sgp_fallback_tasks']}")
     for stage, cap in report.get("capacity", {}).items():
         t, d = cap["trunk"], cap["decoder"]
         print(f"  memory after T{int(stage) + 1}: trunk rho {t['median_rho']:.3f} (free {t['median_free_fraction']:.3f}, "
@@ -752,21 +989,39 @@ def print_report(report: dict) -> None:
                   f"[{s['min_k_b_minus_k_a']}, {s['max_k_b_minus_k_a']}]")
     for name, check in report["provenance_checks"].items():
         passed = check.get("passed") if isinstance(check, dict) else None
+        if passed is None and isinstance(check, dict) and "not_applicable" in check:
+            print(f"  [N/A] {name} ({check['not_applicable']})")
+            continue
         extra = ""
         if name == "frozen_from_stage1" and passed is not None:
             extra = (f" ({check['n_tensors_outside_allowlist']} tensors outside the allowlist; "
                      f"allowlisted moved per stage {check['moved_allowlisted']})")
         if name == "memory_chained":
             extra = f" (prefix_identical {check['prefix_identical']})"
+        if name == "identity":
+            extra = f" (stages {check['expected_stages']}{'; ' + '; '.join(check['problems']) if check['problems'] else ''})"
+        if name == "bracket_stage1_eval" and "tasks" in check:
+            extra = " (" + "; ".join(
+                f"{k.split('/')[0].replace('libero_', '')} arm {t['arm_successes']} run {t['run_successes']}, "
+                f"{t['success_disagreements']} disagree" for k, t in check["tasks"].items()) + ")"
+        if name == "residuals_within_bound" and check.get("source") == "merge records":
+            extra = f" (merge records, worst {check['worst_over_bound']:.3g} of tolerance)"
         print(f"  [{'PASS' if passed else 'INFO' if passed is None else 'FAIL'}] {name}{extra}")
 
 
 def run_sequence_report(
-    method_dir: Path, reference_dir: Path, pilot_json: Path | None, out: Path
+    method_dir: Path, reference_dir: Path, pilot_json: Path | None, out: Path,
+    strict: bool = False, allow_dirty: bool = False,
 ) -> dict:
+    """Build, write and print the report. ``strict``: then raise :class:`ProvenanceError` if any
+    check that applies did not pass (``allow_dirty`` excuses ``clean_git_sha``, for smokes)."""
     report = build_report(method_dir, reference_dir, pilot_json)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, default=str) + "\n")
     print_report(report)
     print(f"[flowcl] wrote {out}", flush=True)
+    if strict:
+        failures = strict_failures(report, allow_dirty=allow_dirty)
+        if failures:
+            raise ProvenanceError(failures)
     return report
