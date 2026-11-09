@@ -270,6 +270,19 @@ def _sources_json(task) -> str:
                        for s in task.sources], sort_keys=True)
 
 
+def start_of_motion(action: np.ndarray, rad: float) -> int:
+    """The frame an episode trimmed of its wait at home starts on: one before the first action
+    that moves a joint more than ``rad`` from the first action (0 when none does)."""
+    moved = np.abs(action[:, : D_JOINTS - 1] - action[0, : D_JOINTS - 1]).max(axis=1) > rad
+    return max(int(np.argmax(moved)) - 1, 0) if moved.any() else 0
+
+
+def _trimmed(ep: dict, rad: float) -> dict:
+    start = start_of_motion(ep["action"], rad)
+    return {**ep, "trimmed_frames": start, "action": ep["action"][start:], "state": ep["state"][start:],
+            "timestamp": ep["timestamp"][start:], "images": {c: v[start:] for c, v in ep["images"].items()}}
+
+
 def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> dict:
     """Decode a registry task's sources into ``out_path`` (HDF5). Returns a summary.
 
@@ -288,7 +301,8 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".h5.partial")
-    lengths, raw_labels = [], {}
+    trim = getattr(task, "trim_start_rad", None)
+    lengths, trimmed, raw_labels = [], [], {}
     with h5py.File(tmp, "w") as f:
         f.attrs.update(
             {
@@ -301,13 +315,18 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
                 "masks": _masks_json(spec),
                 "image_fn": "flowcl.data.images.policy_frame",
                 "complete": False,
+                **({"trim_start_rad": trim} if trim is not None else {}),  # only when set: old caches verify
             }
         )
         group = f.create_group("episodes")
 
         def write(source: str, ep: dict) -> None:
+            if trim is not None:
+                ep = _trimmed(ep, trim)
+                trimmed.append(ep["trimmed_frames"])
             g = group.create_group(f"{len(lengths):06d}")
-            g.attrs.update({"source": source, "raw_episode_index": ep["raw_episode_index"]})
+            g.attrs.update({"source": source, "raw_episode_index": ep["raw_episode_index"],
+                            **({"trimmed_frames": ep["trimmed_frames"]} if trim is not None else {})})
             g.create_dataset("action", data=ep["action"])
             g.create_dataset("state", data=ep["state"])
             g.create_dataset("timestamp", data=ep["timestamp"])
@@ -334,7 +353,8 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
         f.attrs["complete"] = True
     tmp.replace(out_path)
     return {"task": task.name, "n_episodes": len(lengths), "frames": int(sum(lengths)),
-            "length_min": min(lengths), "length_max": max(lengths), "raw_labels": raw_labels}
+            "length_min": min(lengths), "length_max": max(lengths), "raw_labels": raw_labels,
+            **({"trimmed_frames": int(sum(trimmed)), "trimmed_max": max(trimmed)} if trim is not None else {})}
 
 
 def cache_attrs(path: Path) -> dict:
@@ -350,7 +370,7 @@ def verify_cache(path: Path, task, n_demos: int | None = None) -> None:
     if attrs.get("format") != CACHE_FORMAT:
         raise ValueError(f"{path}: cache format {attrs.get('format')} != {CACHE_FORMAT}")
     for key, want in (("task_name", task.name), ("language", task.language),
-                      ("sources", _sources_json(task))):
+                      ("sources", _sources_json(task)), ("trim_start_rad", getattr(task, "trim_start_rad", None))):
         if attrs.get(key) != want:
             raise ValueError(f"{path}: cache {key} {attrs.get(key)!r} != registry {want!r}")
     if int(attrs["n_episodes"]) != task.n_episodes:

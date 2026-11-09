@@ -14,10 +14,12 @@ import pytest
 from flowcl.data.config import load_embodiment_spec
 from flowcl.data.piper_adapter import (
     CAMERA_KEYS,
+    _trimmed,
     build_cache,
     iter_cache_episodes,
     read_source,
     source_fingerprint,
+    start_of_motion,
     verify_cache,
 )
 from flowcl.data.piper_tasks import PiperSource, PiperTask, get_task
@@ -195,6 +197,38 @@ def test_named_episodes_go_last_in_the_cache(tmp_path, spec):
         order = [f["episodes"][k].attrs["raw_episode_index"] for k in sorted(f["episodes"])]
         assert "held_out" in f.attrs["sources"]
     assert order == [*range(1, len(LENGTHS)), 0]
+
+
+def test_the_wait_at_home_is_trimmed_to_one_frame_before_the_reach():
+    action = np.zeros((20, 7), np.float32)
+    action[:6, 1] = [0, 0.004, -0.003, 0.002, 0, 0.005]   # jitter at rest, under the threshold
+    action[6:, 1] = 0.02 * np.arange(1, 15)                 # the reach from frame 6
+    action[3:, 6] = 0.03                                     # the gripper alone does not count
+    assert start_of_motion(action, 0.01) == 5
+    assert start_of_motion(np.zeros((5, 7)), 0.01) == 0     # never moves: nothing dropped
+    action[1, 0] = 0.5
+    assert start_of_motion(action, 0.01) == 0               # moves at once: nothing dropped
+    ep = {"raw_episode_index": 3, "action": np.arange(20.0)[:, None] * np.ones(7), "state": np.zeros((20, 7)),
+          "timestamp": np.arange(20) / 15, "images": {"front": np.zeros((20, 4, 4, 3), np.uint8)}}
+    ep["action"][:8] = 0.0
+    out = _trimmed(ep, 0.01)
+    assert out["trimmed_frames"] == 7 and len(out["action"]) == len(out["state"]) == len(out["images"]["front"]) == 13
+    assert out["timestamp"][0] == pytest.approx(7 / 15)
+
+
+def test_a_trimmed_cache_records_its_threshold(tmp_path, spec):
+    write_dataset(tmp_path / "raw" / "toy")
+    task = dataclasses.replace(toy_task(tmp_path / "raw"), trim_start_rad=0.01)
+    summary = build_cache(task, tmp_path / "raw", tmp_path / "toy.h5", spec)
+    assert summary["trimmed_frames"] == 0                   # the toy actions move from the first frame
+    with h5py.File(tmp_path / "toy.h5") as f:
+        assert f.attrs["trim_start_rad"] == 0.01
+        assert all(f["episodes"][k].attrs["trimmed_frames"] == 0 for k in f["episodes"])
+    verify_cache(tmp_path / "toy.h5", task)
+    with pytest.raises(ValueError, match="trim_start_rad"):
+        verify_cache(tmp_path / "toy.h5", dataclasses.replace(task, trim_start_rad=None))
+    assert get_task("grape_all_trim_crop336").trim_start_rad == 0.01
+    assert get_task("grape_all_crop336").trim_start_rad is None
 
 
 def test_a_task_with_nothing_held_out_trains_on_every_episode(tmp_path, spec, monkeypatch):

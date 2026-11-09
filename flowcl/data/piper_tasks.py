@@ -49,6 +49,10 @@ class PiperTask:
     # The embodiment config (configs/embodiment/) the cache is built and trained with. It
     # fixes the image masks, so two tasks on the same recordings can differ only in it.
     embodiment: str = "agilex_piper"
+    # When set, every episode starts one frame before its first action that moves a joint
+    # more than this (rad) from the episode's first action: the wait at home is dropped
+    # (flowcl.data.piper_adapter.start_of_motion). Actions are kept as recorded.
+    trim_start_rad: float | None = None
 
     @property
     def n_train(self) -> int:
@@ -106,7 +110,7 @@ PICK_GRAPE_V2 = PiperSource(
 
 
 def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_episodes: int, size: int,
-                holdout: int = 0) -> PiperTask:
+                holdout: int = 0, trim_start_rad: float | None = None, notes: str = "") -> PiperTask:
     """A task at a larger input: the table crop at ``size`` px."""
     return PiperTask(
         name=f"{name}_crop{size}",
@@ -114,9 +118,18 @@ def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_ep
         sources=sources,
         n_episodes=n_episodes,
         holdout=holdout,
-        notes=f"The table crop at {size} x {size}, so the frozen encoder's patches are finer on the table.",
+        notes=f"The table crop at {size} x {size}, so the frozen encoder's patches are finer on the table."
+              + (f" {notes}" if notes else ""),
         embodiment=f"agilex_piper_crop{size}",
+        trim_start_rad=trim_start_rad,
     )
+
+
+# The demos wait at home before the reach (median 7 ticks in pick_grape, 9 in pick_grape_v2).
+# At home the policy cannot tell how long it has waited, and on 9 Nov 14 of 26 rollouts kept
+# predicting the reach 10-14 ticks ahead, past the 8 executed, and never left home. The leader
+# at rest moves at most 0.024 rad, and the gripper never moves before the joints.
+TRIM_START_RAD = 0.01
 
 
 TASKS: dict[str, PiperTask] = {
@@ -230,6 +243,9 @@ TASKS: dict[str, PiperTask] = {
                 _sized_crop("grape_all", GRAPE_PLATE, (PICK_GRAPE, PICK_GRAPE_V2), 90, size, holdout=5),
             )
         ),
+        # grape_all with the wait at home before the reach dropped from every demo.
+        _sized_crop("grape_all_trim", GRAPE_PLATE, (PICK_GRAPE, PICK_GRAPE_V2), 90, 336, holdout=5,
+                    trim_start_rad=TRIM_START_RAD, notes="Each demo starts as the reach begins."),
     )
 }
 
