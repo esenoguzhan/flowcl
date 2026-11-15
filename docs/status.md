@@ -300,3 +300,46 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
    - **Next:** the policy server and robot runner, reusing the `dobot-hw` pieces (§3), then the
      replay of 3 demos and the rollouts.
    - **Keep the front camera's pose fixed** until the proof is done.
+
+## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
+
+Moved here from `.scratch/` on Sun 15 Nov, after the seed 1–2 queue. Items 1 and 2 below, and A3
+(§4, item 4), must land before the 8-task runs (E3). None of them blocks Track 2 step 4.
+
+### 5.1 Measurement gaps (priority order)
+
+1. **Save the per-step training loss, before the 8-task runs (E3).**
+   - `TrainLog.losses` lives only in memory (`flowcl/train/trainer.py:72`); `result.json` keeps the
+     final and last-50 values.
+   - The new-task loss curve needs it (T4's loss at 1.6× plain GPM's), and it cannot be recovered
+     after a run.
+   - Not while a queue runs: the tree must stay clean.
+2. **Peak GPU memory per run.** It is not in `result.json`'s `systems` block, so the systems table
+   cannot report it for every method.
+3. **A5, the rollout-level paired bootstrap for ACC / NBT / AUC** (already §4, item 4). Every
+   summary figure's intervals depend on it.
+4. **A6, metric naming** (already §4, item 4). `result.json` stores final average success under the
+   key `F_1`; map it to ACC before it lands on an axis.
+5. **Optional: old-task probe loss during a new task's training.** Only stage-end checkpoints exist,
+   so the figures can show that a task was forgotten but not when. It needs probe passes at
+   intervals or intermediate checkpoints.
+6. **Hardware rollout record, fixed before F3 / F4.** One record per rollout: outcome category
+   (failure taxonomy), miss distance, light or time of day, cycle time, start photo.
+7. **Ask the supervisor (D1):** the plan has no jointly trained multitask upper bound.
+
+### 5.2 Figures, one per claim
+
+| Chapter | Figure | What it shows | Exists |
+|---|---|---|---|
+| Setup | Task images of the curriculum; a diagram of where the projection sits in the policy | What is learned, in which order | no |
+| Characterization | Retention heatmap (success on task j after stage i); forgetting curves per task | Sequential fine-tuning forgets everything | plotters in `flowcl/analysis/tables.py` |
+| Characterization / Track 2 | Probe loss against closed-loop success, coloured by task | The same loss (0.09–0.10) gives 88–90 %, 56 % and 2 % | no |
+| Adaptive GPM | Object retention, plain against adaptive, one pair of points per seed | +56 / +64 / +66 pp | `docs/assets/retention_*.png` (check) |
+| Controls | e99 and reverse order as per-seed differences with intervals | Allocation, or only more protection | no |
+| Capacity | Protected fraction of the trunk after each task; overall success against capacity for plain, f 0.7 and f 0.9 (E3) | Protection uses up capacity | `docs/assets/capacity_*.png` (first half) |
+| Baselines | The main table, plus a dot plot of final success per task and method | Replay marked as not exemplar-free | no |
+| Negative results | Two-sided fraction 0.861 against GPM 0.933 and the 0.50 threshold; recovery injury rate by offset type and phase | Why the two-sided line stopped | no |
+| Hardware | Setup photo with mask and crop; miss distance by resolution (54 / 31 / 27 mm); grasp positions by zone; success counts with intervals | Transfer evidence, not method ranking | partly, `docs/assets/piper_*` |
+
+**On every plot:** each seed shown separately (three seeds give no seed-level interval), seed 0
+marked as the development seed, and the number of rollouts stated.
