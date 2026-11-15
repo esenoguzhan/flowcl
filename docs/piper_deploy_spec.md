@@ -321,13 +321,35 @@ rollouts' too. The existing Replay feature stays as it is.
      which can need a reset.
 3. **Go**, from the page or the controller's A button. The executor runs (§4).
 4. **The end:** Stop (page or controller B), a safety stop, or the time limit. The arm holds.
-5. **Annotate:**
-   - sausage in the pot: yes / no;
-   - lid on the pot: yes / no;
-   - success = both;
-   - a note.
+5. **Annotate** with the rollout record (below). It is saved into that rollout's `meta.json` as
+   `record`, and a rollout is not counted until it has one.
 
-   The annotation is saved into that rollout's log.
+**The rollout record** (`rollout_record/v1`, the same for every task; added Sun 15 Nov, replacing the
+sausage-and-lid form). `flowcl/deploy/rollout_records.py` reads and validates it.
+
+| Field | Values | How it is filled |
+|---|---|---|
+| `schema` | `"rollout_record/v1"` | fixed |
+| `success` | true / false | the operator, against the task's success rule |
+| `outcome` | `success`, `gripper_never_opens`, `reach_miss`, `grasp_slip_or_drop`, `place_miss`, `stall_off_path`, `safety_stop`, `time_limit`, `other` | the operator, one value: what ended the rollout. `success` exactly when `success` is true |
+| `miss_distance_mm` | number or null | the operator, with a ruler: the object's or gripper's distance from where it had to be, when the outcome is a miss; null otherwise or if not measured |
+| `light` | `daylight`, `lamp`, `mixed` | the operator; the start time is already in the log |
+| `note` | free text | optional; required when `outcome` is `other` |
+| `annotated_at` | ISO time | the UI |
+
+The outcome categories come from the milk and grape rollouts (records of 3 and 6 Nov):
+- `gripper_never_opens`: the unmasked milk policies;
+- `reach_miss`: the gripper closes beside the object;
+- `grasp_slip_or_drop`: the object is lifted and then lost;
+- `place_miss`: the object is carried but put down off the target;
+- `stall_off_path`: the arm leaves the demos' path and stops making progress;
+- `safety_stop` and `time_limit`: as in §5 and the time limit.
+
+**The start photo:** at Go, the UI saves the front camera's frame as `start_front.jpg` in the
+rollout's log, so the initial condition is visible without replaying `frames/`.
+
+Logs from before Sun 15 Nov have no `record`. Their `annotation` (the sausage form) or none is read
+as legacy, and nothing is filled in for them.
 6. Reset the scene; **return to start**; next.
 
 **Cycle time:** measure Go to Go and show it. The gate's limit is 4 min. Also show the running
@@ -343,7 +365,8 @@ Each probe, replay and rollout writes `~/piper_rollouts/<YYYY-MM-DD>/<HHMMSS>_<m
   - the `policy`, `teleop` and joint-limit config values in force;
   - the arm, the camera serials, the initial condition and the label;
   - the start and end times, the stop reason;
-  - the annotation and the cycle time.
+  - the rollout record (`record`, §6.4) and the cycle time. Older logs have `annotation` instead.
+- **`start_front.jpg`** (rollouts only): the front frame at Go (§6.4).
 - **`inferences.jsonl`,** one line per request:
   - `seq`, `seed`, `t_obs`, the send and reply times;
   - each camera's frame age, the state;
