@@ -10,6 +10,14 @@ per-seed rates. With three seeds (§5) a bootstrap over three numbers is almost
 uninformative, whereas pooling 3 x 50 rollouts gives an interval that reflects both
 rollout and seed variation. The cost is that seed variance is folded into the interval
 instead of being reported separately, so :func:`seed_spread` reports it alongside.
+
+**The thesis tables use :func:`per_seed_table`** (A5): one row per method and seed, each value with
+its rollout-level interval for that one trained policy, seeds never pooled (thesis_plan.md: with 3
+seeds there is no seed-level CI). :func:`main_table` keeps ACC pooled over the seeds' rollouts,
+labelled so, and shows NBT and AUC per seed with their rollout intervals.
+
+**Names (A6):** ``result.json`` stores final average success under the key ``F_1``; tables call it
+**ACC**. README §8.2's first-task forgetting R[0][0] - R[1][0] is **F_first**.
 """
 
 from __future__ import annotations
@@ -149,9 +157,9 @@ def pooled_final_average_success(
     group: list[LoadedRun],
     bootstrap: dict | None = None,
 ) -> Estimate:
-    """``F_1`` with a CI over rollouts pooled across seeds and tasks.
+    """ACC (``result.json``'s ``F_1``) with a CI over rollouts pooled across seeds and tasks.
 
-    ``F_1`` is the mean of the final row (§8.2), so pooling every final-stage rollout
+    ACC is the mean of the final row (§8.2), so pooling every final-stage rollout
     from every task and seed estimates exactly that mean — provided each task
     contributes the same number of rollouts, which §8.1's fixed 50-per-cell guarantees.
     Unequal counts are rejected rather than silently reweighting the tasks.
@@ -188,9 +196,10 @@ def pooled_metric_over_seeds(
 ) -> Estimate:
     """CI for a matrix-level metric (NBT, AUC) by bootstrapping over seeds.
 
-    Unlike ``F_1``, these are nonlinear functions of the whole retention matrix, so they
-    cannot be recovered by pooling rollouts. With §5's three seeds the resulting interval
-    is wide and honest; reporting the metric without one would not be.
+    Unlike ACC, these are nonlinear functions of the whole retention matrix, so they
+    cannot be recovered by pooling rollouts. **Not used by the thesis tables:** with three
+    seeds a seed-level interval is not defensible (thesis_plan.md, Statistics); use
+    :func:`per_seed_table` / :func:`flowcl.analysis.rollout_bootstrap.rollout_bootstrap`.
     """
     if not group:
         raise ValueError("pooled_metric_over_seeds received no runs")
@@ -243,26 +252,42 @@ class Table:
         return path
 
 
+def _rollout_estimates(run: LoadedRun, metrics, bootstrap: dict) -> dict[str, Estimate]:
+    from flowcl.analysis.rollout_bootstrap import RunRollouts, rollout_bootstrap
+
+    return rollout_bootstrap(
+        RunRollouts.from_payload(run.payload, label=str(run.path)),
+        metrics=metrics,
+        n_bootstrap=bootstrap.get("n_resamples", 10000),
+        confidence=bootstrap.get("confidence", DEFAULT_CONFIDENCE),
+        seed=bootstrap.get("seed", 0),
+    )
+
+
 def main_table(
     runs: list[LoadedRun],
     curriculum: str,
     bootstrap: dict | None = None,
 ) -> Table:
-    """The §8.2 headline table for one curriculum: F_1, NBT, AUC per method."""
-    from flowcl.analysis.metrics import auc_average_success, negative_backward_transfer
+    """The §8.2 headline table for one curriculum: ACC, NBT, AUC per method.
 
+    ACC pools every final-stage rollout of the method's seeds (labelled as pooled; it is
+    not a seed-level interval). NBT and AUC are shown per seed, each with its rollout-level
+    interval, because with three seeds no seed-level interval is defensible.
+    """
+    bootstrap = bootstrap or {}
     grouped = group_by_method(runs, curriculum)
     if not grouped:
         raise ValueError(f"no runs found for curriculum {curriculum!r}")
 
     table = Table(
-        title=f"{curriculum}: final average success, forgetting and AUC",
+        title=f"{curriculum}: overall performance (ACC), forgetting (NBT) and AUC",
         columns=[
             "method",
             "seeds",
-            "F_1 (pp, 95% CI)",
-            "NBT (pp, 95% CI)",
-            "AUC (pp, 95% CI)",
+            "ACC (pp, pooled rollouts, 95% CI)",
+            "NBT by seed (pp, rollout 95% CI)",
+            "AUC by seed (pp, rollout 95% CI)",
             "exemplar-free",
             "stored (MB)",
         ],
@@ -274,28 +299,82 @@ def main_table(
             run.systems.get("is_exemplar_free", True) for run in group
         )
         stored = max(run.systems.get("method_stored_mb", 0.0) for run in group)
+        per_seed = {run.seed: _rollout_estimates(run, ("NBT", "AUC"), bootstrap) for run in group}
         table.rows.append(
             [
                 method,
                 str([run.seed for run in group]),
                 format_cell(pooled_final_average_success(group, bootstrap)),
-                format_cell(
-                    pooled_metric_over_seeds(
-                        group, negative_backward_transfer, bootstrap
-                    )
-                ),
-                format_cell(
-                    pooled_metric_over_seeds(group, auc_average_success, bootstrap)
-                ),
+                "; ".join(f"s{seed} {format_cell(est['NBT'])}" for seed, est in per_seed.items()),
+                "; ".join(f"s{seed} {format_cell(est['AUC'])}" for seed, est in per_seed.items()),
                 "yes" if exemplar_free else "NO (§6: violates exemplar-free)",
                 f"{stored:.2f}",
             ]
         )
 
     table.notes = [
-        "F_1 pools every final-stage rollout across tasks and seeds; NBT and AUC are "
-        "nonlinear in the retention matrix and so bootstrap over seeds instead.",
-        "Intervals are percentile bootstrap at 95% (§8.2).",
+        "ACC is the final average success (stored in result.json as F_1). Its interval pools "
+        "the final-stage rollouts of every seed: rollout uncertainty with the seeds mixed in, "
+        "not a seed-level interval.",
+        "NBT and AUC: one value per seed (sN), each with a rollout bootstrap that resamples "
+        "episodes once per task and applies them to every stage (A5). Three seeds give no "
+        "seed-level interval. Seed 0 is the development seed.",
+        "Intervals are percentile bootstrap at 95% (§8.2). The thesis tables use per_seed_table.",
+    ]
+    return table
+
+
+def per_seed_table(
+    runs: list[LoadedRun],
+    curriculum: str,
+    bootstrap: dict | None = None,
+) -> Table:
+    """A5's thesis table: one row per method and seed, every value with its rollout interval.
+
+    The interval is the evaluation uncertainty of that one trained policy (which initial
+    states the 50 rollouts drew), resampled once per task and applied to every stage, so
+    NBT, AUC and F_first are paired across stages. Seeds are separate rows and are never
+    pooled: their spread is the training-seed variation, shown, not summarised by an
+    interval.
+    """
+    bootstrap = bootstrap or {}
+    grouped = group_by_method(runs, curriculum)
+    if not grouped:
+        raise ValueError(f"no runs found for curriculum {curriculum!r}")
+    table = Table(
+        title=f"{curriculum}: per seed, with rollout intervals (one trained policy per row)",
+        columns=[
+            "method",
+            "seed",
+            "ACC (pp, rollout 95% CI)",
+            "NBT (pp, rollout 95% CI)",
+            "AUC (pp, rollout 95% CI)",
+            "F_first (pp, rollout 95% CI)",
+            "exemplar-free",
+        ],
+    )
+    for method in sorted(grouped):
+        for run in grouped[method]:
+            est = _rollout_estimates(run, ("ACC", "NBT", "AUC", "F_first"), bootstrap)
+            table.rows.append(
+                [
+                    method,
+                    f"{run.seed}{' (dev)' if run.seed == 0 else ''}",
+                    format_cell(est["ACC"]),
+                    format_cell(est["NBT"]),
+                    format_cell(est["AUC"]),
+                    format_cell(est["F_first"]),
+                    "yes" if run.systems.get("is_exemplar_free", True) else "NO",
+                ]
+            )
+    table.notes = [
+        "Uncertainty source 1, rollouts: each interval resamples one policy's evaluation "
+        "episodes (once per task, the same draw for every stage), percentile bootstrap at 95%.",
+        "Uncertainty source 2, training seeds: the rows of a method. Three seeds give no "
+        "seed-level interval; the claim rule is a consistent sign. Seed 0 (dev) is the "
+        "development seed; seeds 1-2 are the replication.",
+        "ACC = final average success (result.json's F_1). F_first = R[0][0] - R[1][0], the "
+        "first task's forgetting after one more task (README §8.2).",
     ]
     return table
 
@@ -338,6 +417,8 @@ def systems_table(runs: list[LoadedRun], curriculum: str) -> Table:
             "stored bases/buffers (MB)",
             "train wall clock (min)",
             "total wall clock (min)",
+            "peak GPU train (GB, allocated)",
+            "peak GPU eval (GB, allocated)",
         ],
     )
     for method in sorted(grouped):
@@ -352,6 +433,8 @@ def systems_table(runs: list[LoadedRun], curriculum: str) -> Table:
                 f"{np.mean([s.get('method_stored_mb', 0.0) for s in systems]):.2f}",
                 f"{np.mean([s.get('train_wall_clock_s', 0.0) for s in systems]) / 60:.1f}",
                 f"{np.mean([s.get('total_wall_clock_s', 0.0) for s in systems]) / 60:.1f}",
+                _peak_gb(systems, "train_allocated_bytes"),
+                _peak_gb(systems, "eval_allocated_bytes"),
             ]
         )
     table.notes = [
@@ -360,8 +443,19 @@ def systems_table(runs: list[LoadedRun], curriculum: str) -> Table:
         "Trainable params are counted per stage after the method's setup (GPM trains its "
         "allowlist from T2, LoRA its adapters); T2+ is the mean over stages >= 1, with the "
         "range when they differ. Runs recorded before per-stage counts show T1's count only.",
+        "Peak GPU: the PyTorch CUDA allocator's maximum over the stages' training and "
+        "evaluation windows (not EGL rendering or the CUDA context); the largest over seeds. "
+        "'n/a' where it was not measured (runs before Sun 15 Nov, imported stages).",
     ]
     return table
+
+
+def _peak_gb(systems: list[dict], key: str) -> str:
+    """The largest recorded peak over seeds, in GB; "n/a" if any seed did not measure it."""
+    values = [(s.get("peak_gpu") or {}).get(key) for s in systems]
+    if not values or any(v is None for v in values):
+        return "n/a"
+    return f"{max(values) / 1e9:.1f}"
 
 
 def _t1_trainable(systems: dict) -> float:
@@ -510,6 +604,10 @@ def build_all(
         main = main_table(subset, curriculum, bootstrap)
         main.to_csv(out_dir / f"{curriculum}_main.csv")
         sections.append(main.to_markdown())
+
+        seeds = per_seed_table(subset, curriculum, bootstrap)
+        seeds.to_csv(out_dir / f"{curriculum}_per_seed.csv")
+        sections.append(seeds.to_markdown())
 
         sections.append(systems_table(subset, curriculum).to_markdown())
 

@@ -32,6 +32,7 @@ from flowcl.analysis.tables import (
     pooled_metric_over_seeds,
     retention_table,
     seed_spread,
+    per_seed_table,
     systems_table,
 )
 
@@ -359,3 +360,38 @@ def test_build_all_covers_every_curriculum_present(tmp_path):
     assert "[" in text
     assert (tmp_path / "tables" / "seq_hetero_main.csv").is_file()
     assert (tmp_path / "tables" / "seq_hetero_forgetting.png").is_file()
+
+
+# ---- A5 / A6: the per-seed table, rollout intervals per seed, peak GPU columns ----
+
+
+def test_per_seed_table_has_one_row_per_seed_with_rollout_intervals():
+    runs = [loaded(make_payload("seq_ft", "seq_hetero", s, FORGET)) for s in (0, 1)]
+    table = per_seed_table(runs, "seq_hetero", {"n_resamples": 200})
+    assert [row[1] for row in table.rows] == ["0 (dev)", "1"]
+    assert table.columns[2].startswith("ACC") and table.columns[5].startswith("F_first")
+    for row in table.rows:
+        for cell in row[2:6]:
+            assert "[" in cell and "," in cell, cell
+    assert any("no seed-level interval" in note for note in table.notes)
+
+
+def test_main_table_shows_nbt_and_auc_per_seed_not_a_seed_interval():
+    runs = [loaded(make_payload("seq_ft", "seq_hetero", 0, FORGET)),
+            loaded(make_payload("seq_ft", "seq_hetero", 1, KEEP))]
+    table = main_table(runs, "seq_hetero", {"n_resamples": 200})
+    nbt = table.rows[0][table.columns.index("NBT by seed (pp, rollout 95% CI)")]
+    assert nbt.startswith("s0 100.0") and "; s1 0.0" in nbt
+    assert table.columns[2] == "ACC (pp, pooled rollouts, 95% CI)"
+    assert not any(name.startswith("F_1") for name in table.columns)
+
+
+def test_systems_table_peak_gpu_columns_come_last_and_say_when_unmeasured():
+    old = make_payload("seq_ft", "seq_hetero", 0, FORGET)
+    table = systems_table([loaded(old)], "seq_hetero")
+    assert table.columns[-2:] == ["peak GPU train (GB, allocated)", "peak GPU eval (GB, allocated)"]
+    assert table.rows[0][-2:] == ["n/a", "n/a"]
+    new = make_payload("seq_ft", "seq_hetero", 0, FORGET)
+    new["systems"] = {**new["systems"], "peak_gpu": {"train_allocated_bytes": 7.4e9, "eval_allocated_bytes": 2.1e9}}
+    table = systems_table([loaded(new)], "seq_hetero")
+    assert table.rows[0][-2:] == ["7.4", "2.1"]
