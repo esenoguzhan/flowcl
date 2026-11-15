@@ -320,9 +320,15 @@ Cost: `B×` backward passes. Budget for it; use gradient accumulation and keep `
 
 `metrics.py` implements, from a single retention matrix `R[i][j]` (success on task `j` after training stage `i`):
 
-- `F_1 = R[1][1] - R[2][1]` (and the general per-task forgetting)
+- **Names (A6, Sun 15 Nov).** Indices below are 0-based stages and tasks, `T` the last stage.
+  - **ACC**, overall performance: the final average success `mean_j R[T][j]`. `result.json`
+    stores it under the key **`F_1`** (`metrics.py`'s `CLSummary`), which existing artifacts keep;
+    every table and the thesis say ACC.
+  - **F_first**, first-task forgetting: `R[0][0] - R[1][0]`, the forgetting this list once called
+    `F_1 = R[1][1] - R[2][1]` (1-based). `metrics.first_task_forgetting`.
+  - Per-task forgetting `R[j][j] - R[T][j]`.
 - Negative backward transfer (NBT), forward transfer (FWT), AUC — use CLARE's definitions and cite them in the docstring so the numbers are comparable.
-- Bootstrap 95% CIs over rollouts. Every reported success rate carries a CI. No bare percentages anywhere, including in plots.
+- Bootstrap 95% CIs over rollouts. Every reported success rate carries a CI. No bare percentages anywhere, including in plots. For ACC, NBT, AUC and F_first: the rollout-level paired bootstrap of `flowcl/analysis/rollout_bootstrap.py` (A5), per seed.
 - System metrics: trainable params, stored memory (bases + buffers, in MB), wall-clock train time, inference latency, integration time.
 
 

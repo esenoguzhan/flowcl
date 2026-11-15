@@ -262,3 +262,17 @@ def test_nbt_undefined_for_single_task():
     matrix.set(0, 0, 0.9, n=10)
     with pytest.raises(ValueError, match="undefined for a single-task"):
         negative_backward_transfer(matrix)
+
+
+def test_first_task_forgetting_is_the_first_column_drop():
+    """A6: F_first = R[0][0] - R[1][0], not result.json's F_1 (which is ACC)."""
+    from flowcl.analysis.metrics import first_task_forgetting
+
+    m = RetentionMatrix.empty(("a", "b", "c"))
+    m.set(0, 0, 0.9, 50)
+    with pytest.raises(ValueError, match="R\\[1\\]\\[0\\]"):
+        first_task_forgetting(m)
+    m.set(1, 0, 0.3, 50)
+    assert first_task_forgetting(m) == pytest.approx(0.6)
+    with pytest.raises(ValueError, match="single-task"):
+        first_task_forgetting(RetentionMatrix.empty(("a",)))

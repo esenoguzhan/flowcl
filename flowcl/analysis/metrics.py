@@ -238,6 +238,21 @@ def per_task_forgetting(matrix: RetentionMatrix) -> dict[str, float]:
     return out
 
 
+def first_task_forgetting(matrix: RetentionMatrix) -> float:
+    """``F_first = R[0][0] - R[1][0]``: the first task's forgetting after one more task (A6).
+
+    This is the quantity the original spec called ``F_1`` (1-based ``R[1][1] - R[2][1]``).
+    ``result.json``'s key ``F_1`` holds the *final average success* (ACC) instead; tables and
+    the thesis use ACC and F_first so the two are never confused.
+    """
+    if matrix.n_tasks < 2:
+        raise ValueError("F_first is undefined for a single-task curriculum")
+    for stage in (0, 1):
+        if np.isnan(matrix.values[stage, 0]):
+            raise ValueError(f"F_first needs R[{stage}][0] ({matrix.task_keys[0]}), which was never evaluated")
+    return float(matrix.values[0, 0] - matrix.values[1, 0])
+
+
 def negative_backward_transfer(matrix: RetentionMatrix) -> float:
     """NBT: mean forgetting over the tasks that *can* be forgotten.
 
