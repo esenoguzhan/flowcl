@@ -326,6 +326,15 @@ Moved here from `.scratch/` on Sun 15 Nov, after the seed 1–2 queue. Items 1 a
 6. **Hardware rollout record, fixed before F3 / F4.** One record per rollout: outcome category
    (failure taxonomy), miss distance, light or time of day, cycle time, start photo.
 7. **Ask the supervisor (D1):** the plan has no jointly trained multitask upper bound.
+   **State: drafted (Sun 15 Nov), to send.** Draft:
+
+   > The sequential results (4 tasks, 3 seeds; next, 8 tasks) are compared with sequential
+   > fine-tuning and the baselines, but there is no jointly trained multitask reference: one
+   > policy trained on all tasks at once and evaluated on each. It would show how far each method
+   > is from the ceiling of this architecture and data. The code supports it already
+   > (`run_continual.py --joint-reference`, the same steps per task as one sequential stage). The
+   > cost is about 3 GPU-hours per seed for the 4 tasks and about 6 h per seed for the 8. Should
+   > the thesis include it, for the 4-task sequence, the 8-task sequence, or neither?
 
 ### 5.2 Figures, one per claim
 
