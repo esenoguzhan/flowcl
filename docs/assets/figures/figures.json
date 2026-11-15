@@ -1,0 +1,188 @@
+{
+  "retention_grids": {
+    "state": "made",
+    "claim": "sequential fine-tuning forgets everything; which methods keep what",
+    "files": [
+      "docs/assets/figures/retention_grid_seed0.png",
+      "docs/assets/figures/retention_grid_seed1.png",
+      "docs/assets/figures/retention_grid_seed2.png"
+    ]
+  },
+  "forgetting_curves": {
+    "state": "made",
+    "claim": "when each task is lost, by method",
+    "files": [
+      "docs/assets/figures/forgetting_curves.png"
+    ]
+  },
+  "baselines": {
+    "state": "made",
+    "claim": "the baselines; replay keeps most and is not exemplar-free",
+    "files": [
+      "docs/assets/figures/baselines_final.png"
+    ]
+  },
+  "adaptive_vs_plain": {
+    "state": "made",
+    "claim": "adaptive GPM keeps Object",
+    "files": [
+      "docs/assets/figures/adaptive_vs_plain_object.png"
+    ],
+    "values_pp": {
+      "Object after Goal, R[2][1] seed 0": 66,
+      "Object after Goal, R[2][1] seed 1": 64,
+      "Object after Goal, R[2][1] seed 2": 56,
+      "final Object, R[3][1] seed 0": 84,
+      "final Object, R[3][1] seed 1": 82,
+      "final Object, R[3][1] seed 2": 54
+    }
+  },
+  "controls": {
+    "state": "made",
+    "claim": "allocation, or only more protection; does the pattern survive a reversed order",
+    "files": [
+      "docs/assets/figures/controls.png"
+    ]
+  },
+  "protected_fraction": {
+    "state": "made",
+    "claim": "protection uses up capacity (first half; T5-T8 wait for E3)",
+    "files": [
+      "docs/assets/figures/protected_fraction_t1_t4.png"
+    ],
+    "values_pct": {
+      "GPM plain seed 0": [
+        47.7,
+        54.7,
+        60.0,
+        64.1
+      ],
+      "GPM plain seed 1": [
+        47.5,
+        54.6,
+        60.2,
+        64.3
+      ],
+      "GPM plain seed 2": [
+        47.1,
+        54.3,
+        59.8,
+        63.9
+      ],
+      "GPM adaptive f0.9 seed 0": [
+        47.7,
+        78.1,
+        93.3,
+        98.0
+      ],
+      "GPM adaptive f0.9 seed 1": [
+        47.5,
+        78.3,
+        93.3,
+        98.0
+      ],
+      "GPM adaptive f0.9 seed 2": [
+        47.1,
+        78.0,
+        93.3,
+        98.0
+      ],
+      "GPM e99 seed 0": [
+        47.7,
+        78.7,
+        86.0,
+        89.1
+      ],
+      "GPM e99 seed 1": [
+        47.5,
+        79.0,
+        86.1,
+        89.2
+      ],
+      "GPM e99 seed 2": [
+        47.1,
+        78.8,
+        85.9,
+        89.0
+      ]
+    }
+  },
+  "track2": {
+    "state": "made",
+    "claim": "probe loss does not determine closed-loop success across tasks",
+    "files": [
+      "docs/assets/figures/track2_loss_vs_success.png"
+    ]
+  },
+  "twosided": {
+    "state": "made",
+    "claim": "why the two-sided line stopped",
+    "files": [
+      "docs/assets/figures/twosided_fraction.png"
+    ]
+  },
+  "recovery": {
+    "state": "made",
+    "claim": "recovery injury rate by offset type and phase",
+    "files": [
+      "docs/assets/figures/recovery_injury.png"
+    ]
+  },
+  "piper_miss": {
+    "state": "made",
+    "claim": "miss distance by resolution",
+    "files": [
+      "docs/assets/figures/piper_miss_by_resolution.png"
+    ],
+    "sources": [
+      "results/piper_rollouts/2026-11-03/diag/aim.json",
+      "results/piper_rollouts/2026-11-06/diag/aim.json"
+    ],
+    "note": "each run's miss from scripts/hw/piper_resolution_diag.py aim; the 3 Nov 128 px file was made on 15 Nov with --checkpoint-has grape_plate_crop__seed0 (23 runs, 21 measured, p50 54 mm as recorded); the '+blend' executor-variant runs are excluded"
+  },
+  "piper_zones": {
+    "state": "made",
+    "claim": "grasp positions by zone",
+    "files": [
+      "docs/assets/figures/piper_zones.png"
+    ],
+    "sources": [
+      "results/piper_rollouts/2026-11-06/diag/zones.json"
+    ]
+  },
+  "task_images": {
+    "state": "made",
+    "claim": "what is learned, in which order",
+    "files": [
+      "docs/assets/figures/task_images.png"
+    ]
+  },
+  "piper_setup_photo": {
+    "state": "made (existing asset)",
+    "claim": "the hardware setup, mask and crop",
+    "files": [
+      "docs/assets/piper_mask_review.jpg",
+      "docs/assets/piper_grape_crop_closes.jpg"
+    ]
+  },
+  "e3_frontier": {
+    "state": "waiting for data",
+    "claim": "overall success against capacity, plain / f 0.7 / f 0.9",
+    "needs": "E3 (8 tasks, 3 seeds)"
+  },
+  "protected_fraction_t5_t8": {
+    "state": "waiting for data",
+    "claim": "protection after T5-T8",
+    "needs": "E3"
+  },
+  "hardware_success_counts": {
+    "state": "waiting for data",
+    "claim": "hardware success counts with intervals",
+    "needs": "F3/F4 rollouts with rollout_record/v1 (flowcl/deploy/rollout_records.py)"
+  },
+  "policy_diagram": {
+    "state": "manual",
+    "claim": "where the projection sits in the policy",
+    "needs": "drawn by hand"
+  }
+}
