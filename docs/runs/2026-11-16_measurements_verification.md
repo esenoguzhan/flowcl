@@ -15,7 +15,8 @@ not an experiment: nothing here is a result about the methods.
   - every peak-memory window is set;
   - InfLoRA's T2 training window holds its design-capture peak.
 - **The CPU suite passes** (1305 tests).
-- **The disk filled up during the run** (§6). The 7 runs it stopped were rerun from scratch.
+- **The disk filled up during the run** (§6), from pytest's temp folder, not the smokes. The 7 runs it
+  stopped were rerun from scratch.
 
 | Check (`scripts/compare_smokes.py`) | Runs | Result |
 |---|---|---|
@@ -187,11 +188,20 @@ the production curves. They show only that the probe measures what it should.
   - Seen-only GPM failed while saving a checkpoint (`RuntimeError` in `torch.save`).
   - It, seen-only replay and all 5 probe runs exited with rc=120, by 00:15:52.
   - The background CPU test run lost its output.
-- **The cause** was not the smokes: about 43 GB of smokes on a disk with 1.7 TB used.
-  - The largest folders were `~/flowcl/results` (378 GB), `~/flowcl/datasets` (208 GB) and
-    `~/dexbench` (102 GB).
-  - On the user's instruction, `~/dexbench` was removed. It was pushed, with nothing uncommitted.
-  - That left 97 GB free. After the rerun, 67 GB was free.
+- **The cause, as first stated (wrong):** "not the smokes", with the largest folders listed as
+  `~/flowcl/results` (378 GB), `~/flowcl/datasets` (208 GB) and `~/dexbench` (102 GB). That survey
+  covered only the home folder. On the user's instruction `~/dexbench` was removed (pushed, nothing
+  uncommitted), which left 97 GB free; after the rerun 67 GB was free.
+- **The actual cause (found Mon 16 Nov, 19:40, when the disk filled a second time):** pytest's temp
+  folder, `/tmp/pytest-of-oguzhan`.
+  - A full CPU suite writes about 180 GB there: its tests' run folders hold full-size checkpoints.
+  - pytest keeps the last few sessions' folders. The 15 Nov suite run, cut off by its `timeout` at
+    23:57, had left 174 GB, and later runs added the rest.
+  - At the second disk-full that folder held 301 GB. The user had it deleted, which left 301 GB free.
+  - `~/dexbench` was removed on the wrong diagnosis. It had been pushed, so nothing was lost.
+- **What prevents it now:** suite runs pass `-o tmp_path_retention_policy=failed`, so pytest deletes
+  passing tests' folders at the end of a run. A full suite still needs about 180 GB free while it
+  runs.
 - **The rerun.** The partial seen-only GPM folder was deleted. All 7 runs were then rerun from the
   start, on the same code, and all ended rc=0.
 - **For E3:** check `df -h /` before any queue. One 4-task smoke run takes about 2.5 GB, mostly
