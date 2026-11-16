@@ -184,7 +184,7 @@ changes.
 |---|---|---|
 | **A1** stage-boundary resume | done (confirmatory test passes) | `runs/2026-10-02_resume_check.md` |
 | **A2** `seq_hetero_t8`, Gate 0 T6–T8 | done (T6 microwave, T7, T8 pudding → drawer) | `runs/2026-10-02_gate0_t8*.md` |
-| **A3** seen-task-only evaluation (`eval_unseen: false`) | done (`f2a5119`, Mon 16 Nov): `--no-eval-unseen`; the GPU smoke matches the default mode in every checkpoint and shared rollout | §5 |
+| **A3** seen-task-only evaluation (`eval_unseen: false`) | done (`f2a5119`, Mon 16 Nov): `--no-eval-unseen`; the GPU smoke matches the default mode in every checkpoint and shared rollout | §5; `runs/2026-11-16_measurements_verification.md` |
 | **A4** ε schedule for GPM (`eps_later`, `gpm_projected_adam_e99`) | done | `configs/method/gpm_e99.yaml`; CPU test: stages 0–1 and T1 memory bitwise equal to plain |
 | **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | done (`22bd039`, Sun 15 Nov) | §5 item 3 |
 | **A6** metric naming (ACC, F_first) in tables and README | done (`5b870d4`, Sun 15 Nov) | §5 item 4 |
@@ -312,7 +312,8 @@ Track 2 step 4.
 **What "done" means:** code, tests and a GPU smoke pass, committed. The default 4-task protocol is
 unchanged: with every new switch off, a smoke of all 8 methods (seed 2, 200 steps, 1 episode)
 matches the smoke made before these changes in every checkpoint tensor, method artifact and
-rollout (`scripts/compare_smokes.py`, added in `bc57779`).
+rollout (`scripts/compare_smokes.py`, added in `bc57779`). Record:
+`runs/2026-11-16_measurements_verification.md`.
 
 ### 5.1 Measurement gaps (priority order)
 
