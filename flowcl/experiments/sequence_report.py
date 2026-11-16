@@ -1,4 +1,5 @@
-"""Four-task sequence report: a method run against the ``seq_ft`` reference (build step 8).
+"""Sequence report: a method run against the ``seq_ft`` reference (build step 8; resumed, seen-only
+and 8-task runs since the pre-E3 plan, A2).
 
 Reads two ``run_continual`` directories that share a seed namespace (so every rollout
 cell is paired: same initial state, same sampling seed) and reports:
@@ -23,6 +24,14 @@ cell is paired: same initial state, same sampling seed) and reports:
   state-dict tensor outside the allowlist unchanged from stage 1 on, occupancy
   non-decreasing, each memory contained in the next (``memory_chained``), clean git SHA,
   and the T1 pairing numbers recorded by the runner.
+
+A resumed run is read through its ``resume.json`` chain: stages before the resume come from the
+run that trained them (checkpoints, memories, logs), its T1 pairing and identity checks are
+inherited from those runs' files, and a ``resume_source`` check verifies each link (source
+checkpoint SHA-256, byte-equal imported evaluations, ``imported_from``, namespace). A cell that
+was legitimately not evaluated (seen-only evaluation, or a source whose curriculum was shorter) is
+listed under ``not_evaluated``; any other missing cell raises. A run that was not resumed and has
+every cell gives the same report as before.
 
 Which provenance checks apply depends on the method (``result.json``'s
 ``method_registry_name``; see ``LEGACY_FAMILY`` below). With ``strict=True`` the report is
@@ -87,6 +96,13 @@ class RunView:
     run_dir: Path
     result: dict
     evals: dict[int, EvaluationReport]
+    # A resumed run (pre-E3 plan, A2): stage -> the run directory that trained it (its checkpoint,
+    # memory and logs live there), and the resume links from this run back to the first source.
+    owners: dict[int, Path] | None = None
+    chain: list[dict] | None = None
+    # stage -> {"owner", "seen_only", "n_tasks"} of the run that evaluated that stage: which of its
+    # cells may legitimately be absent (seen-only evaluation; a source with a shorter curriculum).
+    rows: dict[int, dict] | None = None
 
     @property
     def task_keys(self) -> list[str]:
@@ -99,13 +115,143 @@ class RunView:
     def cell(self, i: int, j: int):
         return self.evals[i].by_task()[self.task_keys[j]]
 
+    def stage_dir(self, i: int) -> Path:
+        """The directory holding stage ``i``'s checkpoint and method files."""
+        return (self.owners or {}).get(i, self.run_dir)
+
+    def has_cell(self, i: int, j: int) -> bool:
+        return i in self.evals and self.task_keys[j] in self.evals[i].by_task()
+
+    def missing_reason(self, i: int, j: int) -> str | None:
+        """``None`` if cell (i, j) was evaluated; the reason if it legitimately was not (seen-only
+        evaluation and j > i, or stage i evaluated by a source whose curriculum ends before task j);
+        raises ``KeyError`` for any other missing cell, every missing seen cell (j <= i) included."""
+        if self.has_cell(i, j):
+            return None
+        info = (self.rows or {}).get(i)
+        if info is not None:
+            if j >= info["n_tasks"]:
+                return (f"stage {i} was evaluated by {info['owner']}, whose curriculum has "
+                        f"{info['n_tasks']} tasks")
+            if info["seen_only"] and j > i:
+                return f"seen-only evaluation: task {j} not yet trained at stage {i}"
+        raise KeyError(f"{self.run_dir}: cell ({i},{j}) ({self.task_keys[j]}) was not evaluated")
+
+
+def _resolve_run(path: str | Path) -> Path:
+    """A recorded run path: absolute, or relative to the repository root (queues run from there)."""
+    path = Path(path)
+    return path if path.is_absolute() else repo_root() / path
+
+
+def resume_chain(run_dir: Path, n: int) -> tuple[dict[int, Path], list[dict]]:
+    """Follow ``resume.json`` links back to the first source: ``stage -> owning directory`` and the
+    links (newest first). It reads only files written when a run starts or per stage, so a link
+    through an interrupted run (no result.json) is followed too."""
+    owners = {i: run_dir for i in range(n)}
+    chain, seen, current, upto = [], {run_dir.resolve()}, run_dir, n
+    while (current / "resume.json").is_file():
+        record = json.loads((current / "resume.json").read_text())
+        K = int(record["start_stage"])
+        source = _resolve_run(record["run"])
+        if source.resolve() in seen:
+            raise ValueError(f"{current}: the resume chain loops back to {source}")
+        seen.add(source.resolve())
+        chain.append({"run": str(current), "source": str(source), "recorded_source": record["run"],
+                      "start_stage": K, "sha256": record["sha256"]})
+        for i in range(min(K, upto)):
+            owners[i] = source
+        upto = min(K, upto)
+        current = source
+    return owners, chain
+
+
+def _row_info(owner: Path, cache: dict) -> dict:
+    if owner not in cache:
+        cfg = OmegaConf.to_container(OmegaConf.load(owner / "config.yaml"), resolve=True) \
+            if (owner / "config.yaml").is_file() else {}
+        cache[owner] = {"owner": str(owner),
+                        "seen_only": (cfg.get("eval") or {}).get("eval_unseen") is False,
+                        "n_tasks": len((cfg.get("curriculum") or {}).get("tasks") or []) or None}
+    return cache[owner]
+
 
 def load_run(run_dir: str | Path) -> RunView:
     run_dir = Path(run_dir)
     result = json.loads((run_dir / "result.json").read_text())
     n = len(result["task_keys"])
     evals = {i: EvaluationReport.load(run_dir / "eval" / f"stage{i}.json") for i in range(n)}
-    return RunView(run_dir, result, evals)
+    owners, chain = resume_chain(run_dir, n)
+    cache: dict = {}
+    rows = {}
+    for i in range(n):
+        info = dict(_row_info(owners[i], cache))
+        info["n_tasks"] = info["n_tasks"] or n
+        rows[i] = info
+    return RunView(run_dir, result, evals, owners=owners, chain=chain, rows=rows)
+
+
+def _stage_records(run_dir: Path) -> dict[int, dict]:
+    """A run's stage records: result.json's, or (an interrupted run) its per-stage record files."""
+    path = run_dir / "result.json"
+    if path.is_file():
+        return {int(s["stage"]): s for s in json.loads(path.read_text())["stages"]}
+    return {int(json.loads(p.read_text())["stage"]): json.loads(p.read_text())
+            for p in sorted((run_dir / "train").glob("stage*_record.json"))}
+
+
+def established_namespace(run_dir: Path, result: dict | None = None) -> str:
+    """A run's seed namespace: its recorded field, else (a run from before the field) its name."""
+    result = result if result is not None else {}
+    if result.get("seed_namespace_run_id"):
+        return result["seed_namespace_run_id"]
+    path = run_dir / "config.yaml"
+    if path.is_file():
+        cfg = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+        if cfg.get("seed_namespace_run_id"):
+            return cfg["seed_namespace_run_id"]
+    return run_dir.name
+
+
+def resume_source_check(method: RunView) -> dict | None:
+    """Each resume link of a resumed run (``None`` for a run that was not resumed): the source's
+    stage{K-1}.pt has the recorded SHA-256, the imported evaluation files are byte-equal to the
+    source's, every imported stage record names that source as ``imported_from`` (the immediate
+    source), and the namespaces agree."""
+    if not method.chain:
+        return None
+    links, problems = [], []
+    for link in method.chain:
+        run, source, K = Path(link["run"]), Path(link["source"]), int(link["start_stage"])
+        entry = {"run": str(run), "source": str(source), "start_stage": K}
+        ckpt = source / "checkpoints" / f"stage{K - 1}.pt"
+        entry["checkpoint_sha256_ok"] = ckpt.is_file() and file_sha256(ckpt) == link["sha256"]
+        if not entry["checkpoint_sha256_ok"]:
+            problems.append(f"{ckpt}: missing or not the recorded sha256")
+        unequal = [k for k in range(K)
+                   if not (source / "eval" / f"stage{k}.json").is_file()
+                   or (run / "eval" / f"stage{k}.json").read_bytes() != (source / "eval" / f"stage{k}.json").read_bytes()]
+        entry["evaluations_equal"] = not unequal
+        if unequal:
+            problems.append(f"{run}: imported evaluations of stages {unequal} differ from {source}'s")
+        records = _stage_records(run)
+        wrong = [k for k in range(K) if (records.get(k) or {}).get("imported_from") != link["recorded_source"]]
+        entry["imported_from_ok"] = not wrong
+        if wrong:
+            problems.append(f"{run}: stages {wrong} do not record {link['recorded_source']} as imported_from")
+        mine, theirs = established_namespace(run), established_namespace(source)
+        if source == method.stage_dir(0) and not (source / "resume.json").is_file():
+            from flowcl.train.continual import seed_namespace_run_id  # a legacy root: the runner's rule
+            cfg = OmegaConf.to_container(OmegaConf.load(source / "config.yaml"), resolve=True)
+            if not cfg.get("seed_namespace_run_id"):
+                theirs = seed_namespace_run_id(cfg["curriculum"]["name"], int(cfg["seed"]))
+        entry["namespace"] = mine
+        if mine != theirs:
+            problems.append(f"{run}: namespace {mine} differs from its source's {theirs}")
+        sha_path = source / "git_sha"
+        entry["source_git_sha"] = sha_path.read_text().strip() if sha_path.is_file() else None
+        links.append(entry)
+    return {"passed": not problems, "links": links, "problems": problems}
 
 
 def load_report_config(path: str | Path | None = None) -> dict:
@@ -133,14 +279,35 @@ def threshold_entry(criteria: dict, reference_run_id: str) -> dict:
             "before judging"
         )
     entry = registered[reference_run_id]
-    if entry.get("mode") not in ("registered", "derived"):
-        raise ValueError(f"{reference_run_id}: threshold mode must be registered or derived, "
-                         f"got {entry.get('mode')!r}")
+    if entry.get("mode") not in ("registered", "derived", "pinned_reference"):
+        raise ValueError(f"{reference_run_id}: threshold mode must be registered, derived or "
+                         f"pinned_reference, got {entry.get('mode')!r}")
     return entry
 
 
+def pinned_success(pin: dict, task_key: str) -> float:
+    """A single-task reference's success on ``task_key`` from a report pinned by SHA-256: an
+    evaluation report (``tasks``) or a Gate 0 report (``evidence.per_task``)."""
+    path = _resolve_run(pin["report"])
+    if len(str(pin.get("sha256", ""))) != 64:
+        raise ValueError(f"{task_key}: the reference report {path} is not pinned by sha256")
+    if file_sha256(path) != pin["sha256"]:
+        raise ValueError(f"{task_key}: {path} differs from the pinned sha256")
+    payload = json.loads(path.read_text())
+    if "tasks" in payload:
+        by_task = {t["task_key"]: t for t in payload["tasks"]}
+        if task_key not in by_task:
+            raise ValueError(f"{path} has no evaluation of {task_key}")
+        return float(by_task[task_key]["success_rate"])
+    per_task = (payload.get("evidence") or {}).get("per_task") or {}
+    if task_key not in per_task:
+        raise ValueError(f"{path} has no Gate 0 result for {task_key}")
+    return float(per_task[task_key]["success_rate"])
+
+
 def criteria_thresholds(
-    reference_diagonal: list[float], criteria: dict, reference_run_id: str
+    reference_diagonal: list[float], criteria: dict, reference_run_id: str,
+    task_keys: list[str] | None = None,
 ) -> list[float]:
     """``theta_j = R_ref[j][j] - margin`` per task, full precision (no clipping, no rounding).
 
@@ -152,6 +319,20 @@ def criteria_thresholds(
     margin = criteria["margin_pp"] / 100.0
     thresholds = [r - margin for r in reference_diagonal]
     entry = threshold_entry(criteria, reference_run_id)
+    if entry["mode"] == "pinned_reference":
+        # Tasks listed under `pinned` take a single-task reference's success (e.g. Gate 0) minus the
+        # margin; the others the reference run's diagonal minus the margin, as in `derived`.
+        if not _close(entry["margin"], margin):
+            raise ValueError(f"{reference_run_id}: pinned margin {entry['margin']} differs from "
+                             f"margin_pp / 100 = {margin}")
+        if task_keys is None or len(task_keys) != len(thresholds):
+            raise ValueError("pinned_reference thresholds need the reference's task keys")
+        unknown = sorted(set(entry.get("pinned") or {}) - set(task_keys))
+        if unknown:
+            raise ValueError(f"{reference_run_id}: pinned tasks not in the sequence: {unknown}")
+        pinned = entry.get("pinned") or {}
+        return [pinned_success(pinned[k], k) - margin if k in pinned else thresholds[j]
+                for j, k in enumerate(task_keys)]
     if entry["mode"] == "derived":
         if not _close(entry["margin"], margin):
             raise ValueError(
@@ -178,7 +359,7 @@ def threshold_block(
     ``seed_namespace_run_id`` is the method run's episode namespace (its rollouts' seeds).
     """
     entry = threshold_entry(criteria, reference.run_dir.name)
-    return {
+    block = {
         "mode": entry["mode"],
         "margin": criteria["margin_pp"] / 100.0,
         "task_keys": list(reference.task_keys),
@@ -187,6 +368,10 @@ def threshold_block(
         "reference_result_sha256": file_sha256(reference.run_dir / "result.json"),
         "seed_namespace_run_id": method.result.get("seed_namespace_run_id"),
     }
+    if entry["mode"] == "pinned_reference":
+        block["pinned"] = {k: {"report": str(v["report"]), "sha256": v["sha256"]}
+                           for k, v in (entry.get("pinned") or {}).items()}
+    return block
 
 
 def _judge(est: Estimate, threshold: float) -> dict:
@@ -225,12 +410,20 @@ def classify_sequence(
 
 
 def paired_cells(method: RunView, reference: RunView, bootstrap: dict) -> dict:
-    """Paired difference per cell; raises unless every cell's rollout seeds match."""
+    """Paired difference per cell; raises unless every cell's rollout seeds match.
+
+    Every cell both runs evaluated is paired. A cell one run legitimately did not evaluate
+    (:meth:`RunView.missing_reason`) is recorded as ``not_evaluated`` with its reason; any other
+    missing cell raises."""
     if method.task_keys != reference.task_keys:
         raise ValueError("runs cover different task sequences")
     out = {}
     for i in range(method.n_tasks):
         for j in range(method.n_tasks):
+            reasons = [r for r in (method.missing_reason(i, j), reference.missing_reason(i, j)) if r]
+            if reasons:
+                out[f"{i},{j}"] = {"not_evaluated": "; ".join(reasons)}
+                continue
             a, b = method.cell(i, j), reference.cell(i, j)
             if list(a.seeds) != list(b.seeds):
                 raise ValueError(
@@ -544,6 +737,22 @@ def t1_pairing_check(result: dict, provenance: dict) -> dict | None:
     return pairing
 
 
+def inherited_t1_pairing(method: RunView) -> dict | None:
+    """A resumed run's T1 pairing: the one recorded by the run that trained its stage 0, read from
+    that run's ``t1_pairing.json`` (written at stage 0, so an interrupted run has it too)."""
+    root = method.stage_dir(0)
+    if root == method.run_dir:
+        return None
+    path = root / "t1_pairing.json"
+    if path.is_file():
+        return {**json.loads(path.read_text()), "inherited_from": str(root)}
+    provenance = _provenance(root)
+    if provenance.get("t1_reference_run"):
+        return {"passed": False, "inherited_from": str(root),
+                "missing": f"configured against {provenance['t1_reference_run']} but not recorded"}
+    return None
+
+
 def expected_identity_stages(provenance: dict) -> list[int]:
     """``identity_stages`` ∪ the stages of ``identity_reference_checkpoints``, as configured."""
     explicit = provenance.get("identity_reference_checkpoints") or {}
@@ -578,6 +787,61 @@ def identity_check(result: dict, provenance: dict) -> dict | None:
         per_stage[str(stage)] = {k: entry.get(k) for k in
                                  ("reference_checkpoint", "reference_sha256", "n_tensors", "n_different", "passed")}
     return {"passed": not problems, "expected_stages": stages, "stages": per_stage, "problems": problems}
+
+
+def inherited_identity(method: RunView) -> dict | None:
+    """Identity checks a resumed run's sources configured for the stages they trained, read from
+    their ``identity_stage{k}.json`` files and judged as :func:`identity_check` judges a run's own
+    (``None`` if no source configured any)."""
+    owned: dict[Path, list[int]] = {}
+    for i in range(method.n_tasks):
+        if method.stage_dir(i) != method.run_dir:
+            owned.setdefault(method.stage_dir(i), []).append(i)
+    stages_all, per_stage, problems, origin = [], {}, [], {}
+    for owner, stages in owned.items():
+        provenance = _provenance(owner)
+        explicit = provenance.get("identity_reference_checkpoints") or {}
+        for stage in [s for s in expected_identity_stages(provenance) if s in stages]:
+            stages_all.append(stage)
+            origin[str(stage)] = str(owner)
+            path = owner / f"identity_stage{stage}.json"
+            if not path.is_file():
+                problems.append(f"stage {stage}: no identity check recorded in {owner}")
+                continue
+            entry = json.loads(path.read_text())
+            if str(stage) in explicit:
+                expected = Path(explicit[str(stage)])
+            elif provenance.get("identity_reference_run"):
+                expected = Path(provenance["identity_reference_run"]) / "checkpoints" / f"stage{stage}.pt"
+            else:
+                expected = None
+            got = entry.get("reference_checkpoint")
+            if expected is None or got is None or Path(got) != expected:
+                problems.append(f"stage {stage}: checked against {got}, configured {expected}")
+            if entry.get("passed") is not True:
+                problems.append(f"stage {stage}: {entry.get('n_different')} tensors differ")
+            per_stage[str(stage)] = {k: entry.get(k) for k in
+                                     ("reference_checkpoint", "reference_sha256", "n_tensors", "n_different", "passed")}
+    if not stages_all:
+        return None
+    return {"passed": not problems, "expected_stages": sorted(stages_all), "stages": per_stage,
+            "problems": problems, "inherited_from": origin}
+
+
+def combined_identity(method: RunView, provenance: dict) -> dict | None:
+    """The run's own identity checks (exactly as before for a run that was not resumed), joined
+    with the ones its sources configured for the stages they trained."""
+    own = identity_check(method.result, provenance)
+    inherited = inherited_identity(method) if method.chain else None
+    if inherited is None:
+        return own
+    if own is None:
+        return inherited
+    return {"passed": own["passed"] and inherited["passed"],
+            "expected_stages": sorted(own["expected_stages"] + inherited["expected_stages"]),
+            "stages": {**inherited["stages"], **own["stages"]},
+            "problems": inherited["problems"] + own["problems"],
+            "inherited_from": inherited["inherited_from"]}
 
 
 def bracket_eval_check(method: RunView, provenance: dict) -> dict | None:
@@ -661,8 +925,10 @@ def required_provenance(method: RunView, verify_checkpoints: bool = True) -> lis
         required.append("memory_chained")
     if verify_checkpoints:
         required += ["artifact_hashes_match", "frozen_from_stage1"]
-    if expected_identity_stages(provenance):
+    if expected_identity_stages(provenance) or (method.chain and inherited_identity(method) is not None):
         required.append("identity")
+    if method.chain:
+        required.append("resume_source")
     if bracket_eval_check(method, provenance) is not None:
         required.append("bracket_stage1_eval")
     return required
@@ -697,11 +963,17 @@ def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: b
     checks: dict = {}
     sha = (run_dir / "git_sha").read_text().strip()
     checks["clean_git_sha"] = {"passed": not sha.endswith("-dirty"), "git_sha": sha}
+    # The reference's established namespace: its recorded field, else its name (a run from before
+    # the field, or a hand-built view), so a resumed reference (seq_hetero_t8__seq_ft__seed<S>,
+    # namespace seq_hetero__seq_ft__seed<S>) is compared by what it actually used.
     checks["seed_namespace"] = {
-        "passed": method.result.get("seed_namespace_run_id") == reference.run_dir.name,
+        "passed": method.result.get("seed_namespace_run_id") == established_namespace(reference.run_dir,
+                                                                                         reference.result),
         "seed_namespace_run_id": method.result.get("seed_namespace_run_id"),
     }
     checks["t1_pairing"] = t1_pairing_check(method.result, provenance)
+    if checks["t1_pairing"] is None and method.chain:
+        checks["t1_pairing"] = inherited_t1_pairing(method)
 
     if legacy or registry in MEMORY_METHODS:
         rho_prev: dict[str, float] = {}
@@ -710,7 +982,7 @@ def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: b
         missing: list[int] = []
         prev = None  # (task index, memory matrices, that task's history rows)
         for i in range(method.n_tasks):
-            path = run_dir / "method" / f"memory_task{i}.pt"
+            path = method.stage_dir(i) / "method" / f"memory_task{i}.pt"
             if not path.is_file():
                 missing.append(i)
                 continue
@@ -743,14 +1015,15 @@ def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: b
     payloads = None
     if verify_checkpoints or registry == "projected_lora":
         payloads = [
-            torch.load(run_dir / "checkpoints" / f"stage{i}.pt", map_location="cpu", weights_only=False)
+            torch.load(method.stage_dir(i) / "checkpoints" / f"stage{i}.pt", map_location="cpu",
+                       weights_only=False)
             for i in range(method.n_tasks)
         ]
 
     if legacy:
         worst = 0.0
         for i in range(method.n_tasks):
-            path = run_dir / "method" / f"gpm_logs_task{i}.json"
+            path = method.stage_dir(i) / "method" / f"gpm_logs_task{i}.json"
             if path.is_file():
                 logs = json.loads(path.read_text())
                 for r in logs.get("residuals", {}).values():
@@ -766,14 +1039,16 @@ def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: b
         from flowcl.train.checkpoint import load_checkpoint
 
         mismatched, states = [], []
-        for payload in payloads:
+        for i, payload in enumerate(payloads):
             for artifact in payload["extra"].get("method_artifacts", []):
-                if file_sha256(run_dir / artifact["path"]) != artifact["sha256"]:
-                    mismatched.append(artifact["path"])
+                # relative to the run that wrote the checkpoint (a source, for imported stages)
+                if file_sha256(method.stage_dir(i) / artifact["path"]) != artifact["sha256"]:
+                    mismatched.append(artifact["path"] if method.stage_dir(i) == run_dir
+                                      else f"{method.stage_dir(i)}/{artifact['path']}")
             states.append(payload["state_dict"])
         checks["artifact_hashes_match"] = {"passed": not mismatched, "mismatched": mismatched}
         if legacy or registry in ALLOWLIST_METHODS:
-            loaded = load_checkpoint(run_dir / "checkpoints" / "stage0.pt")
+            loaded = load_checkpoint(method.stage_dir(0) / "checkpoints" / "stage0.pt")
             allowed = set(allowlist(loaded.policy))
             # Freezing starts at the beginning of stage 1, so every state-dict tensor outside
             # the allowlist — parameters that trained at T1, never-trained backbones and
@@ -798,12 +1073,15 @@ def provenance_checks(method: RunView, reference: RunView, verify_checkpoints: b
         else:
             checks["frozen_from_stage1"] = not_applicable(f"{registry} trains every parameter at every task")
 
-    identity = identity_check(method.result, provenance)
+    identity = combined_identity(method, provenance)
     if identity is not None:
         checks["identity"] = identity
     bracket = bracket_eval_check(method, provenance)
     if bracket is not None:
         checks["bracket_stage1_eval"] = bracket
+    resumed = resume_source_check(method)
+    if resumed is not None:
+        checks["resume_source"] = resumed
     return checks
 
 
@@ -827,11 +1105,22 @@ def build_report(
     n = method.n_tasks
 
     ref_diag = [reference.cell(j, j).estimate.value for j in range(n)]
-    thresholds = criteria_thresholds(ref_diag, config["criteria"], reference.run_dir.name)
-    estimates = {(i, j): method.cell(i, j).estimate for i in range(n) for j in range(n)}
+    thresholds = criteria_thresholds(ref_diag, config["criteria"], reference.run_dir.name,
+                                     task_keys=list(reference.task_keys))
+    # Every evaluated cell; a missing cell must be legitimately unevaluated (raises otherwise).
+    not_evaluated = {}
+    for run_label, run in (("method", method), ("reference", reference)):
+        for i in range(n):
+            for j in range(n):
+                reason = run.missing_reason(i, j)
+                if reason:
+                    not_evaluated.setdefault(run_label, {})[f"{i},{j}"] = reason
+    estimates = {(i, j): method.cell(i, j).estimate for i in range(n) for j in range(n)
+                 if method.has_cell(i, j)}
 
     def matrix(run: RunView) -> list[list[str]]:
-        return [[run.cell(i, j).estimate.format_pp() for j in range(n)] for i in range(n)]
+        return [[run.cell(i, j).estimate.format_pp() if run.has_cell(i, j) else "-" for j in range(n)]
+                for i in range(n)]
 
     report = {
         "method_run_id": method.result.get("method_run_id", method.run_dir.name),
@@ -847,17 +1136,21 @@ def build_report(
         "paired_cells": paired_cells(method, reference, bootstrap),
         "metrics": {"method": method.result["metrics"], "reference": reference.result["metrics"]},
     }
+    if not_evaluated:
+        report["not_evaluated"] = not_evaluated
+    if method.chain or reference.chain:
+        report["resume_chains"] = {"method": method.chain or [], "reference": reference.chain or []}
 
-    groups = registry_groups(method.run_dir) if verify_checkpoints else None
+    groups = registry_groups(method.stage_dir(0)) if verify_checkpoints else None
     report["episode_transitions"] = episode_transitions(method, _max_steps(method.run_dir))
 
-    final_memory = method.run_dir / "method" / f"memory_task{n - 1}.pt"
+    final_memory = method.stage_dir(n - 1) / "method" / f"memory_task{n - 1}.pt"
     if final_memory.is_file():
         _, meta = load_bases(final_memory)
         report["capacity"] = capacity_by_stage(meta["memory_history"], groups)
     report["dynamics"] = {}
     for i in range(n):
-        path = method.run_dir / "method" / f"gpm_logs_task{i}.json"
+        path = method.stage_dir(i) / "method" / f"gpm_logs_task{i}.json"
         if path.is_file():
             logs = json.loads(path.read_text())
             dyn = c_trajectories(logs)
@@ -898,8 +1191,8 @@ def build_report(
                 }
                 for key in pilot
             }
-    gate2_t1 = reference.run_dir / "bases" / "task0.pt"
-    memory_t1 = method.run_dir / "method" / "memory_task0.pt"
+    gate2_t1 = reference.stage_dir(0) / "bases" / "task0.pt"
+    memory_t1 = method.stage_dir(0) / "method" / "memory_task0.pt"
     if gate2_t1.is_file() and memory_t1.is_file():
         gate2_bases, _ = load_bases(gate2_t1)
         memory_bases, memory_meta = load_bases(memory_t1)
@@ -1011,11 +1304,13 @@ def print_report(report: dict) -> None:
 
 def run_sequence_report(
     method_dir: Path, reference_dir: Path, pilot_json: Path | None, out: Path,
-    strict: bool = False, allow_dirty: bool = False,
+    strict: bool = False, allow_dirty: bool = False, config: Path | None = None,
 ) -> dict:
     """Build, write and print the report. ``strict``: then raise :class:`ProvenanceError` if any
-    check that applies did not pass (``allow_dirty`` excuses ``clean_git_sha``, for smokes)."""
-    report = build_report(method_dir, reference_dir, pilot_json)
+    check that applies did not pass (``allow_dirty`` excuses ``clean_git_sha``, for smokes).
+    ``config``: the report config (default ``configs/analysis/sequence_report.yaml``)."""
+    report = build_report(method_dir, reference_dir, pilot_json,
+                          config=load_report_config(config) if config else None)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, default=str) + "\n")
     print_report(report)
