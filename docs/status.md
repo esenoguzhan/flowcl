@@ -184,10 +184,10 @@ changes.
 |---|---|---|
 | **A1** stage-boundary resume | done (confirmatory test passes) | `runs/2026-10-02_resume_check.md` |
 | **A2** `seq_hetero_t8`, Gate 0 T6–T8 | done (T6 microwave, T7, T8 pudding → drawer) | `runs/2026-10-02_gate0_t8*.md` |
-| **A3** seen-task-only evaluation (`eval_unseen: false`) | **not started** | |
+| **A3** seen-task-only evaluation (`eval_unseen: false`) | done (`f2a5119`, Mon 16 Nov): `--no-eval-unseen`; the GPU smoke matches the default mode in every checkpoint and shared rollout | §5 |
 | **A4** ε schedule for GPM (`eps_later`, `gpm_projected_adam_e99`) | done | `configs/method/gpm_e99.yaml`; CPU test: stages 0–1 and T1 memory bitwise equal to plain |
-| **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | **not started** | |
-| **A6** metric naming (ACC, F_first) in tables and README | **not started** | |
+| **A5** rollout-level paired bootstrap for ACC / NBT / AUC, per-seed tables | done (`22bd039`, Sun 15 Nov) | §5 item 3 |
+| **A6** metric naming (ACC, F_first) in tables and README | done (`5b870d4`, Sun 15 Nov) | §5 item 4 |
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
 | **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). **LoRA** (`75fb0e1`) **v1 bracket:** rank {4,16,64} × lr {1e-4,3e-4,1e-3} plus (1, 1e-4) and (4, 3e-5); Spatial falls with lr at every rank; rank 4, lr 3e-5 at the boundary. **v2** (`620727b`, post hoc): lr 1e-5 and 3e-5 at ranks 4–64; at 1e-5 Object < floor at every rank. **Selected rank 16, lr 3e-5:** Spatial 0.52, Object 0.70; the top eligible arms are within noise (0.52 / 0.48 / 0.46 / 0.44). **ConSFT** (`a8250ce`; Table 5 constants) **bracket:** z ∈ {10, 30, 100, 300} × T ∈ {2000, 30000} plus Table 5's point (amended before any arm, `288c343`), calibrated at q50 0.653 (`9a90b6f`): Spatial 0.00 at every arm, Spatial probe loss never below seq_ft's (best 0.730). **Selected z = 1000, T = 30000** (τ_start 0.0163; upper edge extension, `all_eligible_spatial_zero`, `optimum_at_boundary`); Object 0.92; in `configs/method/consft.yaml` (`5b4ae22`). **4-task baselines, seed 0, done** (`27c7e88`, Thu 12 Nov): every identity check passed bitwise (stage 0 against seq_ft, stage 1 against each selected arm), and all six strict reports passed. Final rows: replay 96 / 42 / 90 / 96 (ACC 0.81, not exemplar-free); projected_lora 90 / 4 / 88 / 96; inflora 92 / 28 / 78 / 70; EWC, LoRA and ConSFT 0 on every earlier task. **Seeds 1–2 done** (`39ce581`, Sun 15 Nov): all 12 strict reports and stage-0 identities passed. Mean final rows over seeds 0–2: replay 95 / 69 / 95 / 95 (seed 0's Object 42 was its low seed; 82 on seeds 1–2); inflora 96 / 21 / 72 / 73; projected_lora 87 / 7 / 71 / 87; EWC, LoRA and ConSFT keep no earlier task on any seed. The Track 2 test set is complete | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md`, `runs/2026-10-11_lora_bracket.md`, `runs/2026-10-12_lora_bracket_v2.md`, `runs/2026-10-18_consft_bracket.md`, `runs/2026-11-12_baselines_seed0.md`, `runs/2026-11-15_baselines_seeds1-2.md` |
 | **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
@@ -294,7 +294,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
    three). Its consistent edge is final Object retention at about 15 pp more capacity (E3's frontier).
 3. **Track 2 (D):** frozen on Thu 15 Oct. Angle B no longer depends on it (E1-B closed angle B), so
    the held-out test is reported for its own sake. The 4-task baseline runs (item 0) come first.
-4. **A3, A5, A6:** evaluation and metric fixes, needed before the 8-task runs (E3).
+4. **A3, A5, A6:** done (Sun 15 – Mon 16 Nov, §5), with the per-step loss, peak GPU memory and the
+   optional probe loss that E3 needs.
 5. **Hardware:** F1 engineering on AgileX continues in parallel to the GPU work.
    - **Done:** the Piper adapter, mask and first policy (`runs/2026-11-01_piper_f1_prep.md`).
    - **Next:** the policy server and robot runner, reusing the `dobot-hw` pieces (§3), then the
@@ -304,27 +305,59 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
 
 Moved here from `.scratch/` on Sun 15 Nov, after the seed 1–2 queue. Items 1 and 2 below, and A3
-(§4, item 4), must land before the 8-task runs (E3). None of them blocks Track 2 step 4.
+(§4, item 4), had to land before the 8-task runs (E3). **State on Mon 16 Nov:** items 1–5 and A3
+are done; item 6 waits on the PiperStudio form; item 7 is drafted, to send. None of them blocks
+Track 2 step 4.
+
+**What "done" means:** code, tests and a GPU smoke pass, committed. The default 4-task protocol is
+unchanged: with every new switch off, a smoke of all 8 methods (seed 2, 200 steps, 1 episode)
+matches the smoke made before these changes in every checkpoint tensor, method artifact and
+rollout (`scripts/compare_smokes.py`, added in `bc57779`).
 
 ### 5.1 Measurement gaps (priority order)
 
-1. **Save the per-step training loss, before the 8-task runs (E3).**
-   - `TrainLog.losses` lives only in memory (`flowcl/train/trainer.py:72`); `result.json` keeps the
-     final and last-50 values.
-   - The new-task loss curve needs it (T4's loss at 1.6× plain GPM's), and it cannot be recovered
-     after a run.
-   - Not while a queue runs: the tree must stay clean.
-2. **Peak GPU memory per run.** It is not in `result.json`'s `systems` block, so the systems table
-   cannot report it for every method.
-3. **A5, the rollout-level paired bootstrap for ACC / NBT / AUC** (already §4, item 4). Every
-   summary figure's intervals depend on it.
-4. **A6, metric naming** (already §4, item 4). `result.json` stores final average success under the
-   key `F_1`; map it to ACC before it lands on an axis.
-5. **Optional: old-task probe loss during a new task's training.** Only stage-end checkpoints exist,
-   so the figures can show that a task was forgotten but not when. It needs probe passes at
-   intervals or intermediate checkpoints.
-6. **Hardware rollout record, fixed before F3 / F4.** One record per rollout: outcome category
-   (failure taxonomy), miss distance, light or time of day, cycle time, start photo.
+1. **Per-step training loss. State: done (`f2a5119`).**
+   - Each stage writes `train/stage{K}_losses.json`, recorded as `loss_file` (path and SHA-256) in
+     `result.json`. A resumed run copies the files of the stages it imports.
+   - Three series per step, from the outputs the step already has:
+     - `loss`, the optimised loss;
+     - `batch_loss`, the flow loss before `modify_loss` (it differs for EWC and ConSFT);
+     - `task_loss`, the flow loss of the stage's own samples. For replay this is the new-task
+       curve; for the other methods it equals `batch_loss` up to rounding.
+2. **Peak GPU memory. State: done (`f2a5119`).**
+   - Allocated and reserved bytes, per stage, for two windows: training (from `on_task_start` to
+     `on_task_end`) and evaluation. They are in `stages[k].peak_gpu`, and the maxima in
+     `systems.peak_gpu`.
+   - projected_lora and InfLoRA reset the peak counter when they compute their design; that peak is
+     folded into the training window, and also kept in `timings` as `design_peak_gpu_bytes`.
+   - It covers the PyTorch allocator only, not EGL rendering or the CUDA context. Stages that were
+     not measured (imported, or older runs) are `null`, never 0.
+   - `tables.systems_table` shows both windows as its last two columns.
+3. **A5, the rollout-level paired bootstrap. State: done (`22bd039`).**
+   - `flowcl/analysis/rollout_bootstrap.py` covers ACC, NBT, AUC and F_first. Each replicate
+     resamples episodes once per task column and applies the draw to every stage of that task.
+     Paired differences between runs use the same draw.
+   - `tables.per_seed_table` (one row per method and seed) is the thesis default. `main_table`
+     shows NBT and AUC by seed instead of a seed-level bootstrap.
+4. **A6, metric naming. State: done (`5b870d4`).** Final average success is shown as **ACC**;
+   `result.json` keeps the key `F_1`. **F_first** = R[0][0] − R[1][0]
+   (`metrics.first_task_forgetting`). Both are defined in `docs/implementation_notes.md` §8.2.
+5. **Optional: old-task probe loss during training. State: done (`f2a5119`), off by default.**
+   - `run_continual.py --probe-every N` writes `train/stage{K}_probes.json`: the flow loss of every
+     earlier task, at the stage start and every N steps.
+   - Each task's probe batch is fixed (chunks, flow times and noise from
+     `derive_seed(namespace, "probe::<task>", 0)`). A resumed run rebuilds it.
+   - The guard smoke (probes every 50 steps, 5 methods) gives checkpoints and rollouts identical to
+     the probes-off smoke.
+6. **Hardware rollout record, before F3 / F4. State: spec and reader done (`5e22984`); the
+   PiperStudio form waits on its uncommitted frontend edits.**
+   - `rollout_record/v1` (`docs/piper_deploy_spec.md` §6.4 and §7): success, an outcome from a
+     fixed failure taxonomy, miss distance, light, a note, and a start photo saved at Go. The cycle
+     time is already logged.
+   - `flowcl/deploy/rollout_records.py` reads and validates the logs. Logs from before 15 Nov are
+     read as `legacy`, with nothing filled in.
+   - Still to do: the form in `~/piper_studio` (`PolicyPanel.tsx`, `styles.css`, `types.ts` have
+     uncommitted edits) and the start photo at Go.
 7. **Ask the supervisor (D1):** the plan has no jointly trained multitask upper bound.
    **State: drafted (Sun 15 Nov), to send.** Draft:
 
@@ -336,19 +369,35 @@ Moved here from `.scratch/` on Sun 15 Nov, after the seed 1–2 queue. Items 1 a
    > cost is about 3 GPU-hours per seed for the 4 tasks and about 6 h per seed for the 8. Should
    > the thesis include it, for the 4-task sequence, the 8-task sequence, or neither?
 
+**A3, seen-only evaluation (§4, item 4). State: done (`f2a5119`).**
+- `run_continual.py --no-eval-unseen` evaluates, after each stage, only the tasks trained so far
+  (co-trained tasks included). The default still evaluates every task.
+- `config.yaml` and `result.json` record `eval_unseen: false` only in that mode.
+- After the stage-0 evaluation it encodes the remaining instructions in fp32, as the default
+  evaluation does, so training is unchanged. The GPU smoke (seq_ft, GPM, replay) matches the
+  default mode in every checkpoint and in every rollout both modes ran.
+- It refuses `--single-task-baseline`, since FWT needs the unseen tasks.
+
 ### 5.2 Figures, one per claim
 
-| Chapter | Figure | What it shows | Exists |
+`scripts/make_figures.py` writes them to `docs/assets/figures/` (Sun 15 Nov, `8be8f33`).
+`figures.json` records each figure's state and sources.
+
+| Chapter | Figure | What it shows | State |
 |---|---|---|---|
-| Setup | Task images of the curriculum; a diagram of where the projection sits in the policy | What is learned, in which order | no |
-| Characterization | Retention heatmap (success on task j after stage i); forgetting curves per task | Sequential fine-tuning forgets everything | plotters in `flowcl/analysis/tables.py` |
-| Characterization / Track 2 | Probe loss against closed-loop success, coloured by task | The same loss (0.09–0.10) gives 88–90 %, 56 % and 2 % | no |
-| Adaptive GPM | Object retention, plain against adaptive, one pair of points per seed | +56 / +64 / +66 pp | `docs/assets/retention_*.png` (check) |
-| Controls | e99 and reverse order as per-seed differences with intervals | Allocation, or only more protection | no |
-| Capacity | Protected fraction of the trunk after each task; overall success against capacity for plain, f 0.7 and f 0.9 (E3) | Protection uses up capacity | `docs/assets/capacity_*.png` (first half) |
-| Baselines | The main table, plus a dot plot of final success per task and method | Replay marked as not exemplar-free | no |
-| Negative results | Two-sided fraction 0.861 against GPM 0.933 and the 0.50 threshold; recovery injury rate by offset type and phase | Why the two-sided line stopped | no |
-| Hardware | Setup photo with mask and crop; miss distance by resolution (54 / 31 / 27 mm); grasp positions by zone; success counts with intervals | Transfer evidence, not method ranking | partly, `docs/assets/piper_*` |
+| Setup | Task images of the curriculum | What is learned, in which order | made, `task_images.png` |
+| Setup | Where the projection sits in the policy | | manual |
+| Characterization | Retention grid per seed; forgetting curves per task and seed | Sequential fine-tuning forgets everything | made, `retention_grid_seed*.png`, `forgetting_curves.png` |
+| Characterization / Track 2 | Probe loss against closed-loop success, by curriculum task | The same loss (0.09–0.10) gives 88–90 %, 56 % and 2 % | made, `track2_loss_vs_success.png` |
+| Adaptive GPM | Object retention, plain against adaptive, per seed | +66 / +64 / +56 pp after Goal | made, `adaptive_vs_plain_object.png` |
+| Controls | e99 and reverse order as per-seed paired differences | Allocation, or only more protection | made, `controls.png` |
+| Capacity | Protected fraction of the trunk after T1–T4 | Protection uses up capacity | made, `protected_fraction_t1_t4.png` |
+| Capacity | Protected fraction after T5–T8; overall success against capacity for plain, f 0.7 and f 0.9 | | waiting for data (E3) |
+| Baselines | Final success per task and method | Replay marked as not exemplar-free | made, `baselines_final.png` |
+| Negative results | Two-sided fraction 0.861 against GPM 0.933 and the 0.50 threshold; recovery injury rate by offset type and phase | Why the two-sided line stopped | made, `twosided_fraction.png`, `recovery_injury.png` |
+| Hardware | Setup photo with mask and crop | | made (existing `docs/assets/piper_*.jpg`) |
+| Hardware | Miss distance by resolution (128 / 224 / 336 px); grasp positions by zone | Transfer evidence, not method ranking | made, `piper_miss_by_resolution.png`, `piper_zones.png` |
+| Hardware | Success counts with intervals | | waiting for data (F3 / F4, `rollout_record/v1`) |
 
 **On every plot:** each seed shown separately (three seeds give no seed-level interval), seed 0
 marked as the development seed, and the number of rollouts stated.
