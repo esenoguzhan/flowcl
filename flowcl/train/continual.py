@@ -39,6 +39,7 @@ from flowcl.models.build import build_policy, load_policy_config
 from flowcl.train.checkpoint import save_checkpoint
 from flowcl.train.pipeline import build_dataset, fit_stats
 from flowcl.train.trainer import TrainConfig, TrainLog, train_one_task
+from flowcl.utils.gpu_memory import PeakWindow
 from flowcl.utils.run import RunHandle, atomic_write_text, create_run, file_sha256, git_sha
 from flowcl.utils.seeding import derive_seed
 
@@ -60,6 +61,12 @@ class StageRecord:
     method_artifacts: list[dict] = field(default_factory=list)
     # A joint stage (co-trained tasks): its train tasks, per-task samples and text-cache warm-up.
     joint: dict | None = None
+    # train/stage{K}_losses.json, {path, sha256} (status.md §5 item 1).
+    loss_file: dict | None = None
+    # Peak GPU memory of the evaluation window (the training window is in train_log).
+    eval_peak_gpu: tuple[int | None, int | None] = (None, None)
+    # train/stage{K}_probes.json when probe_every is set (status.md §5 item 5).
+    probe_file: dict | None = None
 
     def as_dict(self) -> dict:
         out = {
@@ -79,7 +86,54 @@ class StageRecord:
         }
         if self.joint is not None:
             out["joint"] = self.joint
+        if self.loss_file is not None:
+            out["loss_file"] = self.loss_file
+        if self.probe_file is not None:
+            out["probe_file"] = self.probe_file
+        out["peak_gpu"] = {
+            "train_allocated_bytes": self.train_log.peak_gpu_allocated_bytes,
+            "train_reserved_bytes": self.train_log.peak_gpu_reserved_bytes,
+            "eval_allocated_bytes": self.eval_peak_gpu[0],
+            "eval_reserved_bytes": self.eval_peak_gpu[1],
+        }
         return out
+
+
+def write_loss_file(run: RunHandle, stage: int, task_key: str, train_log: TrainLog) -> dict:
+    """``train/stage{K}_losses.json``: the stage's per-step loss series (status.md §5 item 1).
+
+    Kept out of ``eval/`` (Track 2 reads every ``eval/stage*.json``), ``method/`` and
+    ``method_artifacts`` (a method's resume restores those), so no existing reader changes.
+    """
+    path = run.subdir("train") / f"stage{stage}_losses.json"
+    atomic_write_text(path, json.dumps({
+        "stage": stage,
+        "task_key": task_key,
+        "steps": train_log.steps,
+        "loss": train_log.losses,
+        "batch_loss": train_log.batch_losses,
+        "task_loss": train_log.task_losses,
+    }) + "\n")
+    return {"path": str(path.relative_to(run.path)), "sha256": file_sha256(path)}
+
+
+def peak_gpu_systems(imported: list[dict], stages: list["StageRecord"]) -> dict:
+    """The systems block's peak GPU memory: per stage (training and evaluation windows) and the
+    maximum over stages. Stages that were not measured (imported from an older run, or CPU) are
+    None, never 0, and the maxima are None unless every stage was measured."""
+    by_stage: dict[str, dict] = {}
+    for record in imported:
+        by_stage[str(record["stage"])] = record.get("peak_gpu") or {
+            "train_allocated_bytes": None, "train_reserved_bytes": None,
+            "eval_allocated_bytes": None, "eval_reserved_bytes": None}
+    for record in stages:
+        by_stage[str(record.stage)] = record.as_dict()["peak_gpu"]
+    out: dict = {"by_stage": by_stage,
+                 "measured": "PyTorch CUDA allocator only (not EGL rendering or the CUDA context)"}
+    for key in ("train_allocated_bytes", "train_reserved_bytes", "eval_allocated_bytes", "eval_reserved_bytes"):
+        values = [v[key] for v in by_stage.values()]
+        out[key] = max(values) if values and all(v is not None for v in values) else None
+    return out
 
 
 @dataclass
@@ -102,6 +156,10 @@ class ContinualResult:
     # A resumed run: the stages before ``resume["start_stage"]`` come from the source run.
     resume: dict | None = None
     imported_stages: list[dict] = field(default_factory=list)
+    # A3: False = only the tasks trained so far are evaluated; recorded only then.
+    eval_unseen: bool = True
+    seen_only_text_cache: dict | None = None
+    probe_every: int | None = None
 
     def estimates(self) -> dict[tuple[int, str], Estimate]:
         """``(stage, task_key) -> Estimate``, so no rate travels without its CI."""
@@ -139,7 +197,9 @@ class ContinualResult:
             "t1_pairing": self.t1_pairing,
             "identity_checks": self.identity_checks,
             "resume": self.resume,
-        }
+        } | ({} if self.eval_unseen else {"eval_unseen": False,
+                                          "seen_only_text_cache": self.seen_only_text_cache}) \
+          | ({"probe_every": int(self.probe_every)} if self.probe_every else {})
 
     def save(self, path: str | Path, baseline: dict[str, float] | None = None) -> Path:
         path = Path(path)
@@ -326,6 +386,36 @@ def warm_runner_text_cache(policy, curriculum: Curriculum, dataset_dir, device, 
     return state
 
 
+def seen_eval_refs(curriculum: Curriculum, stage: int) -> tuple:
+    """A3: the tasks trained through ``stage`` (every completed stage's own and co-trained tasks),
+    in ``eval_refs`` order."""
+    seen = {r.task_key for s in curriculum.stages[: stage + 1] for r in s.train_refs}
+    return tuple(r for r in curriculum.eval_refs if r.task_key in seen)
+
+
+def warm_unseen_text_cache(policy, curriculum: Curriculum, dataset_dir) -> dict:
+    """Encode every evaluation task's instruction in fp32, one string per call, as the default
+    stage-0 evaluation does; instructions already cached (stage 0's own) are left as they are.
+
+    Used after a seen-only (A3) stage-0 evaluation, so the cache, and with it training, matches a
+    run that evaluated every task. The instructions are the demo files' own, as in
+    :func:`warm_runner_text_cache`.
+    """
+    from flowcl.data.libero_adapter import read_task_metadata
+
+    device_type = next(policy.parameters()).device.type
+    state = {}
+    for ref in curriculum.eval_refs:
+        text = read_task_metadata(ref.demo_path(dataset_dir)).language
+        before = policy.text_encoder.cache_stats["misses"]
+        with torch.no_grad(), torch.autocast(device_type=device_type, enabled=False):
+            policy.text_encoder([text])
+        state[ref.task_key] = {"text": text,
+                               "encoded": "fp32" if policy.text_encoder.cache_stats["misses"] > before
+                               else "already cached"}
+    return state
+
+
 def warm_joint_stage_cache(policy, stage, dataset_dir, device, amp: bool) -> dict:
     """Encode a joint stage's train instructions before it trains, one string per call.
 
@@ -499,6 +589,8 @@ def run_continual(
     resume_run: Path | None = None,
     start_stage: int = 0,
     resume_sha256: str | None = None,
+    eval_unseen: bool = True,
+    probe_every: int | None = None,
 ) -> ContinualResult:
     """Train one policy through ``curriculum`` under ``method_name``.
 
@@ -547,6 +639,12 @@ def run_continual(
     from flowcl.methods.base import build_method
 
     from flowcl.methods.base import TaskContext
+
+    if probe_every is not None and int(probe_every) < 1:
+        raise ValueError(f"probe_every must be a positive step count, got {probe_every}")
+    if not eval_unseen and single_task_baseline:
+        raise ValueError("FWT needs every task evaluated before it is trained (R[j-1][j]); seen-only "
+                         "evaluation (eval_unseen=False) cannot compute it, so --single-task-baseline is refused")
 
     if require_clean_tree:
         sha = git_sha()
@@ -607,7 +705,10 @@ def run_continual(
             "embodiment": spec.to_dict(),
             "policy": raw_policy_cfg,
             "train": {k: v for k, v in vars(train_cfg).items()},
-            "eval": {k: v for k, v in vars(eval_cfg).items()},
+            "eval": {k: v for k, v in vars(eval_cfg).items()}
+            | ({} if eval_unseen else {"eval_unseen": False}),
+            **({"probe": {"probe_every": int(probe_every), "batch_size": int(train_cfg.batch_size)}}
+               if probe_every else {}),
         },
         seed=seed,
         results_root=results_root,
@@ -661,9 +762,33 @@ def run_continual(
         matrix=matrix,
         run=run,
         resume=resume_record,
+        eval_unseen=eval_unseen,
+        probe_every=probe_every,
     )
+    # §5 item 5: fixed probe batches of every task trained so far (built when its stage ends).
+    probes: list = []
+    if probe_every and source is not None:
+        # A resumed run rebuilds the earlier tasks' probe batches from their demos, once: the same
+        # demos, stats and probe generator give the batches a full run builds.
+        from flowcl.train.probe_loss import make_probe_batch
+
+        for done in curriculum.stages[: source.start_stage]:
+            done_dataset = build_dataset(list(done.train_refs), spec, stats, n_demos=done.n_demos,
+                                         dataset_dir=dataset_dir)
+            probes.extend(make_probe_batch(done_dataset, ref.task_key, seed_ns, policy, int(train_cfg.batch_size))
+                          for ref in done.train_refs)
+            del done_dataset
 
     if source is not None:
+        for record in source.stage_dicts:  # loss files of imported stages, when the source has them
+            entry = record.get("loss_file")
+            if entry:
+                src = source.run / entry["path"]
+                if file_sha256(src) != entry["sha256"]:
+                    raise ValueError(f"{src}: sha256 differs from the source's record")
+                dst = run.path / entry["path"]
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
         for k, report in sorted(source.evaluations.items()):
             shutil.copy2(source.run / "eval" / f"stage{k}.json", run.subdir("eval") / f"stage{k}.json")
             for task_position, task_key in enumerate(curriculum.task_keys):
@@ -720,6 +845,17 @@ def run_continual(
         generator = torch.Generator(device="cpu").manual_seed(
             derive_seed(seed_ns, stage.task_key, stage_idx)
         )
+        probe_records, probe_hook = [], None
+        if probe_every and probes:
+            from flowcl.train.probe_loss import probe_losses
+
+            probe_records.append({"step": 0, "losses": probe_losses(policy, probes, train_cfg.device,
+                                                                     train_cfg.amp)})
+
+            def probe_hook(step, outputs, _records=probe_records):
+                if (step + 1) % int(probe_every) == 0:
+                    _records.append({"step": step + 1, "losses": probe_losses(policy, probes, train_cfg.device,
+                                                                               train_cfg.amp)})
         train_log = train_one_task(
             policy,
             dataset,
@@ -728,7 +864,23 @@ def run_continual(
             task_idx=stage_idx,
             generator=generator,
             context=context,
+            on_step=probe_hook,
         )
+
+        loss_file = write_loss_file(run, stage_idx, stage.task_key, train_log)
+        probe_file = None
+        if probe_every:
+            from flowcl.train.probe_loss import make_probe_batch
+
+            if probe_records:
+                path = run.subdir("train") / f"stage{stage_idx}_probes.json"
+                atomic_write_text(path, json.dumps({
+                    "stage": stage_idx, "task_key": stage.task_key, "probe_every": int(probe_every),
+                    "batch_size": int(train_cfg.batch_size), "tasks": [p.task_key for p in probes],
+                    "records": probe_records}) + "\n")
+                probe_file = {"path": str(path.relative_to(run.path)), "sha256": file_sha256(path)}
+            probes.extend(make_probe_batch(dataset, ref.task_key, seed_ns, policy, int(train_cfg.batch_size))
+                          for ref in stage.train_refs)
 
         # Artifacts first (written atomically), hashed from disk, then referenced by the
         # checkpoint: a checkpoint never names an artifact that does not yet exist.
@@ -806,11 +958,14 @@ def run_continual(
                     f"(details in identity_stage{stage_idx}.json)."
                 )
 
-        # §8.2: evaluate on every task, including the unseen ones, or FWT is lost.
+        # §8.2: evaluate on every task, including the unseen ones, or FWT is lost. A3: with
+        # eval_unseen=False, only the tasks trained so far (8-task and hardware runs).
+        eval_refs = curriculum.eval_refs if eval_unseen else seen_eval_refs(curriculum, stage_idx)
+        eval_window = PeakWindow(train_cfg.device).start()
         evaluation = (
             evaluate_tasks(
                 policy,
-                curriculum.eval_refs,
+                eval_refs,
                 spec,
                 stats,
                 run_id=seed_ns,  # the rollout seed namespace, shared by every method
@@ -821,6 +976,12 @@ def run_continual(
             if evaluate
             else EvaluationReport(run_id=seed_ns, stage=stage_idx)
         )
+        eval_peak = eval_window.stop()
+        if not eval_unseen and evaluate and stage_idx == 0:
+            # The default stage-0 evaluation is where every later task's instruction is first
+            # encoded, in fp32. Reproduce that cache state, or T2+ would first be encoded inside an
+            # AMP training step and training would drift (low_update.py; methods_notes.md).
+            result.seen_only_text_cache = warm_unseen_text_cache(policy, curriculum, dataset_dir)
         evaluation.method_run_id = run_id
         evaluation.seed_namespace_run_id = seed_ns
         evaluation.save(run.subdir("eval") / f"stage{stage_idx}.json")
@@ -843,6 +1004,9 @@ def run_continual(
                 evaluation=evaluation,
                 method_artifacts=method_artifacts,
                 joint=joint,
+                loss_file=loss_file,
+                eval_peak_gpu=eval_peak,
+                probe_file=probe_file,
             )
         )
         # Episodes hold every demo's pixels; releasing the stage's dataset keeps peak
@@ -863,6 +1027,7 @@ def run_continual(
         "total_wall_clock_s": time.perf_counter() - total_started,
         "train_wall_clock_s": sum(r.train_log.wall_clock_s for r in result.stages),
         "resumed_at_stage": first_stage if source is not None else None,
+        "peak_gpu": peak_gpu_systems(result.imported_stages, result.stages),
     }
 
     if evaluate:

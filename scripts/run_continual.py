@@ -132,6 +132,20 @@ def main() -> None:
     )
     parser.add_argument("--t1-pairing-max-rel-diff", type=float, default=None)
     parser.add_argument(
+        "--no-eval-unseen",
+        action="store_true",
+        help="A3: after each stage evaluate only the tasks trained so far (8-task and hardware runs). "
+             "Recorded in config.yaml and result.json; refuses --single-task-baseline (FWT).",
+    )
+    parser.add_argument(
+        "--probe-every",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Measure every earlier task's flow loss on a fixed probe batch at each stage's start and every "
+             "N steps (train/stage{K}_probes.json). Off by default.",
+    )
+    parser.add_argument(
         "--resume-run",
         type=Path,
         default=None,
@@ -233,6 +247,8 @@ def main() -> None:
         resume_run=args.resume_run,
         start_stage=args.start_stage,
         resume_sha256=args.resume_sha256,
+        eval_unseen=not args.no_eval_unseen,
+        probe_every=args.probe_every,
     )
 
 

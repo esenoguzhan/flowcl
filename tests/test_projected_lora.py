@@ -289,7 +289,8 @@ def test_projection_arm_records_constraint_energy_cost_and_refuses_mispairing(sp
     assert rec["inputs"]["projection"]["memory"]["sha256"] == cfg["projection"]["memory"]["sha256"]
     assert rec["inputs"]["projection"]["kold"]["sha256"] == out["sha256"]
     assert rec["history"]["merge"]["constraint_ok"] and rec["history"]["trainable_params"] > 0
-    assert set(rec["timings"]) == {"design_seconds", "train_seconds", "peak_gpu_bytes"}
+    assert set(rec["timings"]) == {"design_seconds", "design_peak_gpu_bytes", "design_peak_gpu_reserved_bytes",
+                                   "train_seconds", "peak_gpu_bytes"}
     change = rec["output_change"]
     assert change["total_relative"] > 0
     for layer in change["per_layer"].values():   # projected: the sandwiched form agrees with the general one

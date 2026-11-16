@@ -148,8 +148,11 @@ class ProjectedLoRA(GPM):
             expected |= {f"{n}.lora_A" for n in self._adapted}
         if trainable != expected:
             raise RuntimeError(f"trainable set is not the adapters: {sorted(trainable ^ expected)[:5]}")
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
+        # Reset through flowcl.utils.gpu_memory, which first folds the design capture's peak into the
+        # runner's open training window (status.md §5 item 2); recorded in timings as design_peak_*.
+        from flowcl.utils import gpu_memory
+
+        design_peaks = gpu_memory.reset_peak_memory_stats()
         self._started = time.perf_counter()
         self.history[str(task_idx)] = {
             "task_key": task, **self.lora_config(), "init_seed": seed,
@@ -158,7 +161,11 @@ class ProjectedLoRA(GPM):
             "trainable_params": count, "optimizer_state_bytes_estimate": STATE_BYTES_PER_PARAM * count,
             "memory_bytes": memory_bytes, "fixed_down_bytes": fixed_bytes, "per_layer": per_layer,
         }
-        self.timings[str(task_idx)] = {"design_seconds": design_seconds}
+        self.timings[str(task_idx)] = {
+            "design_seconds": design_seconds,
+            "design_peak_gpu_bytes": design_peaks[0] if design_peaks else None,
+            "design_peak_gpu_reserved_bytes": design_peaks[1] if design_peaks else None,
+        }
 
     def _design_grams(self, policy, task_idx: int, context) -> dict[str, torch.Tensor]:
         """Task ``task_idx``'s input Gram per registry layer, at the current weights (GPM's capture)."""

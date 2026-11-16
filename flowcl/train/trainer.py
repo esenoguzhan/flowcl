@@ -24,7 +24,9 @@ from torch.utils.data import DataLoader
 
 from flowcl.data.augment import augment_images
 from flowcl.data.dataset import ChunkedActionDataset, collate_chunks
+from flowcl.models.losses import masked_mse
 from flowcl.models.policy import FlowPolicy
+from flowcl.utils.gpu_memory import PeakWindow
 from flowcl.utils.seeding import derive_seed
 
 
@@ -69,7 +71,14 @@ class TrainConfig:
 class TrainLog:
     """What one stage produced, for the run registry and the §8.2 systems table."""
 
+    # Per optimiser step, averaged over microbatches (status.md §5 item 1):
+    #   losses       the optimised loss, after ``method.modify_loss`` (EWC's penalty, ConSFT's weights);
+    #   batch_losses the policy's own loss on the whole batch (replay: current and buffer samples);
+    #   task_losses  the policy's loss on the samples of this stage's own tasks only (replay's
+    #                new-task curve), from the same outputs, in fp32; None if no such sample.
     losses: list[float] = field(default_factory=list)
+    batch_losses: list[float] = field(default_factory=list)
+    task_losses: list[float | None] = field(default_factory=list)
     steps: int = 0
     wall_clock_s: float = 0.0
     # Counted right after ``on_task_start`` (where a method freezes parameters or attaches
@@ -77,6 +86,10 @@ class TrainLog:
     trainable_params: int | None = None
     # The stage's effective TrainConfig (after any per-stage learning rate).
     config: dict | None = None
+    # Peak GPU memory over the training window, from before ``on_task_start`` to after
+    # ``on_task_end`` (flowcl.utils.gpu_memory; None without CUDA).
+    peak_gpu_allocated_bytes: int | None = None
+    peak_gpu_reserved_bytes: int | None = None
 
     @property
     def final_loss(self) -> float:
@@ -89,6 +102,27 @@ class TrainLog:
             raise ValueError("TrainLog has no recorded losses")
         tail = self.losses[-n:]
         return sum(tail) / len(tail)
+
+
+def stage_task_loss(outputs: dict, batch: dict, stage_tasks: set[str]) -> float | None:
+    """The flow loss of the batch's samples that belong to this stage's tasks, in fp32.
+
+    Recomputed from the forward pass's detached ``velocity`` and ``target_velocity`` under the
+    batch's ``action_mask`` (the same masked MSE as the training loss), so no extra forward pass.
+    ``stage_tasks`` empty means every sample counts. None if the outputs lack the fields or no
+    sample belongs to the stage.
+    """
+    velocity, target = outputs.get("velocity"), outputs.get("target_velocity")
+    ids = batch.get("task_id")
+    if velocity is None or target is None or ids is None:
+        return None
+    keep = [i for i, t in enumerate(ids) if not stage_tasks or t in stage_tasks]
+    if not keep:
+        return None
+    with torch.no_grad():
+        idx = torch.as_tensor(keep, device=velocity.device)
+        mask = batch["action_mask"].to(velocity.device).float()[idx]
+        return float(masked_mse(velocity.detach().float()[idx], target.detach().float()[idx], mask))
 
 
 def _cycle(loader: Iterable):
@@ -255,6 +289,11 @@ def train_one_task(
             batch_size=int(cfg.batch_size),
         )
 
+    # The training window opens before on_task_start, so a method's setup (GPM's capture,
+    # projected LoRA's design) counts; a reset inside it is folded in (flowcl.utils.gpu_memory).
+    peak_window = PeakWindow(device).start()
+    stage_tasks = set(getattr(dataset, "task_ids", ()) or ())
+
     # Before the optimiser is built: a method may freeze parameters here (GPM's §7.4
     # allowlist), and a frozen parameter must never enter AdamW.
     method.on_task_start(policy, task_idx, context=context)
@@ -279,6 +318,8 @@ def train_one_task(
     for step in range(n_steps):
         optimizer.zero_grad(set_to_none=True)
         accumulated = 0.0
+        batch_accumulated = 0.0
+        task_accumulated, task_micro = 0.0, 0
 
         for micro in range(cfg.accumulation_steps):
             # §6: a method may own batch construction (replay mixing). Returning None
@@ -307,6 +348,11 @@ def train_one_task(
 
             scaler.scale(loss).backward()
             accumulated += float(loss.detach()) * cfg.accumulation_steps
+            batch_accumulated += float(outputs["loss"].detach())
+            task_value = stage_task_loss(outputs, batch, stage_tasks)
+            if task_value is not None:
+                task_accumulated += task_value
+                task_micro += 1
 
         # §7.3: gradient surgery happens after backward() and before step(), on
         # unscaled gradients — projecting AMP-scaled gradients would work by luck
@@ -337,6 +383,8 @@ def train_one_task(
 
         mean_loss = accumulated / cfg.accumulation_steps
         log.losses.append(mean_loss)
+        log.batch_losses.append(batch_accumulated / cfg.accumulation_steps)
+        log.task_losses.append(task_accumulated / task_micro if task_micro else None)
         log.steps = step + 1
 
         if on_step is not None:
@@ -350,4 +398,5 @@ def train_one_task(
 
     method.on_task_end(policy, task_idx, context=context)
     log.wall_clock_s = time.perf_counter() - started
+    log.peak_gpu_allocated_bytes, log.peak_gpu_reserved_bytes = peak_window.stop()
     return log
