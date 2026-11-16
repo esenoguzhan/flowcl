@@ -242,11 +242,66 @@ class ResumeSource:
     namespace: str
     evaluations: dict     # stage -> EvaluationReport, for stages < start_stage
     stage_dicts: list     # result.json-style records for stages < start_stage
+    # Where the namespace came from: the source's config.yaml, or (a source written before the
+    # field existed) the runner's rule, cross-checked against the source's run ids.
+    namespace_from: str = "config.yaml"
+    # Where the imported stage records came from: result.json, the per-stage record files
+    # (an interrupted run), or the minimal entries of an interrupted run that predates them.
+    stage_records_from: str = "result.json"
 
     def record(self) -> dict:
         return {"run": str(self.run), "start_stage": self.start_stage,
                 "checkpoint": str(self.checkpoint), "sha256": self.sha256,
-                "imported_stages": list(range(self.start_stage))}
+                "imported_stages": list(range(self.start_stage)),
+                "namespace": self.namespace, "namespace_from": self.namespace_from,
+                "stage_records_from": self.stage_records_from}
+
+
+LEGACY_NAMESPACE = "runner rule (legacy source)"
+
+
+def stage_record_path(run_dir: Path, stage: int) -> Path:
+    """``train/stage{K}_record.json``: stage K's result.json record, written when the stage is
+    complete (after its checkpoint and evaluation), so an interrupted run keeps it."""
+    return Path(run_dir) / "train" / f"stage{stage}_record.json"
+
+
+def write_stage_record(run: RunHandle, record: dict) -> Path:
+    path = stage_record_path(run.path, int(record["stage"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps(record, indent=2) + "\n")
+    return path
+
+
+def resolve_source_namespace(conf: dict, payload: dict, extra: dict, result: dict | None) -> tuple[str | None, str, list]:
+    """The seed namespace a resumed run inherits from its source: ``(namespace, origin, problems)``.
+
+    A source records it as ``seed_namespace_run_id`` in config.yaml and kept. A source written
+    before that field existed (Gate 1's seq_ft seed 0, at 8132abc) seeded every stream from its own
+    run id, which for seq_ft is exactly the runner's rule; the rule is accepted only when the
+    source's config, checkpoint payload and (if present) result.json all carry that run id, no
+    other record names a different namespace, and the source was not itself resumed (a resumed
+    run's namespace is inherited and need not equal the rule). Anything else is refused.
+    """
+    namespace = conf.get("seed_namespace_run_id")
+    if namespace is not None:
+        problems = []
+        if extra.get("seed_namespace_run_id") != namespace:
+            problems.append({"checkpoint_extra": extra.get("seed_namespace_run_id"), "config": namespace})
+        return namespace, "config.yaml", problems
+    rule = seed_namespace_run_id(conf["curriculum"]["name"], int(conf["seed"]))
+    problems = []
+    if conf.get("run_id") != rule:
+        problems.append({"config_run_id": conf.get("run_id"), "rule": rule})
+    if payload.get("run_id") != rule:
+        problems.append({"checkpoint_run_id": payload.get("run_id"), "rule": rule})
+    if extra.get("seed_namespace_run_id") not in (None, rule):
+        problems.append({"checkpoint_extra": extra.get("seed_namespace_run_id"), "rule": rule})
+    if result is not None and result.get("seed_namespace_run_id") not in (None, rule):
+        problems.append({"result": result.get("seed_namespace_run_id"), "rule": rule})
+    if (conf.get("provenance") or {}).get("resume"):
+        problems.append("the source is itself a resumed run but records no namespace")
+    return (None if problems else rule), LEGACY_NAMESPACE, problems
 
 
 def load_resume_source(
@@ -311,9 +366,11 @@ def load_resume_source(
         problems["checkpoint_stage"] = (payload.get("stage"), payload.get("task_key"))
     if dict(payload["policy_config"]) != dict(raw_policy_cfg):
         problems["policy_config"] = "the checkpoint's policy config differs from this run's"
-    namespace = conf.get("seed_namespace_run_id")
-    if extra.get("seed_namespace_run_id") != namespace:
-        problems["namespace"] = (extra.get("seed_namespace_run_id"), namespace)
+    result_path = resume_run / "result.json"
+    result_payload = json.loads(result_path.read_text()) if result_path.is_file() else None
+    namespace, namespace_from, namespace_problems = resolve_source_namespace(conf, payload, extra, result_payload)
+    if namespace_problems:
+        problems["namespace"] = namespace_problems
     src_stats = NormalizationStats.load(resume_run / "stats.json")
     if src_stats.fingerprint() != loaded.stats.fingerprint():
         problems["stats"] = (src_stats.fingerprint(), loaded.stats.fingerprint())
@@ -322,8 +379,16 @@ def load_resume_source(
         if not path.is_file() or file_sha256(path) != art["sha256"]:
             problems.setdefault("method_artifacts", []).append(art["path"])
 
-    result_path = resume_run / "result.json"
-    recorded = json.loads(result_path.read_text())["stages"] if result_path.is_file() else None
+    recorded = result_payload["stages"] if result_payload is not None else None
+    # A run that stopped before writing result.json: its per-stage record files, if it writes
+    # them (then every completed stage must have one); else, an older run, minimal entries.
+    record_files = sorted((resume_run / "train").glob("stage*_record.json"))
+    if recorded is not None:
+        stage_records_from = "result.json"
+    elif record_files:
+        stage_records_from = "stage record files"
+    else:
+        stage_records_from = "minimal entries (interrupted run without stage records)"
     evaluations, stage_dicts = {}, []
     for k in range(K):
         path = resume_run / "eval" / f"stage{k}.json"
@@ -331,26 +396,42 @@ def load_resume_source(
             problems.setdefault("evaluations", []).append(str(path))
             continue
         report = EvaluationReport.load(path)
-        if report.stage != k or (report.seed_namespace_run_id not in (None, namespace)):
-            problems.setdefault("evaluations", []).append(f"{path}: stage {report.stage}, "
-                                                         f"namespace {report.seed_namespace_run_id}")
+        if (report.stage != k or report.seed_namespace_run_id not in (None, namespace)
+                or report.run_id != namespace):
+            problems.setdefault("evaluations", []).append(
+                f"{path}: stage {report.stage}, run_id {report.run_id}, namespace {report.seed_namespace_run_id}")
         evaluations[k] = report
+        record_path = stage_record_path(resume_run, k)
         if recorded is not None and k < len(recorded):
             entry = dict(recorded[k])
             if entry.get("task_key") != curriculum.stages[k].task_key:
                 problems.setdefault("result_stages", []).append(k)
-        else:  # a run that stopped before writing result.json
+            if record_path.is_file():  # both written from the same record: they must agree
+                on_disk = dict(json.loads(record_path.read_text()))
+                if {k_: v for k_, v in on_disk.items() if k_ != "imported_from"} != \
+                        {k_: v for k_, v in entry.items() if k_ != "imported_from"}:
+                    problems.setdefault("stage_records", []).append(f"{record_path} differs from result.json")
+        elif record_files:
+            if not record_path.is_file():
+                problems.setdefault("stage_records", []).append(f"{record_path} missing")
+                continue
+            entry = dict(json.loads(record_path.read_text()))
+            if entry.get("stage") != k or entry.get("task_key") != curriculum.stages[k].task_key:
+                problems.setdefault("stage_records", []).append(f"{record_path}: stage {entry.get('stage')}, "
+                                                                f"task {entry.get('task_key')}")
+        else:  # an interrupted run from before the record files existed
             entry = {"stage": k, "task_key": curriculum.stages[k].task_key,
                      "n_demos": curriculum.stages[k].n_demos,
                      "checkpoint": str(resume_run / "checkpoints" / f"stage{k}.pt"),
                      "evaluation": report.as_dict()}
-        entry["imported_from"] = str(resume_run)
+        entry["imported_from"] = str(resume_run)  # always the immediate source
         stage_dicts.append(entry)
     if problems:
         raise ValueError(f"cannot resume {resume_run} at stage {K}: {problems}")
     return ResumeSource(run=resume_run, start_stage=K, checkpoint=checkpoint, sha256=sha,
                         loaded=loaded, namespace=namespace, evaluations=evaluations,
-                        stage_dicts=stage_dicts)
+                        stage_dicts=stage_dicts, namespace_from=namespace_from,
+                        stage_records_from=stage_records_from)
 
 
 def _stage_identity(record: dict) -> tuple:
@@ -591,7 +672,8 @@ def run_continual(
     resume_sha256: str | None = None,
     eval_unseen: bool = True,
     probe_every: int | None = None,
-) -> ContinualResult:
+    check_resume_only: bool = False,
+) -> ContinualResult | dict:
     """Train one policy through ``curriculum`` under ``method_name``.
 
     Args:
@@ -624,6 +706,13 @@ def run_continual(
             (:func:`warm_runner_text_cache`), import the earlier stages' evaluations, and
             train stages ``start_stage..``. The run keeps the source's seed namespace and
             frozen stats. It recovers stage boundaries only: a stage that crashed is rerun.
+        check_resume_only: With ``resume_run``: run every resume check under this exact
+            recipe (the source loaded on CPU), create nothing, and return the resume record
+            (namespace and its origin included) as a dict.
+
+    Every completed stage also writes ``train/stage{K}_record.json`` (its result.json record,
+    after its checkpoint and evaluation), and a resumed run writes one for each imported stage,
+    so an interrupted run can be resumed with its full stage metadata.
 
     Seeding: every stream derives from :func:`seed_namespace_run_id`, not from this
     run's id; both ids are recorded in the config, checkpoints, eval files and result.
@@ -646,7 +735,7 @@ def run_continual(
         raise ValueError("FWT needs every task evaluated before it is trained (R[j-1][j]); seen-only "
                          "evaluation (eval_unseen=False) cannot compute it, so --single-task-baseline is refused")
 
-    if require_clean_tree:
+    if require_clean_tree and not check_resume_only:  # a check creates nothing
         sha = git_sha()
         if sha.endswith("-dirty"):
             raise RuntimeError(
@@ -669,10 +758,17 @@ def run_continual(
             raise ValueError(f"a resumed run must not write into its source ({resume_run})")
         source = load_resume_source(resume_run, start_stage, curriculum, method_name, method_kwargs,
                                     raw_policy_cfg, train_cfg, seed, expected_sha256=resume_sha256,
-                                    device=train_cfg.device)
+                                    device="cpu" if check_resume_only else train_cfg.device)
         seed_ns = source.namespace  # the source's pairing, also under an extended curriculum
+        if not isinstance(seed_ns, str) or not seed_ns:  # before any directory exists
+            raise ValueError(f"cannot resume {resume_run}: no seed namespace ({seed_ns!r})")
+        if check_resume_only:
+            return {"run_id": run_id, "target": str(target), "would_create": not target.exists(),
+                    **source.record()}
     elif start_stage:
         raise ValueError("start_stage needs resume_run")
+    elif check_resume_only:
+        raise ValueError("check_resume_only needs resume_run")
 
     run = create_run(
         run_id=run_id,
@@ -795,6 +891,8 @@ def run_continual(
                 entry = report.by_task().get(task_key)
                 if entry is not None:
                     matrix.set(k, task_position, entry.estimate.value, entry.n_rollouts)
+        for record in source.stage_dicts:
+            write_stage_record(run, record)
         result.imported_stages = source.stage_dicts
 
     first_stage = source.start_stage if source is not None else 0
@@ -1009,6 +1107,7 @@ def run_continual(
                 probe_file=probe_file,
             )
         )
+        write_stage_record(run, result.stages[-1].as_dict())  # last: the stage is complete
         # Episodes hold every demo's pixels; releasing the stage's dataset keeps peak
         # host memory proportional to one task rather than the whole curriculum.
         del dataset

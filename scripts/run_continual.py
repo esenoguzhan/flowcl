@@ -162,9 +162,18 @@ def main() -> None:
         default=None,
         help="Expected SHA-256 of the resume checkpoint (recorded either way).",
     )
+    parser.add_argument(
+        "--check-resume-only",
+        action="store_true",
+        help="With --resume-run: run every resume check under this command's exact recipe (the source "
+             "loaded on CPU), print the resume record (namespace and its origin included) as JSON, and "
+             "create nothing. Exit 1 if the source would be refused.",
+    )
     args = parser.parse_args()
     if (args.resume_run is None) != (args.start_stage == 0):
         parser.error("--resume-run and --start-stage K (K >= 1) go together")
+    if args.check_resume_only and args.resume_run is None:
+        parser.error("--check-resume-only needs --resume-run")
 
     spec = load_embodiment_spec(args.embodiment)
     curriculum = load_curriculum(args.curriculum)
@@ -217,7 +226,7 @@ def main() -> None:
             t1_reference = candidate
     if args.no_t1_check or args.resume_run is not None:  # a resumed run does not retrain T1
         t1_reference = None
-    run_continual(
+    outcome = run_continual(
         curriculum,
         method_name=method_name,
         spec=spec,
@@ -249,7 +258,12 @@ def main() -> None:
         resume_sha256=args.resume_sha256,
         eval_unseen=not args.no_eval_unseen,
         probe_every=args.probe_every,
+        check_resume_only=args.check_resume_only,
     )
+    if args.check_resume_only:
+        import json
+
+        print(json.dumps({"passed": True, **outcome}, indent=2))
 
 
 if __name__ == "__main__":
