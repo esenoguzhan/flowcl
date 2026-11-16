@@ -32,8 +32,10 @@ METHODS = {  # label -> run-name part on seq_hetero
     "seq_ft": "seq_ft", "EWC": "ewc", "LoRA": "lora", "ConSFT": "consft", "replay": "replay",
     "InfLoRA": "inflora", "projected LoRA": "projected_lora", "GPM plain": "gpm_projected_adam",
     "GPM adaptive f0.9": "gpm_projected_adam_ne90", "GPM e99": "gpm_projected_adam_e99",
+    "GPM adaptive f0.7": "gpm_projected_adam_ne70",  # pre-E3 plan, A3 (scripts/queue_ne70.sh)
 }
-COLORS = dict(zip(METHODS, plt.get_cmap("tab10").colors))
+# tab10 has 10 colours: the first 10 labels keep theirs, f0.7 gets its own.
+COLORS = dict(zip(METHODS, plt.get_cmap("tab10").colors)) | {"GPM adaptive f0.7": "darkolivegreen"}
 MARKERS = {0: "o", 1: "s", 2: "^"}
 N_BOOT = 2000
 

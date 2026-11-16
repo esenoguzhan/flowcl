@@ -1,0 +1,24 @@
+# gpm_ne70: adaptive GPM at new_energy_fraction 0.70, E3's third frontier point next to plain GPM and
+# f = 0.9 (docs/thesis_plan.md E3; pre-E3 plan, A3).
+#
+# Identical to configs/method/gpm_ne90.yaml except new_energy_fraction (and so to gpm.yaml except
+# that key). After each task the memory is extended until it captures
+#
+#     c_target = max(eps, p + new_energy_fraction * (1 - p))
+#
+# of the task's input energy, p = the share already inside memory. At T1 (p = 0) the target is
+# exactly eps, so stage 0, T1's memory and stage 1 are bitwise identical to plain GPM of the same
+# seed (checked by the runner and scripts/queue_ne70.sh). It first runs as a 4-task seq_hetero run,
+# so it shares the seed namespace of the runs E3 resumes; E3 then resumes it at stage 4.
+# Display name gpm_projected_adam_ne70; registry name gpm.
+name: gpm
+
+eps: 0.95
+projection: gradient_and_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+new_energy_fraction: 0.70

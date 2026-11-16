@@ -87,7 +87,10 @@ floor.
      (about 45 min plus eval), not the whole run.
 2. **`seq_hetero_t8`**: `seq_hetero_t5` plus T6–T8 from `t5_sweep.yaml` → `follow_up`.
    - It inherits seq_hetero's seed namespace, as `low_update.seed_context(extend_curriculum=…)`
-     already does.
+     already does, and as a run resumed from a 4-task run does (`run_continual --resume-run`).
+     A from-scratch `run_continual` run on it does **not**: the runner derives the namespace from
+     the curriculum name (`seq_hetero_t8__seq_ft__seed<S>`), so it would pair with no resumed arm
+     (corrected Mon 16 Nov 2026, pre-E3 plan).
    - Gate 0 on T6–T8 (`scripts/gate0.py --tasks … --out-dir results/gate0_t8`), with the
      pre-registered backups.
 3. **Seen-task-only evaluation** for 8-task and hardware runs (`eval_unseen: false`).
@@ -320,9 +323,16 @@ of W6). The arms, per seed:
 | seq_ft | resume from stage 3 | ~6 h |
 | plain GPM | resume | ~6 h |
 | **adaptive GPM f = 0.9 (primary comparator)** | resume | ~6 h |
-| adaptive f = 0.7 | full run | ~10 h |
+| adaptive f = 0.7 | 4-task `seq_hetero` run (`scripts/queue_ne70.sh`), then resume | ~4.8 h + ~6 h |
 | two-sided method | full run | ~10 h |
 | replay | full run | ~10 h |
+
+**Why f = 0.7 is not a full run (changed Mon 16 Nov 2026, before any f = 0.7 run).** A full run on
+`seq_hetero_t8` would get its own seed namespace, so none of its cells would be paired with the
+resumed arms. Run on the 4-task curriculum first, it shares the namespace, its stages 0–1 are
+identity-checked against plain GPM, and it adds a 4-task frontier point. The 4-task runs (~4.8 h per
+seed) run before E3, so E3 itself resumes f = 0.7 like the other arms (~6 h). The same argument
+applies to replay, whose 4-task runs exist; that choice is E3's.
 
 **Pre-registered definitions:**
 - **Capacity** is the parameter-weighted protected fraction after the final task. It is monotone
