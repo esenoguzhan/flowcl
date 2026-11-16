@@ -454,7 +454,7 @@ FIGURES = {
 NOT_MADE = {
     "piper_setup_photo": {"state": "made (existing asset)", "claim": "the hardware setup, mask and crop",
                           "files": ["docs/assets/piper_mask_review.jpg", "docs/assets/piper_grape_crop_closes.jpg"]},
-    "e3_frontier": {"state": "waiting for data", "claim": "overall success against capacity, plain / f 0.7 / f 0.9",
+    "e3_frontier": {"state": "waiting for data", "claim": "overall success against capacity, plain / f 0.7 / f 0.9 / flat 0.99",
                     "needs": "E3 (8 tasks, 3 seeds)"},
     "protected_fraction_t5_t8": {"state": "waiting for data", "claim": "protection after T5-T8", "needs": "E3"},
     "hardware_success_counts": {"state": "waiting for data", "claim": "hardware success counts with intervals",

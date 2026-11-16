@@ -167,7 +167,7 @@
   },
   "e3_frontier": {
     "state": "waiting for data",
-    "claim": "overall success against capacity, plain / f 0.7 / f 0.9",
+    "claim": "overall success against capacity, plain / f 0.7 / f 0.9 / flat 0.99",
     "needs": "E3 (8 tasks, 3 seeds)"
   },
   "protected_fraction_t5_t8": {

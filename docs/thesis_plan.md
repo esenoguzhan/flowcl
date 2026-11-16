@@ -324,8 +324,24 @@ of W6). The arms, per seed:
 | plain GPM | resume | ~6 h |
 | **adaptive GPM f = 0.9 (primary comparator)** | resume | ~6 h |
 | adaptive f = 0.7 | 4-task `seq_hetero` run (`scripts/queue_ne70.sh`), then resume | ~4.8 h + ~6 h |
+| flat 0.99, `gpm_projected_adam_e99` (reference; added Mon 16 Nov) | resume from stage 3 of C1's runs | ~6 h |
 | two-sided method | full run | ~10 h |
 | replay | full run | ~10 h |
+
+**The flat-threshold arm (added Mon 16 Nov, before `main_eval.yaml` is committed).**
+- **Why:** C1 could not separate the new-energy allocation from a flat 0.99 target at T2. After
+  four tasks e99's ACC is −9 / +3 / −1.5 pp from adaptive's, with 89% of the trunk protected
+  against 98%. Raising ε for later tasks is also prior practice: GPM's own CIFAR-100 schedule
+  (0.97 + 0.003 per task) and InfLoRA's ε + (1 − ε)·t/T. Without a flat arm, E3 cannot say
+  whether the new-energy rule or only its amount of protection gives the 8-task result.
+- **What it shows:** where one flat threshold sits against the plain / f 0.7 / f 0.9 points: ACC,
+  NBT, T5–T8 plasticity and capacity, per seed, with paired differences against adaptive f = 0.9.
+- **Limit:** one flat value gives one point. It differs from each adaptive arm in both the amount
+  and the allocation of protection, so it is not a matched-capacity test.
+- **How:** `configs/method/gpm_e99.yaml`, resumed from
+  `results/seq_hetero__gpm_projected_adam_e99__seed{0,1,2}`.
+- **GPU:** the two-sided arm is not run (D2 resolved to the minimum thesis, `status.md`), so a
+  seed costs 48 − 10 + 6 = 44 h.
 
 **Why f = 0.7 is not a full run (changed Mon 16 Nov 2026, before any f = 0.7 run).** A full run on
 `seq_hetero_t8` would get its own seed namespace, so none of its cells would be paired with the
@@ -342,7 +358,7 @@ applies to replay, whose 4-task runs exist; that choice is E3's.
   forgetting.
 - **Plasticity** is the mean diagonal over T5–T8 (primary), with each task reported.
 - **Wording:** plain, f 0.7 and f 0.9 form an **empirical performance–capacity frontier**, not a
-  curve.
+  curve. Flat 0.99 is one point from another family, placed against it.
 
 **Primary claim:** two-sided has higher overall performance (ACC) than adaptive f = 0.9, at ≤ its
 capacity, **for these trained policies**.
@@ -361,7 +377,7 @@ storage and estimation are measured and reported.
   - final parameter-weighted capacity(two-sided) ≤ capacity(adaptive);
   - mean T5–T8 plasticity(two-sided) ≥ plasticity(adaptive) − 10 pp.
 - **Anything else is "negative".** It **stops that arm**, and its record is written.
-- The seq_ft, GPM, adaptive, f 0.7 and replay arms continue to seeds 1–2 regardless.
+- The seq_ft, GPM, adaptive, f 0.7, flat 0.99 and replay arms continue to seeds 1–2 regardless.
 
 ## Workstream F: Stage B hardware (required)
 
@@ -468,7 +484,7 @@ ConSFT is implemented in W5–W6 and runs in W7–W9.
 | Gate 0 T6–T8 | ~3 |
 | Track 2 extraction | ~8, ODE sampling included |
 | E1/E2, U estimation and the T4 `free` arm included | ~10 |
-| E3 (48 h per seed × 3) | ~144 |
+| E3 (48 h per seed × 3; 44 h per seed, ~132, with the flat-0.99 arm in and the two-sided arm out) | ~144 |
 | hardware training | ~20 |
 | **total** | **≈ 340** |
 

@@ -292,6 +292,12 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
 2. **Thesis wording from C1:** raising T2 protection removes the Object forgetting; the new-energy
    allocation adds at most a small, seed-dependent amount at that cell (significant on one seed of
    three). Its consistent edge is final Object retention at about 15 pp more capacity (E3's frontier).
+   - **E3 gets a flat-0.99 arm** (decided Mon 16 Nov; `thesis_plan.md`, E3). A literature check
+     found no paper with the new-energy rule itself, but raising ε for later tasks is prior
+     practice (GPM's CIFAR-100 schedule, InfLoRA's linear one). So the rule's claim rests on
+     beating a flat threshold, which C1 did not show.
+   - The arm resumes C1's e99 runs to T8, about 6 h per seed. It goes into `main_eval.yaml`, which
+     is not written yet.
 3. **Track 2 (D):** frozen on Thu 15 Oct. Angle B no longer depends on it (E1-B closed angle B), so
    the held-out test is reported for its own sake. The 4-task baseline runs (item 0) come first.
 4. **A3, A5, A6:** done (Sun 15 – Mon 16 Nov, §5), with the per-step loss, peak GPU memory and the
@@ -393,7 +399,7 @@ rollout (`scripts/compare_smokes.py`, added in `bc57779`). Record:
 | Adaptive GPM | Object retention, plain against adaptive, per seed | +66 / +64 / +56 pp after Goal | made, `adaptive_vs_plain_object.png` |
 | Controls | e99 and reverse order as per-seed paired differences | Allocation, or only more protection | made, `controls.png` |
 | Capacity | Protected fraction of the trunk after T1–T4 | Protection uses up capacity | made, `protected_fraction_t1_t4.png` |
-| Capacity | Protected fraction after T5–T8; overall success against capacity for plain, f 0.7 and f 0.9 | | waiting for data (E3) |
+| Capacity | Protected fraction after T5–T8; overall success against capacity for plain, f 0.7, f 0.9 and flat 0.99 | | waiting for data (E3) |
 | Baselines | Final success per task and method | Replay marked as not exemplar-free | made, `baselines_final.png` |
 | Negative results | Two-sided fraction 0.861 against GPM 0.933 and the 0.50 threshold; recovery injury rate by offset type and phase | Why the two-sided line stopped | made, `twosided_fraction.png`, `recovery_injury.png` |
 | Hardware | Setup photo with mask and crop | | made (existing `docs/assets/piper_*.jpg`) |
