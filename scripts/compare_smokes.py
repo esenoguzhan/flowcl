@@ -2,7 +2,7 @@
 
 Usage:
   uv run python scripts/compare_smokes.py ROOT_A ROOT_B [--runs NAME ...] [--shared-cells-only] [--out FILE]
-  uv run python scripts/compare_smokes.py --run-a RUN_A --run-b RUN_B [--shared-cells-only]
+  uv run python scripts/compare_smokes.py --run-a RUN_A --run-b RUN_B [--shared-cells-only] [--stages K ...]
 
 Exit code 0 when every compared run passes, 1 otherwise.
 """
@@ -25,17 +25,21 @@ def main() -> int:
     parser.add_argument("--run-a", type=Path)
     parser.add_argument("--run-b", type=Path)
     parser.add_argument("--shared-cells-only", action="store_true")
+    parser.add_argument("--stages", type=int, nargs="+", default=None,
+                        help="with --run-a/--run-b: compare only these stages and their tasks' artifacts")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
     if args.run_a or args.run_b:
         if not (args.run_a and args.run_b):
             parser.error("--run-a and --run-b go together")
-        result = compare_runs(args.run_a, args.run_b, args.shared_cells_only)
+        result = compare_runs(args.run_a, args.run_b, args.shared_cells_only, stages=args.stages)
         summary = {Path(args.run_b).name: result["passed"]}
     else:
         if not (args.root_a and args.root_b):
             parser.error("give two roots, or --run-a and --run-b")
+        if args.stages is not None:
+            parser.error("--stages goes with --run-a/--run-b")
         result = compare_roots(args.root_a, args.root_b, args.runs, args.shared_cells_only)
         summary = {name: r["passed"] for name, r in result["runs"].items()}
         if result["unmatched_runs"]:

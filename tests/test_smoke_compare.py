@@ -105,3 +105,22 @@ def test_compare_roots_pairs_runs_by_name(tmp_path):
     result = compare_roots(tmp_path / "a", tmp_path / "b")
     assert result["runs"]["r1"]["passed"] and not result["runs"]["r2"]["passed"]
     assert not result["passed"]
+
+
+def test_a_stage_subset_compares_only_those_stages_and_their_artifacts(tmp_path):
+    """A run resumed later holds fewer checkpoints: compare it on the stages both have."""
+    import shutil
+
+    a = write_run(tmp_path / "a", stages=4)
+    b = write_run(tmp_path / "b", stages=4)
+    for stage in (0, 1):
+        (b / "checkpoints" / f"stage{stage}.pt").unlink()
+        (b / "method" / f"memory_task{stage}.pt").unlink()
+    shutil.copy(a / "method" / "gpm_logs_task0.json", b / "method" / "gpm_logs_task0.json")
+    assert not compare_runs(a, b)["passed"]
+    out = compare_runs(a, b, stages=[2, 3])
+    assert out["passed"] and out["stages_compared"] == [2, 3] and set(out["method_artifacts"]) == {
+        "memory_task2.pt", "memory_task3.pt"}
+    assert not compare_runs(a, b, stages=[1, 2])["passed"]   # stage 1 is missing in b
+    c = write_run(tmp_path / "c", stages=4, tensor_delta=1.0)  # its last stage (3) differs
+    assert compare_runs(a, c, stages=[2])["passed"] and not compare_runs(a, c, stages=[2, 3])["passed"]

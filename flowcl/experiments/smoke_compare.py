@@ -13,12 +13,15 @@ are expected to appear. This compares exactly what is deterministic, per run and
 
 Ignored: wall clocks, git SHAs, timings, loss, peak-memory and probe records, and paths.
 ``shared_cells_only`` compares only the cells both runs evaluated (the seen-only check), and
-requires every cell of the run with fewer cells to be present in the other.
+requires every cell of the run with fewer cells to be present in the other. ``stages`` compares only
+those stages (a run resumed later holds fewer checkpoints), and only the method artifacts of those
+tasks (``*_task{k}.*``).
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import torch
@@ -66,13 +69,26 @@ def compare_cells(a: dict[str, dict], b: dict[str, dict], shared_cells_only: boo
     return {"passed": all(v["passed"] for v in per_task.values()), "per_task": per_task}
 
 
-def compare_runs(a: Path, b: Path, shared_cells_only: bool = False) -> dict:
+def _artifact_task(name: str) -> int | None:
+    match = re.search(r"_task(\d+)\.", name)
+    return int(match.group(1)) if match else None
+
+
+def compare_runs(a: Path, b: Path, shared_cells_only: bool = False, stages: list[int] | None = None) -> dict:
     """Run ``b`` against run ``a`` (see the module docstring)."""
     from flowcl.train.continual import stage_identity_check
 
     a, b = Path(a), Path(b)
     stages_a, stages_b = _stages(a), _stages(b)
     out: dict = {"a": str(a), "b": str(b), "stages": {}}
+    if stages is not None:
+        missing = [s for s in stages if s not in stages_a or s not in stages_b]
+        if missing:
+            out["passed"] = False
+            out["reason"] = f"stages {missing} missing in a run ({stages_a} vs {stages_b})"
+            return out
+        stages_a = stages_b = sorted(stages)
+        out["stages_compared"] = stages_a
     if stages_a != stages_b:
         out["passed"] = False
         out["reason"] = f"different checkpoint stages: {stages_a} vs {stages_b}"
@@ -95,6 +111,8 @@ def compare_runs(a: Path, b: Path, shared_cells_only: bool = False) -> dict:
     names_a = sorted(p.name for p in (a / "method").glob("*")) if (a / "method").is_dir() else []
     names_b = sorted(p.name for p in (b / "method").glob("*")) if (b / "method").is_dir() else []
     for name in sorted(set(names_a) | set(names_b)):
+        if stages is not None and _artifact_task(name) not in stages:
+            continue
         pa, pb = a / "method" / name, b / "method" / name
         if not (pa.is_file() and pb.is_file()):
             artifacts[name] = {"passed": False, "reason": "missing in one run"}
