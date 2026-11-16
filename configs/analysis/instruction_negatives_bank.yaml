@@ -1,0 +1,33 @@
+# The negative-instruction bank of the instruction-negatives pilot (configs/analysis/instruction_negatives.yaml;
+# flowcl/methods/instruction_negatives.py). Fixed before any run.
+#
+# Task A is libero_goal/put_the_bowl_on_the_plate ("put the bowl on the plate"). Its held-out
+# instructions, used only in evaluation, are "put the bowl on the stove", "put the bowl on top of
+# the cabinet" and "turn on the stove"; no string here contains their nouns (forbidden_words,
+# checked on load). No string contains both "bowl" and "plate", so the held-out paraphrases
+# ("place the bowl on the plate", "put the bowl onto the plate") are not trained against.
+#
+# noun_swaps: the plate instruction with one noun changed (the object or the target).
+# unrelated: other LIBERO instructions, some feasible in this scene (the first three are
+# LIBERO-Goal tasks), some not.
+
+forbidden_words: [stove, cabinet]
+
+noun_swaps:
+  - put the bowl on the rack
+  - put the bowl on the wine bottle
+  - put the bowl on the cream cheese
+  - put the bowl on the floor
+  - put the bowl in the drawer
+  - put the cream cheese on the plate
+  - put the wine bottle on the plate
+  - put the ketchup on the plate
+
+unrelated:
+  - put the wine bottle on the rack
+  - put the cream cheese in the bowl
+  - open the top drawer and put the bowl inside
+  - pick up the alphabet soup and place it in the basket
+  - pick up the ketchup and place it in the basket
+  - put the yellow and white mug in the microwave and close it
+  - pick up the book and place it in the back compartment of the caddy

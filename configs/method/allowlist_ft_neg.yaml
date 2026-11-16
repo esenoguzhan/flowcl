@@ -1,0 +1,9 @@
+# allowlist_ft_neg: allowlist_ft (configs/method/allowlist_ft.yaml) with instruction negatives at
+# stage 0, the no-projection control of the instruction-negatives pilot
+# (configs/analysis/instruction_negatives.yaml). Its stage 0 must equal gpm_neg's bit for bit.
+name: allowlist_ft_neg
+
+negative_bank: instruction_negatives_bank
+negative_weight: 1.0
+negative_stages: [0]
+negative_log_interval: 100
