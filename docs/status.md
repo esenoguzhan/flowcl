@@ -308,6 +308,17 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
      replay of 3 demos and the rollouts.
    - **Keep the front camera's pose fixed** until the proof is done.
 
+6. **Pre-E3 plan (Mon 16 – Tue 17 Nov): the three code problems E3 would hit are fixed.**
+   - **A1** (`b997c6f`): seq_ft seed 0, whose config predates the namespace field, resumes; per-stage
+     records survive an interruption; `run_continual.py --check-resume-only`.
+   - **A2** (`4b78e16`): `sequence_report` reads resumed, seen-only and 8-task runs. 4-task reports
+     are unchanged.
+   - **A3** (`40366b3`): f = 0.7 runs as a 4-task `seq_hetero` run first (`scripts/queue_ne70.sh`), so
+     it shares the seed namespace of the arms E3 resumes (`thesis_plan.md`, E3).
+   - **B:** the 8-task resume smoke passed on Tue 17 Nov (`runs/2026-11-17_t8_resume_smoke.md`).
+   - **Next:** the f = 0.7 queue (3 seeds, about 14.3 h, the tree clean throughout), then Track 2
+     step 4 (item 1).
+
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
 
 Moved here from `.scratch/` on Sun 15 Nov, after the seed 1–2 queue. Items 1 and 2 below, and A3
