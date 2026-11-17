@@ -34,7 +34,7 @@
 # method's hold action for hold_steps steps. Passes if, at every state, the end-effector moves
 # < eef_max_m and each finger < finger_max_m between step settle_step and the end; the stopping
 # distance before settle_step is reported. A failure stops the queue (the summary still runs; exit 1).
-# REVISION 2 (Tue 17 Nov 01:20, before any training run; the smoke's hold check only): revision 1
+# REVISION 2 (Tue 17 Nov 01:09, before any training run; after the smoke's hold check only): revision 1
 # measured the end-effector from the hold's first step and failed at all 5 mid-grasp states (2.7-3.6
 # cm; the 5 initial states passed at 0.15-0.76 cm). There the demo lifts at nearly full speed (pose
 # deltas ~0.8-0.9 in x and z), the hold stops the arm within 10-20 steps, and from step 20 to 150 it
