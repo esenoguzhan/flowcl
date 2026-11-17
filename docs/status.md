@@ -200,9 +200,9 @@ changes.
 | **F1** engineering + proof | **data and training half done:** adapter, masked front camera, 30-demo single-task policy (`9ec29d9`); offline held-out error no better than holding still; augmentation (`41cc359`) brings it level with holding the state, not below holding the last command; LIBERO policies that succeed closed-loop are at 0.48 of standing still on the same check, so the shortfall is real (`b89fd2e`). **Policy server built** (`flowcl/deploy/piper_server.py`; spec `docs/piper_deploy_spec.md`). **Not started:** replay of 3 demos, 10 rollouts. **Milk task** (2 Nov, 40 demos): six policies, mask × {none, daylight, colour}; the unmasked ones read the leader arm (corner probe), so the masked three go to the robot. **PiperStudio runner built** (PiperStudio `a9e82e7`). **Milk rollouts (3 Nov): 0 picked.** The unmasked never open the gripper. The masked follow other demos' paths and stall, even on a training layout; the same demo replayed through the executor succeeds (all replay tolerances pass). The images, most likely the light, move the plan 5–12×. Next: the recording-light test, then daylight demos. **Grape (3 Nov, recorded in the test light):** masked and masked + table crop; the cropped policy placed the grape in 4 of 21 free-scene tries. The misses are aim and a loose grip. Next: more demos with a firm grip | `runs/2026-11-01_piper_f1_prep.md`; `runs/2026-11-02_libero_offline_calibration.md`; `runs/2026-11-02_piper_milk.md`; `runs/2026-11-03_piper_milk_rollouts.md`; `runs/2026-11-03_piper_grape.md` |
 | **D1** supervisor: minimum thesis, claim form, hardware scope, proof-gate thresholds | not recorded here | |
 
-## 2. Side line, outside the plan: similar tasks and language (closed for now)
+## 2. Side line, outside the plan: similar tasks and language
 
-Three studies, 4–6 Oct:
+Three studies, 4–6 Oct, and a pilot on Tue 17 Nov (item 4):
 1. **`runs/2026-10-04_similar_tasks.md`:** similar tasks overlap more with A's GPM memory, by
    modest margins. The instruction barely reaches a single-task policy's output.
 2. **`runs/2026-10-05_similar_cl.md`:** A → similar B. Every arm, GPM included, learns B and
@@ -214,6 +214,22 @@ Three studies, 4–6 Oct:
    - From that base, GPM keeps the cabinet task (0.98) but still loses A (plate) to stove
      (0.90 → 0.00). The base never learned the plate/stove contrast. Motion similarity is
      confounded with it.
+4. **`runs/2026-11-17_instruction_negatives.md` (exploratory, seed 0, summary `valid`):**
+   instruction negatives at stage A, meaning wrong instructions from a fixed bank trained to a
+   hold target. With them, **GPM keeps plate through stove at 0.70** [0.56, 0.82]; historical GPM
+   kept 0.00.
+   - **Projection is needed.** The same negatives under allowlist_ft keep 0.00, and stove is
+     learned equally well (0.96 / 0.96).
+   - **Labels:** `effect_present` and `projection_contributes` (+0.70 each, the first against a
+     historical control). `retains` is not shown (forgetting 0.24).
+   - **The base abstains under untrained instructions.** Plate's goal is reached 0/50 under
+     "stove" and "cabinet top".
+   - **The plate/stove contrast is large and mostly inside GPM's memory.** Its chunk divergence
+     is 0.85; the A-only base's was 0.0004.
+   - **After stove, GPM still selects by instruction both ways** (plate 0.78, stove 0.98).
+   - **Cost:** +57% at stage A.
+   - Follow-ups are parked in the record's §6: seeds 1–2, the other curricula, ε 0.99 for A, a
+     third task.
 
 **Parked follow-ups** (not decided; none is in the plan):
 - allowlist_ft from the joint base (~2.7 h);
@@ -316,6 +332,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
    - **A3** (`40366b3`): f = 0.7 runs as a 4-task `seq_hetero` run first (`scripts/queue_ne70.sh`), so
      it shares the seed namespace of the arms E3 resumes (`thesis_plan.md`, E3).
    - **B:** the 8-task resume smoke passed on Tue 17 Nov (`runs/2026-11-17_t8_resume_smoke.md`).
+   - **The instruction-negatives pilot (§2, item 4)** used the GPU after it, 03:22–08:55 on Tue 17
+     Nov. The GPU has been free since.
    - **Next:** the f = 0.7 queue (3 seeds, about 14.3 h, the tree clean throughout), then Track 2
      step 4 (item 1).
 
