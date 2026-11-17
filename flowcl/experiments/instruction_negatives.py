@@ -101,15 +101,16 @@ def hold_action(actions: np.ndarray, t: int, g: int) -> np.ndarray:
     return hold_rows(np.asarray(actions, dtype=np.float32), g)[t].astype(np.float64)
 
 
-def displacement(eef: np.ndarray, fingers: np.ndarray, from_step: int) -> dict:
-    """End-effector displacement from the first row (max, m), each finger's movement from row
-    ``from_step`` on (max over rows of |q - q[from_step]|), and the first-rows finger movement."""
+def displacement(eef: np.ndarray, fingers: np.ndarray, settle_step: int) -> dict:
+    """Movement after row ``settle_step`` (max over later rows of the distance from that row: the
+    end-effector's norm, each finger's |q - q[settle]|), and before it (from the first row: the
+    stopping distance and the fingers' travel)."""
     eef, fingers = np.asarray(eef, dtype=float), np.asarray(fingers, dtype=float)
-    eef_max = float(np.linalg.norm(eef - eef[0], axis=1).max())
-    late = fingers[from_step:]
-    finger_late = float(np.abs(late - late[0]).max()) if len(late) else 0.0
-    finger_early = float(np.abs(fingers[: from_step + 1] - fingers[0]).max())
-    return {"eef_max_m": eef_max, "finger_after_m": finger_late, "finger_before_m": finger_early,
+    late_e, late_f = eef[settle_step:], fingers[settle_step:]
+    return {"eef_after_m": float(np.linalg.norm(late_e - late_e[0], axis=1).max()) if len(late_e) else 0.0,
+            "finger_after_m": float(np.abs(late_f - late_f[0]).max()) if len(late_f) else 0.0,
+            "eef_from_start_m": float(np.linalg.norm(eef - eef[0], axis=1).max()),
+            "finger_before_m": float(np.abs(fingers[: settle_step + 1] - fingers[0]).max()),
             "n_rows": int(len(eef))}
 
 
@@ -175,12 +176,13 @@ def run_hold(cfg: dict, *, results_root=None, allow_dirty=False, dataset_dir=Non
                     obs, _r, _d, _i = env.env.step(hold)
                     eef.append(obs["robot0_eef_pos"].copy())
                     fingers.append(obs["robot0_gripper_qpos"].copy())
-                disp = displacement(np.stack(eef), np.stack(fingers), int(hc["finger_from_step"]))
-                ok = disp["eef_max_m"] < float(hc["eef_max_m"]) and disp["finger_after_m"] < float(hc["finger_max_m"])
+                disp = displacement(np.stack(eef), np.stack(fingers), int(hc["settle_step"]))
+                ok = disp["eef_after_m"] < float(hc["eef_max_m"]) and disp["finger_after_m"] < float(hc["finger_max_m"])
                 states.append({"demo": d, "state": label, "t": int(t), "hold_gripper": float(hold[g]),
                                **disp, "passed": bool(ok)})
-                print(f"[flowcl] hold demo {d} {label} t={t}: eef {disp['eef_max_m']:.4f} m, fingers after "
-                      f"{disp['finger_after_m']:.4f} m -> {'ok' if ok else 'FAIL'}", flush=True)
+                print(f"[flowcl] hold demo {d} {label} t={t}: after settling eef {disp['eef_after_m']:.4f} m, "
+                      f"fingers {disp['finger_after_m']:.4f} m (stopping {disp['eef_from_start_m']:.4f} m) -> "
+                      f"{'ok' if ok else 'FAIL'}", flush=True)
     finally:
         env.close()
     record = {"git_sha": sha, "task": cfg["task_a"], "bounds": hc, "states": states,

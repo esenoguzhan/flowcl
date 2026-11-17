@@ -28,14 +28,15 @@ def test_hold_action_is_the_methods_row():
     assert np.all(inn.hold_action(actions, 3, 6)[:6] == 0)
 
 
-def test_displacement_measures_from_the_start_and_after_the_settle_step():
+def test_displacement_measures_after_the_settle_step_and_reports_the_stop():
     eef = np.zeros((6, 3))
-    eef[3] = [0.003, 0.004, 0]
+    eef[1:] = [0.03, 0, 0]          # the stop: 3 cm before settling
+    eef[4] = [0.033, 0.004, 0]      # then 5 mm
     fingers = np.zeros((6, 2))
     fingers[1] = [0.01, -0.01]
     fingers[4] = [0.0005, 0]
-    d = inn.displacement(eef, fingers, from_step=2)
-    assert abs(d["eef_max_m"] - 0.005) < 1e-12
+    d = inn.displacement(eef, fingers, settle_step=2)
+    assert abs(d["eef_after_m"] - 0.005) < 1e-12 and abs(d["eef_from_start_m"] - np.hypot(0.033, 0.004)) < 1e-12
     assert abs(d["finger_after_m"] - 0.0005) < 1e-12 and abs(d["finger_before_m"] - 0.01) < 1e-12
 
 

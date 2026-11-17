@@ -32,8 +32,14 @@
 # consecutive steps, reached by replaying the demo's actions from its initial state (the gripper's
 # command accumulator lies outside MuJoCo's state, so a saved state is never loaded). Then the
 # method's hold action for hold_steps steps. Passes if, at every state, the end-effector moves
-# < eef_max_m from where the hold started, and each finger moves < finger_max_m between step
-# finger_from_step and the end. A failure stops the queue (the summary still runs; exit 1).
+# < eef_max_m and each finger < finger_max_m between step settle_step and the end; the stopping
+# distance before settle_step is reported. A failure stops the queue (the summary still runs; exit 1).
+# REVISION 2 (Tue 17 Nov 01:20, before any training run; the smoke's hold check only): revision 1
+# measured the end-effector from the hold's first step and failed at all 5 mid-grasp states (2.7-3.6
+# cm; the 5 initial states passed at 0.15-0.76 cm). There the demo lifts at nearly full speed (pose
+# deltas ~0.8-0.9 in x and z), the hold stops the arm within 10-20 steps, and from step 20 to 150 it
+# moves < 0.05 cm (diagnostic: demos 0 and 3). The bound now starts at settle_step, as the finger
+# bound already did; the bound values are unchanged.
 #
 # PANEL (gpm's stage0.pt; A's scene, initial states and success predicate; A's goal reached =
 # false execution; the requested task's goal scored where its objects exist; motion recorded over
@@ -100,7 +106,7 @@ hold_check:
   close_run: 20
   hold_steps: 50
   eef_max_m: 0.01
-  finger_from_step: 15
+  settle_step: 15
   finger_max_m: 0.002
 
 panel:
