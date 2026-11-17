@@ -1,0 +1,151 @@
+# Instruction-negatives pilot: do noun-swap negatives at stage A create a plate-stove distinction that
+# survives learning stove, and does projection add to it? EXPLORATORY: one seed (0), one curriculum,
+# two new runs, conventions fixed before any run (the scratch smoke included). Evaluated by
+# scripts/instruction_negatives.py; queued by scripts/queue_instruction_negatives.sh.
+#
+# WHY: when two tasks share a scene and differ only by instruction, every arm loses the first
+# (plate 0.94 -> 0.00 after stove, docs/runs/2026-10-05_similar_cl.md). A jointly trained base that
+# selects by instruction still lost plate under GPM (docs/runs/2026-10-06_language_cl.md), so
+# "the policy reads language" is not enough. Wrong instruction -> null action is prior work
+# (Leap-VLA, arXiv 2611.01011, section V); its negatives name absent objects, whereas the held-out
+# instructions here are feasible in the scene and untrained. The combination with projection-based
+# retention is what is tested.
+#
+# THE METHOD (flowcl/methods/instruction_negatives.py): at stage 0 only, a second flow loss on the
+# same observations with a wrong instruction from configs/analysis/instruction_negatives_bank.yaml
+# and a hold target (zero pose delta; gripper at the previous step's command, open at t = 0; mask
+# all ones), weight 1, drawn from the method's own generator. The bank is encoded in fp32 at the
+# stage start. Stage 1 (stove) is unchanged. GPM's memory comes from the task's dataset, so from
+# positives only: it does not explicitly constrain the behaviour under negative instructions.
+#
+# RUNS (curriculum similar_ab_stove, namespace similar_ab_stove__seq_ft__seed0, recipe of the
+# historical runs: 30k steps, batch 64, lr 1e-4, AMP; 50 rollouts per cell):
+#   gpm      gpm_neg           -> similar_ab_stove__gpm_projected_adam_neg__seed0 (--no-t1-check)
+#   allow    allowlist_ft_neg  -> similar_ab_stove__allowlist_ft_neg__seed0; stage 0 must equal gpm's
+#            bit for bit (identity check) and pass the T1 pairing against it.
+#   HISTORICAL negatives-off controls: similar_ab_stove__{gpm_projected_adam,allowlist_ft}__seed0
+#   (commit 98f143e, same namespace and seeds, not rerun). Comparisons with them are labelled
+#   against_historical_control: matched protocol, not a bitwise rerun.
+#
+# HOLD CHECK (before training; no policy): demos 0..n_demos-1 of A. For each, two states: the demo's
+# initial state, and the first step after the gripper command has been "close" (> 0) for close_run
+# consecutive steps, reached by replaying the demo's actions from its initial state (the gripper's
+# command accumulator lies outside MuJoCo's state, so a saved state is never loaded). Then the
+# method's hold action for hold_steps steps. Passes if, at every state, the end-effector moves
+# < eef_max_m from where the hold started, and each finger moves < finger_max_m between step
+# finger_from_step and the end. A failure stops the queue (the summary still runs; exit 1).
+#
+# PANEL (gpm's stage0.pt; A's scene, initial states and success predicate; A's goal reached =
+# false execution; the requested task's goal scored where its objects exist; motion recorded over
+# the first motion_steps executed steps):
+#   held-out task instructions (B, cabinet): n_held_out rollouts each, seeds = the stage-0 eval's;
+#   other conditions: the first n_other initial states each: two trained negatives, a held-out
+#   unrelated instruction, two held-out paraphrases, and A's own instruction (the motion reference).
+#
+# RULES (point conventions are exploratory; every CI is shown):
+#  GATE (discrimination, not abstention): passed iff R0[A] (the runner's stage-0 eval) >= learned_min
+#   and, under each held-out task instruction, A's goal is reached in < held_out_reach_max of
+#   rollouts. Otherwise gate_failed, a VALID outcome: the allow run is skipped, retention is
+#   not_assessed, gpm's cells are reported.
+#  ACQUISITION: R1[B] per arm. inconclusive_acquisition if either arm < inconclusive_below (every
+#   label below becomes not_assessed; raw comparisons still reported); clean if both >= floor and
+#   R1_gpm[B] - R1_allow[B] >= -tolerance (a point-estimate tolerance, not non-inferiority);
+#   otherwise every label below carries the suffix _at_acquisition_cost.
+#  RETENTION (gpm), two tiers:
+#   effect_present: R1_gpm[A] - R1_hist_gpm[A] >= effect_min with rollout-paired CI low > 0
+#     (flag against_historical_control);
+#   retains: R0_gpm[A] - R1_gpm[A] <= forgetting_max.
+#  PROJECTION'S PART (given negatives and allowlist freezing): projection_contributes if
+#   R1_gpm[A] - R1_allow[A] has CI low > 0; allowlist_without_projection_retains if
+#   R0_allow[A] - R1_allow[A] <= forgetting_max.
+#  REPORTED, NOT JUDGED: the 2x2 table (negatives off/on x allow/gpm) and the interaction
+#   (gpm - allow | on) - (gpm - allow | off); abstention (motion); paraphrases; B's zero-shot cell;
+#   stage-1 swaps (A's scene under B's instruction, B's scene under A's); the negative term's extra
+#   training time; the probes.
+# VALIDITY (a failure marks the study invalid): complete cells, clean git_sha, the namespace and
+#   method configs; identical per-episode seeds across the new and historical runs; allow's stage-0
+#   identity (0 differing tensors) and T1 pairing against gpm; negatives active at stage 0 and
+#   inactive at stage 1 in both runs, with the bank SHA-256 below; the bank cached in fp32; GPM's
+#   memory SHA-256 and worst residual over bound <= 1; allow's frozen set and freeze report; the
+#   hold check; panel and swap artifacts (checkpoint SHA, weights unchanged, eval seeds).
+# STATUS / EXIT: valid 0 (gate_failed included); invalid 3; incomplete 4.
+
+seed: 0
+out: instruction_negatives
+curriculum: similar_ab_stove
+namespace: similar_ab_stove__seq_ft__seed0
+task_a: libero_goal/put_the_bowl_on_the_plate
+task_b: libero_goal/put_the_bowl_on_the_stove
+held_out_tasks:
+  - libero_goal/put_the_bowl_on_the_stove
+  - libero_goal/put_the_bowl_on_top_of_the_cabinet
+bank: instruction_negatives_bank
+
+runs:
+  gpm: {method: gpm_neg, name: similar_ab_stove__gpm_projected_adam_neg__seed0}
+  allow: {method: allowlist_ft_neg, name: similar_ab_stove__allowlist_ft_neg__seed0}
+historical:
+  gpm: similar_ab_stove__gpm_projected_adam__seed0
+  allow: similar_ab_stove__allowlist_ft__seed0
+
+production:
+  train: {steps: 30000, batch_size: 64, lr: 1.0e-4, amp: true}
+  n_episodes: 50
+smoke:
+  train: {steps: 200, amp: true}
+  n_episodes: 1
+
+hold_check:
+  n_demos: 5
+  close_run: 20
+  hold_steps: 50
+  eef_max_m: 0.01
+  finger_from_step: 15
+  finger_max_m: 0.002
+
+panel:
+  n_held_out: 50
+  n_other: 20
+  motion_steps: 100
+  trained_negatives:
+    - put the bowl on the rack
+    - put the wine bottle on the rack
+  held_out_other:
+    - {text: turn on the stove, task: libero_goal/turn_on_the_stove}
+  paraphrases:
+    - place the bowl on the plate
+    - put the bowl onto the plate
+
+gate:
+  learned_min: 0.80
+  held_out_reach_max: 0.50
+acquisition:
+  inconclusive_below: 0.50
+  floor: 0.80
+  tolerance: 0.10
+retention:
+  effect_min: 0.20
+  forgetting_max: 0.10
+
+probe:                              # fixed-batch probe loss (similar_cl's)
+  batch_size: 64
+  n_batches: 16
+  seed_tags:
+    shuffle: similar_cl_probe::shuffle
+    flow_time: similar_cl_probe::flow_time
+    noise: similar_cl_probe::noise
+swap:                               # velocity statistic and per-layer signal (similar_cl's)
+  capture_config: subspace
+  n_batches: 16
+  seed_tag: similar_cl_swap
+chunks:                             # sampled-chunk sensitivity (similar_cl's)
+  batch_size: 32
+  n_batches: 8
+  seed_tag: similar_cl_chunks
+coverage:                           # memory coverage at the gpm stage-0 checkpoint
+  capture_config: subspace
+  seed_tag: language_cl_coverage
+drift:                              # A's sampled chunks, stage 0 against stage 1, same noise
+  batch_size: 32
+  n_batches: 8
+  seed_tag: instruction_negatives_drift

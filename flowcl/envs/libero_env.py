@@ -197,6 +197,9 @@ class RolloutResult:
     alt_at_start: bool | None = None
     alt_first_step: int | None = None
     alt_at_end: bool | None = None
+    # ``rollout(motion=N)``: the first N executed steps' end-effector positions and finger qpos (start
+    # included, so N + 1 rows at most) and gripper commands; ``None`` when not recorded.
+    motion: dict | None = None
 
     @property
     def alt_reached(self) -> bool | None:
@@ -464,6 +467,7 @@ class LiberoTaskEnv:
         cfg: EvalConfig | None = None,
         language: str | None = None,
         alt_goal: list[list[str]] | None = None,
+        motion: int = 0,
     ) -> RolloutResult:
         """Run one episode from fixed initial state ``episode_idx`` (§4.4, §8.1).
 
@@ -479,6 +483,9 @@ class LiberoTaskEnv:
             alt_goal: Another task's parsed goal (:func:`goal_state`) to score after every
                 step: the first step it held and whether it holds at the end are recorded.
                 It never ends the episode, so ``success`` keeps its meaning.
+            motion: Record the first ``motion`` executed steps' end-effector position, finger qpos
+                and gripper command (``RolloutResult.motion``). 0, the default, records nothing and
+                changes nothing else.
         """
         cfg = cfg or EvalConfig()
         execute_k = cfg.execute_k if cfg.execute_k is not None else self.spec.action.execute_k
@@ -502,6 +509,9 @@ class LiberoTaskEnv:
         obs = self.env.set_init_state(self.init_states[episode_idx])
         alt_at_start = self.goal_holds(alt_goal) if alt_goal is not None else None
         alt_first_step = None
+        moved = ({"eef_pos": [np.asarray(obs["robot0_eef_pos"], dtype=float).tolist()],
+                  "gripper_qpos": [np.asarray(obs["robot0_gripper_qpos"], dtype=float).tolist()],
+                  "gripper_cmd": []} if motion else None)
 
         ensembler = (
             TemporalEnsembler(horizon, self.spec.d_action, cfg.temporal_ensemble_coef)
@@ -555,6 +565,10 @@ class LiberoTaskEnv:
                 executed = np.clip(action, -1.0, 1.0).astype(np.float64)
                 obs, _reward, _done, _info = self.env.step(executed)
                 step += 1
+                if moved is not None and len(moved["gripper_cmd"]) < motion:
+                    moved["eef_pos"].append(np.asarray(obs["robot0_eef_pos"], dtype=float).tolist())
+                    moved["gripper_qpos"].append(np.asarray(obs["robot0_gripper_qpos"], dtype=float).tolist())
+                    moved["gripper_cmd"].append(float(executed[-1]))
                 if cfg.record_video:
                     self._append_video_frames(obs, camera_frames)
                     trace_actions.append(executed.astype(np.float32))
@@ -602,6 +616,7 @@ class LiberoTaskEnv:
             alt_at_start=alt_at_start,
             alt_first_step=alt_first_step,
             alt_at_end=self.goal_holds(alt_goal) if alt_goal is not None else None,
+            motion=moved,
         )
 
     def run_episode(
