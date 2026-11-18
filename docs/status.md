@@ -334,8 +334,11 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
    - **B:** the 8-task resume smoke passed on Tue 17 Nov (`runs/2026-11-17_t8_resume_smoke.md`).
    - **The instruction-negatives pilot (§2, item 4)** used the GPU after it, 03:22–08:55 on Tue 17
      Nov. The GPU has been free since.
-   - **Next:** the f = 0.7 queue (3 seeds, about 14.3 h, the tree clean throughout), then Track 2
-     step 4 (item 1).
+   - **The f = 0.7 queue is done** (Tue 17 Nov 10:56 → Wed 18 Nov 01:16,
+     `runs/2026-11-18_ne70_4task.md`). Every identity check and strict report passed on seeds 0–2.
+     - Mean ACC 77.5, between plain GPM (62.7) and f = 0.9 (86.7).
+     - Below the flat 0.99 (84.2), at about the same trunk use (86% against 89%).
+   - **Next:** Track 2 step 4 (item 1), then `main_eval.yaml` and E3.
 
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
 
