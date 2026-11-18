@@ -255,6 +255,24 @@ def test_pins_are_mode_specific(tmp_path):
     assert not cur.pin_checks(cfg, src, hist, smoke=True)["historical_files"]["passed"]
 
 
+def test_the_base_probe_targets_the_pinned_base_against_the_curriculums_B(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    fake_sources(src, gate_passed=True)
+    calls = []
+    monkeypatch.setattr(inn, "run_probe", lambda cfg, label, target, **kw: calls.append((cfg, label, target, kw)) or {})
+    cur.run_base_probe(CFG, "cabinet", sources_root=src, smoke=True, results_root=tmp_path / "out")
+    sub, label, t, kw = calls[0]
+    gpm = src / CFG["sources"]["gpm"]["run"]
+    assert label == "neg_stage0" and sub["task_b"] == CAB and sub["out"] == f"{CFG['out']}/cabinet"
+    assert t["checkpoint"] == gpm / "checkpoints" / "stage0.pt" and t["stage"] == 0
+    assert t["memory"] == {"path": str(gpm / "method" / "memory_task0.pt"),
+                           "expected_sha256": file_sha256(gpm / "method" / "memory_task0.pt")}
+    assert kw == {"results_root": tmp_path / "out"}
+    with pytest.raises(ValueError, match="pinned"):  # production pins: the fake base is not the rule's
+        cur.run_base_probe(CFG, "cabinet", sources_root=src, smoke=False)
+    assert len(calls) == 1
+
+
 # ---- the resumed path, tiny CPU world ---------------------------------------------------------------------
 
 

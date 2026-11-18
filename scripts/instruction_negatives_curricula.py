@@ -14,6 +14,7 @@ need ``--results-root`` outside ``results/``.
     uv run python scripts/instruction_negatives_curricula.py --part pins        # "<arm> <stage0 sha256>"
     uv run python scripts/instruction_negatives_curricula.py --part swaps --curriculum cabinet --arm gpm
     uv run python scripts/instruction_negatives_curricula.py --part probe
+    uv run python scripts/instruction_negatives_curricula.py --part base-probe --curriculum cabinet   # descriptive
     uv run python scripts/instruction_negatives_curricula.py --part summary     # 0 valid, 3 invalid, 4 incomplete
     uv run python scripts/instruction_negatives_curricula.py --part resume-equality --source-run S --resumed-run R
 """
@@ -25,8 +26,8 @@ import sys
 from pathlib import Path
 
 from flowcl.experiments.instruction_negatives_curricula import (
-    ARMS, CURRICULA, EXIT_CODES, load_config, pins, resume_equality, run_preflight, run_probes, run_summary,
-    run_swaps,
+    ARMS, CURRICULA, EXIT_CODES, load_config, pins, resume_equality, run_base_probe, run_preflight, run_probes,
+    run_summary, run_swaps,
 )
 from flowcl.utils.libero_paths import repo_root
 
@@ -35,7 +36,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--part", required=True,
-                        choices=("preflight", "pins", "swaps", "probe", "summary", "resume-equality"))
+                        choices=("preflight", "pins", "swaps", "probe", "base-probe", "summary",
+                                 "resume-equality"))
     parser.add_argument("--curriculum", choices=CURRICULA, default=None)
     parser.add_argument("--arm", choices=ARMS, default=None)
     parser.add_argument("--device", default="cuda")
@@ -79,6 +81,12 @@ def main() -> None:
         for p in problems:
             print(f"[flowcl] probe problem: {p}", flush=True)
         sys.exit(1 if problems else 0)
+    if args.part == "base-probe":
+        if args.curriculum is None:
+            parser.error("--part base-probe needs --curriculum")
+        record = run_base_probe(cfg, args.curriculum, sources_root=args.sources_root, smoke=args.smoke,
+                                smoke_batches=args.smoke_batches, **common)
+        sys.exit(0 if record["weights_unchanged"] else 3)
     if args.part == "resume-equality":
         if args.source_run is None or args.resumed_run is None or args.results_root is None:
             parser.error("--part resume-equality needs --source-run, --resumed-run and --results-root")

@@ -216,6 +216,28 @@ def run_probes(cfg: dict, *, results_root=None, sources_root=None, smoke: bool =
     return problems
 
 
+def base_probe_target(cfg: dict, sources_root: Path, memory_sha: str) -> dict:
+    """The negatives base itself (the GPM source's stage0.pt), probed against a curriculum's B."""
+    run = source_dir(cfg, sources_root, "gpm")
+    return {"run": run, "checkpoint": run / "checkpoints" / "stage0.pt", "stage": 0,
+            "stage0": run / "checkpoints" / "stage0.pt",
+            "memory": {"path": str(run / "method" / "memory_task0.pt"), "expected_sha256": memory_sha}}
+
+
+def run_base_probe(cfg: dict, short: str, *, sources_root=None, smoke: bool = False, **kw) -> dict:
+    """Descriptive, added after the queue (not in the rule): the stove pilot probed the base under the
+    stove instruction only. This probes it against ``short``'s B (instruction contrast, its share outside
+    the memory, probe losses, memory coverage) into ``<out>/<short>/probes/neg_stage0``. The base must be
+    at its pin."""
+    src = _root(sources_root)
+    p = pins(cfg, src, smoke)["gpm"]
+    t = base_probe_target(cfg, src, p["memory"])
+    got = file_sha256(t["checkpoint"]) if t["checkpoint"].is_file() else None
+    if got != p["stage0"]:
+        raise ValueError(f"{t['checkpoint']}: sha256 {got} != pinned {p['stage0']}")
+    return inn.run_probe(sub_config(cfg, short), "neg_stage0", target=t, **kw)
+
+
 def resume_equality(source_run: Path, resumed_run: Path, out: Path) -> dict:
     """Smoke only: the resumed stage 1 against the source's (checkpoint, memory, rollouts)."""
     from flowcl.experiments.resume_check import compare_resume
