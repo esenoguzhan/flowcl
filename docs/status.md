@@ -202,7 +202,7 @@ changes.
 
 ## 2. Side line, outside the plan: similar tasks and language
 
-Three studies, 4–6 Oct, and a pilot on Tue 17 Nov (item 4):
+Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with its follow-up on Wed 18 Nov (item 4):
 1. **`runs/2026-10-04_similar_tasks.md`:** similar tasks overlap more with A's GPM memory, by
    modest margins. The instruction barely reaches a single-task policy's output.
 2. **`runs/2026-10-05_similar_cl.md`:** A → similar B. Every arm, GPM included, learns B and
@@ -228,8 +228,19 @@ Three studies, 4–6 Oct, and a pilot on Tue 17 Nov (item 4):
      is 0.85; the A-only base's was 0.0004.
    - **After stove, GPM still selects by instruction both ways** (plate 0.78, stove 0.98).
    - **Cost:** +57% at stage A.
-   - Follow-ups are parked in the record's §6: seeds 1–2, the other curricula, ε 0.99 for A, a
-     third task.
+   - **The follow-up on cabinet top and milk does not generalise the result**
+     (`runs/2026-11-18_instruction_negatives_curricula.md`, Wed 18 Nov 01:52–06:03, seed 0, summary
+     `valid`). It was resumed at stage 1 from the same base.
+     - **Cabinet top:** GPM + negatives keeps plate at **0.04** (historical 0.00, +0.04 [0.00, +0.10]).
+       Every retention label is `not_shown`; cabinet top is learned at 0.96.
+       - **What survives:** the policy still avoids the cabinet under the plate instruction (0 of
+         50), and its chunk contrast (0.31) matches stove's.
+       - **What is lost:** the plate behaviour itself.
+     - **Milk:** neutral. Plate is 0.92, as historical GPM (`no_cost_beyond_10pp`); milk is 0.82
+       against 0.76. `milk_no_harm` is `not_shown`: milk's CI low is −0.1005, at the −0.10 bound.
+     - **So** the stove effect depended on the B task: 1 of 2 similar B tasks.
+   - Follow-ups are parked in the records' §6: seeds 1–2, probing the base under the cabinet-top
+     instruction, ε 0.99 for A, videos, a third task.
 
 **Parked follow-ups** (not decided; none is in the plan):
 - allowlist_ft from the joint base (~2.7 h);
@@ -338,6 +349,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
      `runs/2026-11-18_ne70_4task.md`). Every identity check and strict report passed on seeds 0–2.
      - Mean ACC 77.5, between plain GPM (62.7) and f = 0.9 (86.7).
      - Below the flat 0.99 (84.2), at about the same trunk use (86% against 89%).
+   - **The instruction-negatives follow-up (§2, item 4)** used the GPU Wed 18 Nov 01:52–06:03. The
+     GPU has been free since.
    - **Next:** Track 2 step 4 (item 1), then `main_eval.yaml` and E3.
 
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
