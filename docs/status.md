@@ -239,8 +239,10 @@ Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with its follow-up on Wed 18
      - **Milk:** neutral. Plate is 0.92, as historical GPM (`no_cost_beyond_10pp`); milk is 0.82
        against 0.76. `milk_no_harm` is `not_shown`: milk's CI low is −0.1005, at the −0.10 bound.
      - **So** the stove effect depended on the B task: 1 of 2 similar B tasks.
-   - Follow-ups are parked in the records' §6: seeds 1–2, probing the base under the cabinet-top
-     instruction, ε 0.99 for A, videos, a third task.
+     - **The base is not why** (record §3.7, a probe added afterwards). It separates plate from
+       cabinet top as strongly as from stove (chunk contrast 0.91 against 0.85), and as far inside
+       GPM's memory. The loss arises during stage B.
+   - Follow-ups are parked in the records' §6: seeds 1–2, ε 0.99 for A, videos, a third task.
 
 **Parked follow-ups** (not decided; none is in the plan):
 - allowlist_ft from the joint base (~2.7 h);

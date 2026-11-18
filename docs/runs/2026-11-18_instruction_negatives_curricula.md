@@ -42,6 +42,12 @@ the other two B tasks of the 5 Oct study from that pilot's stage-A checkpoints:
   - milk 0.92 (unchanged).
 
   The stove result depended on the B task.
+- **The base is not why (addendum, §3.7).** Probed under the cabinet-top instruction, it separates
+  plate from cabinet top at least as strongly as from stove:
+  - chunk contrast 0.91, against 0.85;
+  - slightly more of the signal inside GPM's memory (outside share 0.12, against 0.14).
+
+  So cabinet top's loss of plate happens while learning B.
 
 ## 1. What was run
 
@@ -239,10 +245,7 @@ These are the stove pilot's statistics, computed on A's data under B's instructi
   - The contrast is larger than stove's.
 - **Milk is not comparable:** its instruction is another suite's task, so a large contrast is
   expected there.
-- **The base's plate ↔ cabinet contrast was not probed.** The pilot probed the base under the stove
-  instruction only.
-  - At the behaviour level, the base held still more under "cabinet top": median 0.5 cm, against
-    3.1 cm under "stove" (pilot §3.1).
+- **The base's plate ↔ cabinet contrast was probed after the queue** (§3.7).
 
 ### 3.6 Cost
 
@@ -253,6 +256,40 @@ These are the stove pilot's statistics, computed on A's data under B's instructi
 
 - **Stage B is unchanged by the negatives,** within 2%.
 - **Stage A's +57% was paid once,** in the pilot, and is shared by all three B tasks.
+
+### 3.7 Addendum: the base under the cabinet-top instruction (descriptive, not in the rule)
+
+**What was run:** Wed 18 Nov, after the record above.
+- **Command:** `scripts/instruction_negatives_curricula.py --part base-probe --curriculum cabinet`,
+  at `6ffa0fd` (clean tree). It took 106 s.
+- **What it probes:** the negatives base, i.e. the GPM source's `stage0.pt` at its pin `91f2ade7…`,
+  with the pinned memory `366ccc24…`. It uses the stove pilot's base probe, with cabinet top as B.
+- **Output:** `results/instruction_negatives_curricula/cabinet/probes/neg_stage0/probe.json`.
+
+**Checks:**
+- weights unchanged;
+- A's probe loss (0.0069) and the memory coverage are identical to the pilot's base probe, as they
+  must be (same checkpoint, same data);
+- the cabinet-top instruction is encoded in fp32, as stove's was.
+
+| Negatives base, before any B | plate ↔ stove (pilot) | **plate ↔ cabinet top** |
+|---|---:|---:|
+| Velocity sensitivity (A's data, B's instruction) | 1.67 | **1.63** |
+| Chunk relative divergence (A's data, B's instruction) | 0.85 | **0.91** |
+| Chunk relative divergence (B's data, A's instruction) | 0.84 | **0.87** |
+| Trunk instruction signal, median size (A's data / B's data) | 0.68 / 0.67 | **1.41 / 1.04** |
+| Share of that signal outside GPM's memory, trunk median (A's data / B's data) | 0.14 / 0.14 | **0.12 / 0.13** |
+| Probe loss on B's data (B not yet trained) | 2.25 | 2.38 |
+| After B, GPM + neg: chunk divergence (share of the base's kept) | 0.25 (29%) | 0.31 (34%) |
+| After B, GPM + neg: plate success | 0.70 | 0.04 |
+
+- **The base separates plate from cabinet top at least as strongly as from stove.** The chunk
+  contrast is equal or larger in both directions, and the trunk signal is 1.5–2× larger.
+- **Slightly more of it lies inside GPM's memory:** 12–13% outside, against 14%.
+- **Through B, GPM keeps a similar share of the contrast** on both tasks (29% and 34%).
+- **So the base candidate in §4 is ruled out.** Neither the size of the contrast nor its placement
+  relative to the memory explains why plate survives stove and not cabinet top. The difference
+  arises during stage B.
 
 ## 4. Interpretation (not tested by the rule)
 
@@ -273,10 +310,10 @@ These are the stove pilot's statistics, computed on A's data under B's instructi
   0.04).
   - This suggests closed-loop success drops steeply somewhere in that range of A's loss.
   - It is one pair of points, not a measured threshold.
-- **Why cabinet top and not stove is open.** Candidates, none tested:
+- **Why cabinet top and not stove is open.** One candidate is ruled out; two remain, untested:
+  - **Ruled out, the base** (§3.7). Its plate ↔ cabinet contrast is as large as its plate ↔ stove
+    contrast, and as far inside the memory.
   - **Overlap:** cabinet top's update overlaps more with plate's place phase.
-  - **The base:** its plate ↔ cabinet contrast is weaker inside the memory than its plate ↔ stove
-    contrast.
   - **The seed:** stove's 0.70 is the seed-0 outlier.
 - **On milk the negatives are neutral,** as they should be where GPM already separates A from B.
   The negatives alone do not protect plate even against a diverse B (allowlist + negatives: 0.00).
@@ -304,8 +341,7 @@ These are the stove pilot's statistics, computed on A's data under B's instructi
 - **Seeds 1–2 for stove and cabinet top.** This needs a new negatives base per seed: about 5.5 h for
   the stove pair, plus about 1.8 h per further B. It would tell whether stove's 0.70 or cabinet top's 0.04
   is the typical case.
-- **Probe the base under the cabinet-top instruction** (minutes, no training). This measures
-  whether plate ↔ cabinet sits as far inside the memory as plate ↔ stove.
+- **Done: the base probe under the cabinet-top instruction** (§3.7). It rules out the base.
 - **ε = 0.99 for A's memory, on cabinet top.**
   - **The cost:** a new memory from the same `stage0.pt`, so it is not a plain resume, and the
     runner would need to support it.
