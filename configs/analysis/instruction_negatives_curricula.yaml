@@ -1,0 +1,136 @@
+# Instruction negatives on the other two B tasks of the 5 Oct study (cabinet top, milk), seed 0:
+# does the stove pilot's effect hold on the second similar task, and do the negatives cost anything
+# where GPM already retained plate (the diverse task)? EXPLORATORY: one seed, one stage-A base
+# (the stove pilot's), conventions fixed before any run (the scratch smoke included). Evaluated by
+# scripts/instruction_negatives_curricula.py; queued by scripts/queue_instruction_negatives_curricula.sh.
+#
+# WHY: the stove pilot (docs/runs/2026-11-17_instruction_negatives.md; rule
+# instruction_negatives.yaml, summary valid) found plate after stove 0.70 under GPM with negatives
+# against 0.00 under historical GPM and 0.00 under allowlist_ft with the same negatives. One B task.
+# Historically (docs/runs/2026-10-05_similar_cl.md) every arm lost plate after cabinet top (0.00),
+# and GPM kept it after milk (0.92).
+#
+# DESIGN: four stage-1 runs RESUMED from the stove pilot's stage-A checkpoints (gpm_neg from gpm_neg,
+# allowlist_ft_neg from allowlist_ft_neg), as the 5 Oct cabinet and milk runs resumed from the stove
+# runs. They inherit the stove namespace, so A's rollouts pair across every run here and with the
+# stove pilot's, and B's pair with the historical runs of the same curriculum. Stage 1 trains B with
+# the negatives inactive (recipe unchanged). All three B tasks share ONE negatives base: this tests
+# generality over B, not replication. The stage-A gate is the stove pilot's (the cabinet-top
+# instruction was one of its held-out instructions: plate reached 0/50 under it).
+#
+# LABELS (point conventions exploratory; every paired CI shown; rollout-paired bootstrap as in the
+# stove pilot):
+#  CABINET (similar): the stove rule's labels via the same judge (gate from the stove summary):
+#   acquisition inconclusive (either arm < 0.50) / clean (both >= 0.80 and gpm - allow >= -0.10) /
+#   otherwise _at_acquisition_cost; effect_present (gpm - historical gpm on plate >= +0.20, CI low
+#   > 0, against_historical_control); retains (forgetting <= 0.10); projection_contributes (gpm -
+#   allow on plate, CI low > 0); allowlist_without_projection_retains. REPORTED beside them, not
+#   judged: each arm's cabinet success minus its historical control's (paired), the 2x2 table and
+#   the interaction (paired CI).
+#  MILK (diverse; a no-harm reading): acquisition inconclusive if either arm < 0.50 (no 0.80 floor:
+#   historical GPM 0.76). Two endpoints against historical GPM, paired: plate after milk, and milk.
+#   Each endpoint, in this order: no_cost_beyond_10pp (CI low > -0.10); cost_beyond_10pp (CI high <
+#   -0.10); observed_drop_over_10pp (point < -0.10); within_10pp_on_observed_rollouts (otherwise).
+#   milk_no_harm iff both endpoints are no_cost_beyond_10pp, else not_shown. Also retains,
+#   allowlist_without_projection_retains and projection_contributes as for cabinet.
+#  ACROSS CURRICULA (reported): stove (quoted from its summary), cabinet and milk; plate before B,
+#   plate after B and B for the four arms, and the paired difference of plate before B.
+#
+# WHAT projection_contributes RESTS ON (summary block projection_basis, per curriculum): the two
+# sources' state dicts bitwise equal; every tensor outside the allowlist (projectable_parameters)
+# unchanged in both arms from the source's stage0.pt; equal stage-1 trainable_params; the
+# allowlist's freeze report listing exactly the allowlist; the two runs' stage-1 train_config equal;
+# one namespace (every stream is derive_seed(namespace, ...)). What remains is projection.
+#
+# HISTORICAL COMPARABILITY: a reasonable basis, not proof. Today's code reproduces the 23-25 Sep
+# plain-GPM seq_hetero runs bit for bit at stages 0-1 and rollout for rollout in all 48 of their
+# stage-0/1 evaluation cells (docs/runs/2026-11-18_ne70_4task.md); allowlist_ft.py is unchanged
+# since 98f143e and gpm.py changed only by the flat-0.99 option (off by default, tested bitwise).
+# That does not establish that the October similar_ab paths behaved as today's code would, so
+# every comparison with a historical cell carries against_historical_control. The historical
+# files are pinned below.
+#
+# VALIDITY (a failure marks the study invalid), MODE-SPECIFIC: production uses the pins below and
+# 50 rows per cell; the smoke uses its own sources' pins (computed at launch, recorded in its
+# summary), the first n rows, and the stove smoke's summary; the historical pins hold in both.
+#   the stove summary at its pin, valid, gate passed; the historical files at their pins; each
+#   resumed run: resume.json naming the pinned source and SHA, no own stage0.pt, eval/stage0.json
+#   byte-equal to the source's, clean git_sha, namespace, method config, recipe, negatives inactive
+#   at stage 1 with the bank SHA; the B task in config.yaml, result.json and eval/stage1.json; GPM
+#   arms: restored memory at its pin and memory_check; allowlist arms: frozen_check against the
+#   source with the freeze report; every paired row the same task key, episode index and seed
+#   (new and historical runs, and A's rows against the stove pilot's); swap and probe artifacts
+#   (checkpoint SHA, weights unchanged).
+# STATUS / EXIT: valid 0; invalid 3; incomplete 4.
+
+seed: 0
+out: instruction_negatives_curricula
+base_rule: instruction_negatives          # bank, namespace, task_a, recipe, probe/swap/chunks/coverage/drift
+namespace: similar_ab_stove__seq_ft__seed0
+task_a: libero_goal/put_the_bowl_on_the_plate
+
+stove:
+  rule_sha256: a1f0a38ba6d390faed3a9c98f84f268ebfab49f060ef8cc1da7d880c4afa0e0b
+  summary: instruction_negatives/summary.json
+  summary_sha256: 237bb5d2d558072d19646c768693882bce2d2428d70fc499d00babc287e06462
+  gate: instruction_negatives/panel/gate.json
+  gate_sha256: 19174251d48e78628f6b3af647b4c1b9f64fcb35ffb8c92d68a9533b59f55c24
+
+sources:
+  gpm:
+    run: similar_ab_stove__gpm_projected_adam_neg__seed0
+    stage0_sha256: 91f2ade7a4531b07d9cf7aa4be5d27bad71b25337a600ce19bac715de6dcdab1
+    memory_sha256: 366ccc245ede9a05947bba556fc4ab4d5c8d9f759eac7ae7b0b0c84a4af3e71a
+  allow:
+    run: similar_ab_stove__allowlist_ft_neg__seed0
+    stage0_sha256: ba8af0bbea7a75d0285893636570304e494851d203a182c7c8c05e5950def7bd
+
+methods: {gpm: gpm_neg, allow: allowlist_ft_neg}
+
+curricula:
+  cabinet:
+    curriculum: similar_ab_cabinet
+    kind: similar
+    task_b: libero_goal/put_the_bowl_on_top_of_the_cabinet
+    swaps: true
+    runs:
+      gpm: similar_ab_cabinet__gpm_projected_adam_neg__seed0
+      allow: similar_ab_cabinet__allowlist_ft_neg__seed0
+    historical:
+      gpm:
+        run: similar_ab_cabinet__gpm_projected_adam__seed0
+        sha256:
+          eval/stage0.json: a183222eb3cbae7d29279899a042739e329ead489cd4ac9b8b57e4bce154fe3f
+          eval/stage1.json: 58f6798069d0bfd7ede0b704a412b9a5b666004a19d1781f4cb89fa9109f3fcb
+          result.json: 8716abb7aa6849d1b8cb0744658b5ac44967210d788ee0fe9cfe050bed64938e
+      allow:
+        run: similar_ab_cabinet__allowlist_ft__seed0
+        sha256:
+          eval/stage0.json: 411daeeb151e22367be34b947a6c8d24ae246763c1939bee2e7244f24b39cb51
+          eval/stage1.json: 43f3966079a8a80bab7e67263b6bbdff70ee65275461a15053fa0a0da6c7980b
+          result.json: eccd931a92bf3c7a5117ba20c1df240180f2b4f39858a81c65f158cb39c093e2
+  milk:
+    curriculum: similar_ab_milk
+    kind: diverse
+    task_b: libero_object/pick_up_the_milk_and_place_it_in_the_basket
+    swaps: false
+    runs:
+      gpm: similar_ab_milk__gpm_projected_adam_neg__seed0
+      allow: similar_ab_milk__allowlist_ft_neg__seed0
+    historical:
+      gpm:
+        run: similar_ab_milk__gpm_projected_adam__seed0
+        sha256:
+          eval/stage0.json: a183222eb3cbae7d29279899a042739e329ead489cd4ac9b8b57e4bce154fe3f
+          eval/stage1.json: 31470a754b9da4e8631106286afa7bb9650590056d485e427ceead8c5b6da83a
+          result.json: fbaff3f9bdffe75eac1677e9d1f62c6dc355ecea87f8db11afd4330847bec3ac
+      allow:
+        run: similar_ab_milk__allowlist_ft__seed0
+        sha256:
+          eval/stage0.json: 411daeeb151e22367be34b947a6c8d24ae246763c1939bee2e7244f24b39cb51
+          eval/stage1.json: 5e771d66c7601ec31e3abba1a82ecf5f16cf643301c8fb80a47721c89575bf26
+          result.json: 9aa7e40153e918ced4f9515ae46af50ef4c134ca878ec36c65b71f1793831eae
+
+diverse:
+  inconclusive_below: 0.50
+  margin: 0.10

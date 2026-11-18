@@ -433,7 +433,7 @@ def probe_target(cfg: dict, root: Path, label: str) -> dict:
 
 
 def run_probe(cfg: dict, label: str, *, results_root=None, device="cuda", allow_dirty=False, dataset_dir=None,
-              smoke_batches: int | None = None) -> dict:
+              smoke_batches: int | None = None, target: dict | None = None) -> dict:
     from flowcl.analysis.probes import probe_loss
     from flowcl.experiments.language_cl import instruction_probe, load_memory, memory_coverage, memory_ranks
     from flowcl.experiments.low_update import refuse_dirty
@@ -445,7 +445,7 @@ def run_probe(cfg: dict, label: str, *, results_root=None, device="cuda", allow_
     if (canonical / "probe.json").is_file():
         print(f"[flowcl] probe {label}: published, reused", flush=True)
         return json.loads((canonical / "probe.json").read_text())
-    t = probe_target(cfg, root, label)
+    t = target or probe_target(cfg, root, label)  # a resumed run's target names its source's stage 0
     ckpt = t["checkpoint"]
     ckpt_sha = file_sha256(ckpt)
     loaded, conf, cache = _load(ckpt, t["run"], cfg, [], [], device, dataset_dir)
