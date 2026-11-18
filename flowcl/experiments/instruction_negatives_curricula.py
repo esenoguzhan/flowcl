@@ -313,6 +313,27 @@ def table_and_interaction(cells: dict, a: str, boot: dict) -> dict:
 # ---- validity --------------------------------------------------------------------------------------------
 
 
+def eval_cells(run: Path, keys_by_stage: dict[int, list[str]], n: int) -> tuple[dict, dict, list[str]]:
+    """``{stage: {task: successes[:n]}}``, the seeds, and the problems, for each stage's own tasks: a
+    resumed run's stage-0 evaluation is its source's (A and the stove), so stage 0 asks for A only."""
+    from flowcl.envs.evaluation import EvaluationReport
+
+    succ, seeds, problems = {}, {}, []
+    for stage, keys in keys_by_stage.items():
+        path = run / "eval" / f"stage{stage}.json"
+        if not path.is_file():
+            problems.append(f"{run.name}: no eval/stage{stage}.json")
+            continue
+        by = EvaluationReport.load(path).by_task()
+        for k in keys:
+            if k not in by or len(by[k].successes) < n:
+                problems.append(f"{run.name}: stage {stage} {k} has fewer than {n} rollouts")
+                continue
+            succ.setdefault(stage, {})[k] = [bool(x) for x in by[k].successes[:n]]
+            seeds.setdefault(stage, {})[k] = list(by[k].seeds[:n])
+    return succ, seeds, problems
+
+
 def negatives_inactive(run: Path, bank_sha: str) -> dict:
     ckpt = run / "checkpoints" / "stage1.pt"
     if not ckpt.is_file():
@@ -417,7 +438,7 @@ def _curriculum_block(cfg, short, base, root, src, hist, smoke, n, p, bank_sha, 
         if not (path / "result.json").is_file():
             incomplete.append(f"{short} {name}: {path.name} has no result.json")
             continue
-        succ, sd, problems = inn._eval_cells(path, [a, b], n)
+        succ, sd, problems = eval_cells(path, {0: [a], 1: [a, b]}, n)
         cells[name], seeds[name] = succ, sd
         incomplete.extend(f"{short} {x}" for x in problems)
         if name in ARMS:
@@ -426,7 +447,7 @@ def _curriculum_block(cfg, short, base, root, src, hist, smoke, n, p, bank_sha, 
                 invalid.append(f"{short} {name}: run checks failed")
     # pairing row by row: the same task, episode index (position) and seed in every run, and A's rows
     # equal to the stove pilot's (the source's stage-0 evaluation)
-    _, s_seeds, _ = inn._eval_cells(sources["gpm"], [a], n)
+    _, s_seeds, _ = eval_cells(sources["gpm"], {0: [a], 1: [a]}, n)
     reference = seeds.get("hist_gpm") or seeds.get("gpm")
     rows_ok = bool(reference) and all(sd == reference for sd in seeds.values())
     def same(x, y) -> bool:

@@ -172,6 +172,14 @@ def test_resumed_checks_pass_on_a_well_formed_run_and_fail_on_each_defect(tmp_pa
     assert not c["passed"] and not c["b_task"]["eval_stage1"]
 
 
+def test_cells_ask_stage0_for_A_only_since_a_resumed_stage0_is_the_stoves(tmp_path):
+    run, _, _, _ = fake_resumed(tmp_path)
+    succ, seeds, problems = cur.eval_cells(run, {0: [A], 1: [A, CAB]}, 50)
+    assert not problems and set(succ[0]) == {A} and set(succ[1]) == {A, CAB}
+    _, _, problems = cur.eval_cells(run, {0: [A, CAB]}, 50)
+    assert problems == [f"{run.name}: stage 0 {CAB} has fewer than 50 rollouts"]
+
+
 def test_negatives_must_be_inactive_at_stage1_with_the_bank(tmp_path):
     run, _, _, bank = fake_resumed(tmp_path)
     assert cur.negatives_inactive(run, bank)["passed"]
