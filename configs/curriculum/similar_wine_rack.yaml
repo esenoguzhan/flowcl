@@ -1,0 +1,19 @@
+# Two-task A -> B curriculum for the instruction-negatives pair study
+# (configs/analysis/instruction_negatives_wine.yaml): a second pair built like plate -> stove, the same
+# object and scene with another target.
+name: similar_wine_rack
+
+description: >
+  A (put the wine bottle on top of the cabinet) then B (libero_goal/put_the_wine_bottle_on_the_rack).
+  B is similar (same scene and object, another target).
+
+expectation: >
+  Exploratory. Tests whether instruction negatives at stage A let GPM keep A through a similar B on a
+  second pair with its own bank (the bowl pair: runs/2026-11-17_instruction_negatives.md and the seeds
+  study).
+
+tasks:
+  - task_key: libero_goal/put_the_wine_bottle_on_top_of_the_cabinet
+    n_demos: 50
+  - task_key: libero_goal/put_the_wine_bottle_on_the_rack
+    n_demos: 50

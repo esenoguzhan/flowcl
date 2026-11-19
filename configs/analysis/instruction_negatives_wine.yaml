@@ -1,0 +1,121 @@
+# Instruction negatives on a second task pair: wine bottle -> cabinet top (A), then wine bottle -> rack
+# (B), seeds 0-2, GPM + negatives against fresh plain-GPM controls. Pre-registered rule, committed before
+# the smoke (flowcl/experiments/instruction_negatives_pair.py --rule wine; queue
+# scripts/queue_instruction_negatives_pair.sh --rule wine; plan approved Thu 19 Nov after two GPT reviews).
+#
+# THE QUESTION. On the bowl pair (A = bowl -> plate, one bank), GPM + negatives kept A through stove at
+# 0.70 / 0.92 / 0.88 (seeds 0-2) against 0.00 for plain GPM, and through cabinet top at 0.04 / 0.10 /
+# 0.28. Does the same recipe help GPM keep A on a second pair built the same way (same object and
+# scene, another target), with its own bank? The pair and the bank change together, so their separate
+# contributions stay open.
+#
+# INSTRUCTIONS. The policy is trained on the demo file's problem_info.language_instruction and
+# evaluated on LIBERO's benchmark task language (from the file name); both are "put the wine bottle on
+# top of the cabinet" (TaskRef.assert_consistent passes). The .bddl :language line ("Put the wine bottle
+# on the top of the drawer") is never passed to the policy. Validity requires the panel's own-instruction
+# rows to reproduce A's ordinary stage-0 evaluation (success and step count per row), and the summary
+# records the policy's texts.
+#
+# DESIGN. Per seed N, namespace similar_wine_rack__seq_ft__seed<N>, the bowl studies' recipe:
+#   neg   similar_wine_rack__gpm_projected_adam_neg__seed<N>  full run, CLI method gpm_neg_wine
+#         (registry gpm_neg, the bank below); then the panel and gate on its stage0.pt
+#   ctrl  similar_wine_rack__gpm_projected_adam__seed<N>      full run, plain GPM
+# The hold check (A's demos 0-4, no policy) runs once: it depends on A, not on the seed.
+#
+# LABELS per seed (pure; the seeds rule's, reused as code): gate (R0[A] >= 0.80; A's goal reached
+# < 0.50 under each held-out task) -> failed: labels not_assessed; acquisition clean / inconclusive
+# (either arm's B < 0.50) / _at_acquisition_cost; effect_present: neg - ctrl on A after B >= +0.20 with
+# the paired CI low > 0; retains: neg's forgetting <= 0.10. ACROSS SEEDS: replicated / mixed /
+# not_replicated / not_assessed. REPORTED, NOT JUDGED, for every completed seed whether or not its gate
+# passed: both arms' A before B, A after B, B after B and forgetting from their own start; the gate
+# values; the paired neg - ctrl differences (A after B, B, A before B) with signed intervals;
+# improvement_ci_low_above_0 (A after B, CI low > 0).
+#
+# VALIDITY (any failure -> invalid): the bank at its pin, the method config naming it, the curriculum's
+# tasks equal to task_a and task_b; the hold check passed; neg runs: namespace, method, clean commit,
+# recipe, negatives active at stage 0 / inactive at stage 1 with the bank's SHA, memory_check; ctrl
+# runs: namespace, method without negative keys, clean commit, recipe, memory_check; per-row pairing
+# (each row's rollout seed derives from namespace, task and episode index, and the episode index selects
+# the initial state); panel (checkpoint SHA, weights, eval seeds, own rows reproducing the evaluation),
+# probe and swap artifacts. Each output's commit is listed; differing clean commits are reported, not
+# refused. The first summary is stage preliminary (swaps not required); the last is stage final.
+# Smoke: seed 0 only, 1 rollout per cell, the gate not applied.
+
+seeds: [0, 1, 2]
+out: instruction_negatives_wine
+curriculum: similar_wine_rack
+task_a: libero_goal/put_the_wine_bottle_on_top_of_the_cabinet
+task_b: libero_goal/put_the_wine_bottle_on_the_rack
+held_out_tasks:
+  - libero_goal/put_the_wine_bottle_on_the_rack
+  - libero_goal/put_the_bowl_on_top_of_the_cabinet
+bank: instruction_negatives_bank_wine
+arms:
+  neg: {cli_method: gpm_neg_wine, method: gpm_neg, display: gpm_projected_adam_neg}
+  ctrl: {cli_method: gpm, method: gpm, display: gpm_projected_adam}
+pins:
+  bank_sha256: 09c420b4b72136b0be495575114deba376fba6fe752b2087c254b3c00ed30cb9
+production:
+  train: {steps: 30000, batch_size: 64, lr: 1.0e-4, amp: true}
+  n_episodes: 50
+smoke:
+  train: {steps: 200, amp: true}
+  n_episodes: 1
+hold_check:
+  n_demos: 5
+  close_run: 20
+  hold_steps: 50
+  eef_max_m: 0.01
+  settle_step: 15
+  finger_max_m: 0.002
+panel:
+  n_held_out: 50
+  n_other: 20
+  motion_steps: 100
+  trained_negatives:
+    - put the wine bottle on the plate
+    - push the plate to the front of the stove
+  held_out_other:
+    - {text: turn on the stove, task: libero_goal/turn_on_the_stove}
+  paraphrases:
+    - place the wine bottle on top of the cabinet
+    - put the wine bottle on the top of the cabinet
+gate:
+  learned_min: 0.80
+  held_out_reach_max: 0.50
+labels:
+  inconclusive_below: 0.50
+  floor: 0.80
+  tolerance: 0.10
+  effect_min: 0.20
+  forgetting_max: 0.10
+acquisition:                        # the stove module's keys (unused by the pair judge; kept for its helpers)
+  inconclusive_below: 0.50
+  floor: 0.80
+  tolerance: 0.10
+retention:
+  effect_min: 0.20
+  forgetting_max: 0.10
+probe:                              # fixed-batch probe loss (similar_cl's)
+  batch_size: 64
+  n_batches: 16
+  seed_tags:
+    shuffle: similar_cl_probe::shuffle
+    flow_time: similar_cl_probe::flow_time
+    noise: similar_cl_probe::noise
+swap:                               # velocity statistic and per-layer signal (similar_cl's)
+  capture_config: subspace
+  n_batches: 16
+  seed_tag: similar_cl_swap
+chunks:                             # sampled-chunk sensitivity (similar_cl's)
+  batch_size: 32
+  n_batches: 8
+  seed_tag: similar_cl_chunks
+coverage:                           # memory coverage at the base's stage-0 checkpoint
+  capture_config: subspace
+  seed_tag: language_cl_coverage
+drift:                              # A's sampled chunks, stage 0 against stage 1, same noise
+  batch_size: 32
+  n_batches: 8
+  seed_tag: instruction_negatives_drift
+min_free_gb: 40

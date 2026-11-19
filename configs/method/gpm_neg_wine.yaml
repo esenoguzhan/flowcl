@@ -1,0 +1,17 @@
+# gpm_neg_wine: gpm_neg (configs/method/gpm_neg.yaml) with the wine pair's negative bank
+# (configs/analysis/instruction_negatives_bank_wine.yaml; rule configs/analysis/instruction_negatives_wine.yaml).
+# Every other key is gpm_neg.yaml's. Registry name gpm_neg, display gpm_projected_adam_neg.
+name: gpm_neg
+
+eps: 0.95
+projection: gradient_and_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+negative_bank: instruction_negatives_bank_wine
+negative_weight: 1.0
+negative_stages: [0]
+negative_log_interval: 100
