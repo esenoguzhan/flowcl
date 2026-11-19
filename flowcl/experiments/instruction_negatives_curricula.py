@@ -386,7 +386,9 @@ def b_task_check(run: Path, sub: dict, n: int) -> dict:
 
 
 def run_checks_resumed(cfg_sub: dict, run: Path, arm: str, source: Path, pin: dict, smoke: bool,
-                       bank_sha: str, n: int) -> dict:
+                       bank_sha: str, n: int, negatives: bool = True) -> dict:
+    """A resumed stage-1 run. ``negatives=False`` (a plain-GPM run) skips the negatives check; every arm
+    but ``allow`` is a GPM arm (memory checks), ``allow`` is checked as allowlist_ft (frozen set)."""
     from flowcl.experiments.similar_cl import frozen_check, memory_check, resume_check
     from flowcl.train.checkpoint import load_checkpoint
 
@@ -399,12 +401,13 @@ def run_checks_resumed(cfg_sub: dict, run: Path, arm: str, source: Path, pin: di
               "result_json": (run / "result.json").is_file(),
               "resume": resume_check(run, source),
               "resume_pin": rec.get("sha256") == pin["stage0"] and Path(str(rec.get("run"))).name == source.name,
-              "negatives": negatives_inactive(run, bank_sha),
               "b_task": b_task_check(run, cfg_sub, n)}
+    if negatives:
+        checks["negatives"] = negatives_inactive(run, bank_sha)
     if not smoke:
         train = conf.get("train", {})
         checks["recipe"] = all(train.get(k) == v for k, v in cfg_sub["production"]["train"].items())
-    if arm == "gpm":
+    if arm != "allow":
         checks["memory"] = memory_check(run)
         checks["restored_memory"] = (rec.get("method_state") or {}).get("sha256") == pin["memory"]
     else:

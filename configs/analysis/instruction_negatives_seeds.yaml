@@ -1,0 +1,76 @@
+# Instruction negatives at seeds 1-2: stove and cabinet top, GPM + negatives against fresh plain-GPM
+# controls. Pre-registered rule, committed before the smoke (flowcl/experiments/instruction_negatives_seeds.py;
+# queue scripts/queue_instruction_negatives_seeds.sh; plan approved Thu 19 Nov).
+#
+# THE QUESTION. At seed 0, on one negatives base, GPM + negatives kept plate through stove at 0.70
+# (runs/2026-11-17_instruction_negatives.md) but through cabinet top at 0.04
+# (runs/2026-11-18_instruction_negatives_curricula.md); the base separates plate from both equally
+# (that record's section 3.7). Is stove's 0.70 or cabinet top's 0.04 the typical case?
+#
+# DESIGN. Per seed N in `seeds`, every run in the namespace similar_ab_stove__seq_ft__seed<N>:
+#   neg  stove    similar_ab_stove__gpm_projected_adam_neg__seed<N>   full run (gpm_neg; a new negatives base)
+#        panel    the stove rule's panel and gate on its stage0.pt
+#   neg  cabinet  similar_ab_cabinet__gpm_projected_adam_neg__seed<N> resumed at stage 1 from neg stove's stage0.pt
+#   ctrl stove    similar_ab_stove__gpm_projected_adam__seed<N>       full run (plain GPM)
+#   ctrl cabinet  similar_ab_cabinet__gpm_projected_adam__seed<N>     resumed at stage 1 from ctrl stove's stage0.pt
+# The recipe is the stove rule's (30k steps, batch 64, lr 1e-4, AMP, 50 rollouts per cell). The
+# controls are same-code, same-night runs: no historical flag at seeds 1-2. No allowlist arm, no milk.
+# The hold check replays demos without a policy and does not depend on the seed: seed 0's is pinned.
+#
+# LABELS per seed and B (pure; the stove rule's thresholds; ctrl = plain GPM at the same seed):
+#   gate: the stove rule's on that seed's base. Failed -> labels not_assessed (gate_failed, a valid
+#     outcome; the runs are still reported).
+#   acquisition: inconclusive_acquisition if either arm's B < 0.50; clean if both >= 0.80 and
+#     neg - ctrl on B >= -0.10; otherwise the labels carry the suffix _at_acquisition_cost.
+#   effect_present: neg - ctrl on plate after B >= +0.20 with the paired CI low > 0.
+#   retains: neg's plate forgetting (R0 - R1) <= 0.10.
+#   projection_contributes: not_run (no allowlist arm).
+#   Reported beside them: neg - ctrl on B and on plate before B (paired; stage 0 differs by design).
+#
+# ACROSS SEEDS (pre-registered reading, per B, from the seeds' effect_present, any suffix ignored):
+#   replicated (every seed), mixed (some), not_replicated (none), not_assessed (a seed not assessed).
+#   Seed 0's label and cells are shown beside it, from the pinned summaries, flagged
+#   against_historical_control. A three-seed table (plate after B, B; neg and ctrl) with the mean over
+#   seeds is descriptive (no CI across seeds).
+#
+# VALIDITY (any failure -> invalid): the pins below; the full runs' clean git_sha, namespace, method,
+# recipe, result.json and memory_check, negatives active at stage 0 / inactive at stage 1 with the bank
+# SHA (neg) or no negative keys (ctrl); the resumed runs' resume record (source and its stage0.pt
+# SHA), resume_check, namespace, method, B task, negatives inactive (neg), restored memory SHA and
+# memory_check; row pairing within each seed (task, episode index, seed) across neg and ctrl and
+# across the stove and cabinet runs' plate rows; panel, probe and swap artifacts (checkpoint SHA,
+# weights unchanged, eval seeds). Smoke: seeds may be narrowed, 1 rollout per cell, the gate is not
+# applied (200 steps cannot pass it).
+#
+# PROBES (descriptive), per seed: the base against stove and cabinet top (neg_stage0); neg at stage 1
+# on each B with the base's memory; ctrl at stage 1 on each B with its own memory. SWAPS (descriptive,
+# after the main summary): neg's stage-1 swaps on stove and cabinet top.
+
+seeds: [1, 2]
+out: instruction_negatives_seeds
+base_rule: instruction_negatives           # the stove rule: recipe, panel, gate, probes, swaps
+task_a: libero_goal/put_the_bowl_on_the_plate
+namespace_curriculum: similar_ab_stove     # namespace similar_ab_stove__seq_ft__seed<N>
+curricula:
+  stove: {curriculum: similar_ab_stove, task_b: libero_goal/put_the_bowl_on_the_stove, resumed: false}
+  cabinet: {curriculum: similar_ab_cabinet, task_b: libero_goal/put_the_bowl_on_top_of_the_cabinet, resumed: true}
+arms:
+  neg: {method: gpm_neg, display: gpm_projected_adam_neg}
+  ctrl: {method: gpm, display: gpm_projected_adam}
+pins:
+  stove_rule_sha256: a1f0a38ba6d390faed3a9c98f84f268ebfab49f060ef8cc1da7d880c4afa0e0b
+  curricula_rule_sha256: 8b9769de981cadf0feff1a52ec1bb80675d6f2b609cd50e9bf8f622ded2f4d6b
+  bank_sha256: 6f9affc755c8a54037b681abacc03002124e039e3c839bca5d5f503db1dd9e6b
+  hold: {path: instruction_negatives/hold/hold.json,
+         sha256: 5bb955552908cb5a0660b3071e6c7041c510f634508414e923dbaddc9ed99d9d}
+  seed0_stove_summary: {path: instruction_negatives/summary.json,
+                        sha256: 237bb5d2d558072d19646c768693882bce2d2428d70fc499d00babc287e06462}
+  seed0_curricula_summary: {path: instruction_negatives_curricula/summary.json,
+                            sha256: e5c5fe6f12f6699a150fac4b1fd995be082f29f41bffd73b2af0ece78c5a37cc}
+labels:
+  inconclusive_below: 0.50
+  floor: 0.80
+  tolerance: 0.10
+  effect_min: 0.20
+  forgetting_max: 0.10
+min_free_gb: 40
