@@ -202,7 +202,7 @@ changes.
 
 ## 2. Side line, outside the plan: similar tasks and language
 
-Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with its follow-up on Wed 18 Nov (item 4):
+Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with follow-ups on Wed 18 and Thu 19 Nov (item 4):
 1. **`runs/2026-10-04_similar_tasks.md`:** similar tasks overlap more with A's GPM memory, by
    modest margins. The instruction barely reaches a single-task policy's output.
 2. **`runs/2026-10-05_similar_cl.md`:** A → similar B. Every arm, GPM included, learns B and
@@ -242,7 +242,18 @@ Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with its follow-up on Wed 18
      - **The base is not why** (record §3.7, a probe added afterwards). It separates plate from
        cabinet top as strongly as from stove (chunk contrast 0.91 against 0.85), and as far inside
        GPM's memory. The loss arises during stage B.
-   - Follow-ups are parked in the records' §6: seeds 1–2, ε 0.99 for A, videos, a third task.
+   - **Seeds 1–2: stove replicates, cabinet top is `mixed`**
+     (`runs/2026-11-19_instruction_negatives_seeds.md`, Thu 19 Nov 01:38–18:50 with a reboot,
+     summary `valid`). Each seed has a new negatives base, and every control is fresh plain GPM.
+     - **Stove:** plate after stove 0.92 and 0.88, against 0.00; `effect_present` and `retains` at
+       both seeds. Over seeds 0–2: 0.70 / 0.92 / 0.88, so seed 0 was the low seed.
+     - **Cabinet top:** 0.10 (+0.10 [+0.02, +0.18], `not_shown`) and 0.28 (+0.28 [+0.16, +0.42],
+       `effect_present`), against 0.00. With seed 0's 0.04, the gain is positive at every seed and no
+       rollout favours the control, but it stays far from retention.
+     - **Seed 0's loss gap does not replicate:** A's probe loss after cabinet top equals stove's at
+       seeds 1–2. What differs is the release: under the plate instruction in B's scenes the arm
+       reopens the gripper in 38–49 of 50 rollouts after stove, and 13–31 after cabinet top.
+   - Follow-ups are parked in the records' §6: the wine pair (planned), videos, ε 0.99 for A.
 
 **Parked follow-ups** (not decided; none is in the plan):
 - allowlist_ft from the joint base (~2.7 h);
@@ -351,8 +362,9 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
      `runs/2026-11-18_ne70_4task.md`). Every identity check and strict report passed on seeds 0–2.
      - Mean ACC 77.5, between plain GPM (62.7) and f = 0.9 (86.7).
      - Below the flat 0.99 (84.2), at about the same trunk use (86% against 89%).
-   - **The instruction-negatives follow-up (§2, item 4)** used the GPU Wed 18 Nov 01:52–06:03. The
-     GPU has been free since.
+   - **The instruction-negatives follow-up (§2, item 4)** used the GPU Wed 18 Nov 01:52–06:03.
+   - **Instruction negatives at seeds 1–2 (§2, item 4)** used the GPU Thu 19 Nov 01:38–14:52 and,
+     after a reboot, 16:12–18:50.
    - **Next:** Track 2 step 4 (item 1), then `main_eval.yaml` and E3.
 
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
