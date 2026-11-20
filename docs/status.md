@@ -202,7 +202,7 @@ changes.
 
 ## 2. Side line, outside the plan: similar tasks and language
 
-Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with follow-ups on Wed 18 and Thu 19 Nov (item 4):
+Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with follow-ups Wed 18 – Fri 20 Nov (item 4):
 1. **`runs/2026-10-04_similar_tasks.md`:** similar tasks overlap more with A's GPM memory, by
    modest margins. The instruction barely reaches a single-task policy's output.
 2. **`runs/2026-10-05_similar_cl.md`:** A → similar B. Every arm, GPM included, learns B and
@@ -253,7 +253,19 @@ Three studies, 4–6 Oct, and a pilot on Tue 17 Nov with follow-ups on Wed 18 an
      - **Seed 0's loss gap does not replicate:** A's probe loss after cabinet top equals stove's at
        seeds 1–2. What differs is the release: under the plate instruction in B's scenes the arm
        reopens the gripper in 38–49 of 50 rollouts after stove, and 13–31 after cabinet top.
-   - Follow-ups are parked in the records' §6: the wine pair (planned), videos, ε 0.99 for A.
+   - **A second pair, wine bottle → cabinet top then → rack (seeds 0–2): `not_assessed` by the rule,
+     but GPM + negatives keeps A at 0.88 / 0.94 / 0.16 against 0.02–0.04 for plain GPM**
+     (`runs/2026-11-20_instruction_negatives_wine.md`, Thu 19 Nov 19:14 → Fri 20 Nov 10:35, summary
+     `valid`). Paired neg − ctrl: +0.86, +0.90, +0.14, each with its CI low above 0.
+     - **Why the gate failed:** under "put the wine bottle on the rack" the base still does A (0.90 /
+       0.92 / 0.68), and R0[A] is 0.78 and 0.52 at seeds 0 and 2. It holds under every other wrong
+       instruction.
+     - **The contrast grows during B,** from 0.03–0.10 to 0.11–0.28. On the bowl pair it started at
+       0.73–0.85 and was worn down. So the abstention the gate tests was not needed here.
+     - **Costs:** A is learned less well with the negatives at seeds 0 and 2 (−0.20, −0.42), and B is
+       a little lower at every seed (−0.04 to −0.14).
+   - Follow-ups are parked in the records' §6: a gate on instruction sensitivity for the next pair,
+     the text-encoder distances, A's acquisition under the negatives, videos.
 
 **Parked follow-ups** (not decided; none is in the plan):
 - allowlist_ft from the joint base (~2.7 h);
@@ -365,6 +377,8 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
    - **The instruction-negatives follow-up (§2, item 4)** used the GPU Wed 18 Nov 01:52–06:03.
    - **Instruction negatives at seeds 1–2 (§2, item 4)** used the GPU Thu 19 Nov 01:38–14:52 and,
      after a reboot, 16:12–18:50.
+   - **The wine pair (§2, item 4)** used the GPU Thu 19 Nov 18:59 (smoke) → Fri 20 Nov 10:35. The
+     GPU has been free since.
    - **Next:** Track 2 step 4 (item 1), then `main_eval.yaml` and E3.
 
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
