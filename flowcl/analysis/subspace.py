@@ -367,6 +367,7 @@ def extend_basis(
     rank_tol: float | None = None,
     energy_tol: float = ENERGY_TOL,
     new_energy_fraction: float | None = None,
+    k_added: int | None = None,
 ) -> tuple[torch.Tensor, dict]:
     """GPM's incremental memory update on a Gram matrix (Saha et al. 2021, Eq. 8-9).
 
@@ -390,6 +391,13 @@ def extend_basis(
     Because ``proj + f (1 - proj) > proj`` whenever ``proj < 1``, every layer with any new
     energy left is extended.
 
+    ``k_added = k`` (the allocation rules, :mod:`flowcl.analysis.allocation`) skips the target:
+    the ``k`` leading residual directions are added through the same projection, eigh, QR and
+    orthonormality path, and the post-condition is ``captured >= proj - energy_tol`` (the memory
+    never loses energy). ``target_fraction`` is then ``None``. The residual spectrum is returned
+    whenever the layer has residual energy, also for ``k = 0``. ``k`` above the residual's
+    numerical rank (or ``d - k_before``) raises. ``None`` is the target path above, unchanged.
+
     Returns:
         ``(M_new, info)`` with ``M_new`` float64 ``(d, k_after)``.
     """
@@ -399,6 +407,12 @@ def extend_basis(
         raise ValueError(f"eps must lie in (0, 1], got {eps}")
     if new_energy_fraction is not None and not 0.0 < new_energy_fraction < 1.0:
         raise ValueError(f"new_energy_fraction must lie in (0, 1), got {new_energy_fraction}")
+    if k_added is not None:
+        if new_energy_fraction is not None:
+            raise ValueError("k_added and new_energy_fraction are mutually exclusive")
+        if int(k_added) != k_added or k_added < 0:
+            raise ValueError(f"{layer}: k_added must be a non-negative integer, got {k_added}")
+        return _extend_basis_k(M, gram, layer, int(k_added), neg_tol, rank_tol, energy_tol)
     d = gram.shape[0]
     K = gram.to(torch.float64)
     nonfinite = int((~torch.isfinite(K)).sum())
@@ -457,6 +471,104 @@ def extend_basis(
         "rho_after": k_after / d,
         "proj_energy_fraction": proj_fraction,
         "target_fraction": target_fraction,
+        "captured_energy_fraction": captured,
+        "capacity_exhausted": k_after == d,
+        "residual_spectrum": residual_spectrum,
+    }
+
+
+def _prepare(M: torch.Tensor | None, gram: torch.Tensor, layer: str):
+    """:func:`extend_basis`'s preprocessing, verbatim: ``(K, M, d, k_before, total, proj)``."""
+    d = gram.shape[0]
+    K = gram.to(torch.float64)
+    nonfinite = int((~torch.isfinite(K)).sum())
+    if nonfinite:
+        raise ValueError(f"{layer}: Gram has {nonfinite} non-finite entries")
+    K = 0.5 * (K + K.T)
+
+    M = torch.zeros(d, 0, dtype=torch.float64) if M is None else M.to(torch.float64)
+    if M.shape[0] != d:
+        raise ValueError(f"{layer}: memory is ({M.shape[0]}, k) but the Gram is {d}x{d}")
+    assert_orthonormal_columns(M, layer)
+    k_before = M.shape[1]
+
+    total = float(torch.trace(K))
+    if total <= 0.0:
+        raise ValueError(
+            f"{layer}: Gram has non-positive trace {total:.3e}; the task produced no "
+            "input energy at this layer"
+        )
+    return K, M, d, k_before, total, captured_energy_fraction(M, K)
+
+
+def _residual_eigh(K, M, d, layer, neg_tol, rank_tol):
+    """``eigh((I - M M^T) K (I - M M^T))`` exactly as :func:`extend_basis` computes it."""
+    P = torch.eye(d, dtype=torch.float64) - M @ M.T
+    K_res = P @ K @ P
+    return gram_eigh(K_res, layer, neg_tol=neg_tol, rank_tol=rank_tol)
+
+
+def residual_stats(
+    M: torch.Tensor | None,
+    gram: torch.Tensor,
+    layer: str,
+    neg_tol: float,
+    rank_tol: float | None = None,
+) -> dict:
+    """What an allocation rule needs from one layer, computed as :func:`extend_basis` does.
+
+    Returns ``d_in``, ``k_before``, ``total`` (tr K), ``proj`` (tr(MᵀKM)/tr K), the residual's
+    descending ``eigenvalues`` (empty when the memory is full or no energy is left outside it,
+    ``1 - proj <= NEW_ENERGY_ATOL``), its numerical ``rank`` and ``cap = min(rank, d - k_before)``,
+    the most directions :func:`extend_basis` with ``k_added`` accepts.
+    """
+    K, M, d, k_before, total, proj = _prepare(M, gram, layer)
+    eigenvalues, rank = torch.zeros(0, dtype=torch.float64), 0
+    if k_before < d and 1.0 - proj > NEW_ENERGY_ATOL:
+        eigenvalues, _, rank = _residual_eigh(K, M, d, layer, neg_tol, rank_tol)
+    return {"d_in": d, "k_before": k_before, "total": total, "proj": proj,
+            "eigenvalues": eigenvalues, "rank": rank, "cap": min(rank, d - k_before)}
+
+
+def _extend_basis_k(M, gram, layer, k, neg_tol, rank_tol, energy_tol) -> tuple[torch.Tensor, dict]:
+    K, M, d, k_before, total, proj_fraction = _prepare(M, gram, layer)
+    residual_spectrum = torch.zeros(0, dtype=torch.float64)
+    added = torch.zeros(d, 0, dtype=torch.float64)
+    if k_before < d and 1.0 - proj_fraction > NEW_ENERGY_ATOL:
+        eigenvalues, eigenvectors, rank = _residual_eigh(K, M, d, layer, neg_tol, rank_tol)
+        residual_spectrum = eigenvalues
+        cap = min(rank, d - k_before)
+        if k > cap:
+            raise ValueError(f"{layer}: k_added {k} exceeds the residual's capacity {cap} "
+                             f"(rank {rank}, {d - k_before} free dimensions)")
+        if k > 0:
+            U = eigenvectors[:, :k]
+            U = U - M @ (M.T @ U)  # re-orthogonalise against the memory
+            Q, Rq = torch.linalg.qr(U)
+            if float(Rq.diagonal().abs().min()) < 1e-8:
+                raise RuntimeError(
+                    f"{layer}: new directions are numerically dependent on the memory "
+                    f"(min |diag R| = {float(Rq.diagonal().abs().min()):.3e})"
+                )
+            added = Q
+    elif k > 0:
+        raise ValueError(f"{layer}: k_added {k} but the layer has no residual energy or room")
+
+    M_new = torch.cat([M, added], dim=1)
+    assert_orthonormal_columns(M_new, layer)
+    captured = captured_energy_fraction(M_new, K)
+    if captured < proj_fraction - energy_tol:
+        raise RuntimeError(f"{layer}: memory captures {captured:.9f} after the extension, below the "
+                           f"{proj_fraction:.9f} it held before")
+    k_after = M_new.shape[1]
+    return M_new, {
+        "k_before": k_before,
+        "k_added": k_after - k_before,
+        "k_after": k_after,
+        "d_in": d,
+        "rho_after": k_after / d,
+        "proj_energy_fraction": proj_fraction,
+        "target_fraction": None,
         "captured_energy_fraction": captured,
         "capacity_exhausted": k_after == d,
         "residual_spectrum": residual_spectrum,

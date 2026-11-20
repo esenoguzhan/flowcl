@@ -214,6 +214,8 @@ class GPM(BaseMethod):
         capture_config: str = "subspace",
         new_energy_fraction: float | None = None,
         eps_later: float | None = None,
+        allocation_rule: str | None = None,
+        capacity_schedule: dict | None = None,
     ) -> None:
         """``capture_config``: a ``configs/analysis/<name>.yaml`` name, or a YAML path.
 
@@ -224,6 +226,13 @@ class GPM(BaseMethod):
         ``eps_later`` replaces ``eps`` for every memory extension after Task 1 (task index
         >= 1), with a distinct display name (``..._e99`` for 0.99). Task 1's memory, and so
         stages 0-1, are those of plain eps. ``None`` is one eps for every task.
+
+        ``allocation_rule`` (a :data:`flowcl.analysis.allocation.RULES` name) with
+        ``capacity_schedule`` (``{seed namespace: [C_1, C_2, ...]}``, integer protected counts
+        ``Σ d_out k``) matches capacity instead of a threshold: the extension after task ``t >= 1``
+        reaches ``C_t`` of the run's namespace with the rule's allocation
+        (:func:`flowcl.analysis.allocation.match_capacity`); Task 1 keeps ``eps``. Display name
+        ``..._alloc_<rule>``. Exclusive with ``new_energy_fraction`` and ``eps_later``.
         """
         super().__init__()
         if projection not in self.projection_names:
@@ -241,6 +250,9 @@ class GPM(BaseMethod):
             )
         if eps_later is not None and not 0.0 < eps_later <= 1.0:
             raise ValueError(f"eps_later must lie in (0, 1], got {eps_later}")
+        self.allocation_rule, self.capacity_schedule = _validate_allocation(
+            allocation_rule, capacity_schedule, new_energy_fraction, eps_later)
+        self.allocation_history: dict[int, dict] = {}
         self.eps_later = None if eps_later is None else float(eps_later)
         self.new_energy_fraction = (
             None if new_energy_fraction is None else float(new_energy_fraction)
@@ -275,6 +287,8 @@ class GPM(BaseMethod):
             name += f"_ne{round(100 * self.new_energy_fraction)}"
         if self.eps_later is not None:
             name += f"_e{round(100 * self.eps_later)}"
+        if self.allocation_rule is not None:
+            name += f"_alloc_{self.allocation_rule}"
         return name
 
     def config(self) -> dict:
@@ -291,7 +305,23 @@ class GPM(BaseMethod):
         # Only when set: configurations without it keep the memory metadata they had before.
         if self.eps_later is not None:
             config["eps_later"] = self.eps_later
+        if self.allocation_rule is not None:
+            config["allocation_rule"] = self.allocation_rule
+            config["capacity_schedule"] = {ns: list(c) for ns, c in self.capacity_schedule.items()}
         return config
+
+    def capacity_target(self, namespace: str | None, task_idx: int) -> int:
+        """``C_t``: the protected count the extension after task ``task_idx >= 1`` must reach."""
+        if self.capacity_schedule is None:
+            raise RuntimeError(f"{self.display_name} has no capacity schedule")
+        if namespace not in self.capacity_schedule:
+            raise KeyError(f"seed namespace {namespace!r} has no capacity schedule (known: "
+                           f"{sorted(self.capacity_schedule)})")
+        targets = self.capacity_schedule[namespace]
+        if not 1 <= task_idx <= len(targets):
+            raise KeyError(f"the schedule of {namespace!r} covers the extensions after tasks 1..{len(targets)} "
+                           f"(0-based), not {task_idx}")
+        return targets[task_idx - 1]
 
     def eps_for(self, task_idx: int) -> float:
         """The energy threshold of the memory extension after task ``task_idx``."""
@@ -338,6 +368,9 @@ class GPM(BaseMethod):
             probe_seed=derive_seed(ns, f"gpm_memory_probe::{context.task_key}", task_idx),
             capture_seed=derive_seed(ns, f"gpm_memory::{context.task_key}", task_idx),
         )
+        if self.allocation_rule is not None and task_idx >= 1:
+            self._extend_allocated(policy, task_idx, capture, cfg, ns)
+            return
         history = {}
         for entry in policy.projectable_layers():
             name = entry.name
@@ -360,6 +393,49 @@ class GPM(BaseMethod):
             self._memory_spectra[name] = spectrum
             history[name] = {**info, "n_samples": acc.n[view], "view": view}
             acc.gram.clear()
+        self.memory_history[task_idx] = history
+        self.memory_extended[task_idx] = True
+
+    def _extend_allocated(self, policy, task_idx: int, capture, cfg, ns: str) -> None:
+        """The extension after task ``task_idx >= 1`` at the scheduled capacity (``allocation_rule``).
+
+        Every layer's residual statistics come first (the Grams are all captured), then
+        :func:`~flowcl.analysis.allocation.match_capacity` picks the allocation, then each layer is
+        extended by exactly its ``k`` through :func:`extend_basis` (``k_added``).
+        """
+        from flowcl.analysis.allocation import LayerStats, match_capacity
+        from flowcl.analysis.subspace import residual_stats
+
+        target = self.capacity_target(ns, task_idx)
+        registry = policy.projectable_layers()
+        stats = []
+        for entry in registry:
+            acc = capture.accumulators[entry.name]
+            view = capture.primary_view(entry.name)
+            raw = residual_stats(self._memory.get(entry.name), acc.gram[view], entry.name,
+                                 neg_tol=cfg.neg_tol, rank_tol=cfg.rank_tol)
+            stats.append(LayerStats.from_residual(entry.name, entry.module.weight.shape[0], raw))
+        match = match_capacity(self.allocation_rule, stats, target, eps=self.eps)
+        history = {}
+        for entry, s in zip(registry, stats):
+            name = entry.name
+            acc = capture.accumulators[name]
+            view = capture.primary_view(name)
+            M_old = self._memory.get(name)
+            M_new, info = extend_basis(M_old, acc.gram[view], self.eps, name, neg_tol=cfg.neg_tol,
+                                       rank_tol=cfg.rank_tol, k_added=match["k_added"][name])
+            spectrum = info.pop("residual_spectrum")
+            self._after_extend(name, M_old, acc.gram[view], M_new, info, spectrum)
+            self._memory[name] = M_new
+            self._memory_samples[name] = self._memory_samples.get(name, 0) + acc.n[view]
+            self._memory_spectra[name] = spectrum
+            history[name] = {**info, "n_samples": acc.n[view], "view": view, "d_out": s.d_out,
+                             "allocation_rule": self.allocation_rule}
+            acc.gram.clear()
+        realised = sum(h["d_out"] * h["k_after"] for h in history.values())
+        if realised != match["count"]:
+            raise RuntimeError(f"realised protected count {realised} != the matched {match['count']}")
+        self.allocation_history[task_idx] = {k: v for k, v in match.items() if k != "k_added"}
         self.memory_history[task_idx] = history
         self.memory_extended[task_idx] = True
 
@@ -406,6 +482,13 @@ class GPM(BaseMethod):
         stored_later = meta.get("config", {}).get("eps_later")
         if stored_later != self.eps_later:
             problems.append(f"eps_later {stored_later} != {self.eps_later}")
+        stored_rule = meta.get("config", {}).get("allocation_rule")
+        if stored_rule != self.allocation_rule:
+            problems.append(f"allocation_rule {stored_rule} != {self.allocation_rule}")
+        stored_schedule = meta.get("config", {}).get("capacity_schedule")
+        mine = self.config().get("capacity_schedule")
+        if stored_schedule != mine:
+            problems.append(f"capacity_schedule {stored_schedule} != {mine}")
         if method_run_id is not None and meta.get("method_run_id") != method_run_id:
             problems.append(f"method_run_id {meta.get('method_run_id')!r} != {method_run_id!r}")
         if task_idx is not None and meta.get("task_idx") != task_idx:
@@ -415,6 +498,7 @@ class GPM(BaseMethod):
         self._memory = {n: b.vectors.to(torch.float64).cpu() for n, b in bases.items()}
         self._memory_samples = {n: b.n_samples for n, b in bases.items()}
         self.memory_history = {int(k): v for k, v in meta["memory_history"].items()}
+        self.allocation_history = {int(k): v for k, v in (meta.get("allocation_history") or {}).items()}
         return meta
 
     def restore_state(self, checkpoint_extra: dict, source_run: Path, task_idx: int) -> dict:
@@ -599,6 +683,8 @@ class GPM(BaseMethod):
                 "config": self.config(),
                 "note": "singular_values hold sqrt of the latest residual spectrum (Eq. 8)",
             }
+            if self.allocation_rule is not None:
+                meta["allocation_history"] = {str(t): h for t, h in self.allocation_history.items()}
             paths.append(save_bases(directory / f"memory_task{task_idx}.pt", bases, meta))
         logs = {
             "method": self.display_name,
@@ -610,6 +696,8 @@ class GPM(BaseMethod):
             "memory": self.memory_history.get(task_idx),
             **_json_logs(self.task_logs.get(task_idx, {})),
         }
+        if self.allocation_rule is not None:
+            logs["allocation"] = self.allocation_history.get(task_idx)
         paths.append(
             atomic_write_text(
                 directory / f"gpm_logs_task{task_idx}.json", json.dumps(logs, indent=2) + "\n"
@@ -649,7 +737,10 @@ class GPM(BaseMethod):
         references by path and SHA-256, so checkpoints do not grow by the basis size.
         """
         latest = self._latest_logs()
+        extra = ({"allocation_history": {str(t): h for t, h in self.allocation_history.items()}}
+                 if self.allocation_rule is not None else {})
         return {
+            **extra,
             "name": self.name,
             "display_name": self.display_name,
             "config": self.config(),
@@ -667,6 +758,32 @@ class GPM(BaseMethod):
 
     def describe(self) -> str:
         return f"{self.display_name} (eps {self.eps}, stores {self.stored_bytes() / 1e6:.2f} MB)"
+
+
+def _validate_allocation(rule, schedule, new_energy_fraction, eps_later):
+    """``(rule, schedule)`` checked: both or neither, a known rule, integer non-decreasing targets."""
+    from flowcl.analysis.allocation import RULES
+
+    if rule is None and schedule is None:
+        return None, None
+    if rule is None or schedule is None:
+        raise ValueError("allocation_rule and capacity_schedule go together")
+    if rule not in RULES:
+        raise ValueError(f"allocation_rule {rule!r} is not one of {sorted(RULES)}")
+    if new_energy_fraction is not None or eps_later is not None:
+        raise ValueError("allocation_rule is exclusive with new_energy_fraction and eps_later")
+    if not isinstance(schedule, dict) or not schedule:
+        raise ValueError("capacity_schedule must be a non-empty {namespace: [counts]} mapping")
+    clean = {}
+    for ns, counts in schedule.items():
+        counts = list(counts)
+        if not counts or any(isinstance(c, bool) or int(c) != c or c <= 0 for c in counts):
+            raise ValueError(f"capacity_schedule[{ns!r}] must be positive integers, got {counts}")
+        counts = [int(c) for c in counts]
+        if any(b < a for a, b in zip(counts, counts[1:])):
+            raise ValueError(f"capacity_schedule[{ns!r}] decreases: {counts}")
+        clean[str(ns)] = counts
+    return str(rule), clean
 
 
 def _json_logs(logs: dict) -> dict:

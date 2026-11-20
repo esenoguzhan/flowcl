@@ -1,0 +1,30 @@
+# gpm_alloc_room: gpm_projected_adam at matched capacity with the 'room' allocation rule (the
+# allocation-rules pilot; pre-registered rule configs/analysis/allocation_rules.yaml).
+#
+# Identical to configs/method/gpm.yaml except allocation_rule and capacity_schedule. Task 1's
+# memory is extended to eps = 0.95 as in plain GPM, so stage 0, T1's memory and stage 1 are
+# bitwise those of the gpm_projected_adam run of the same seed (the runner's identity check).
+# Every later extension (after task index t >= 1) reaches the protected count
+# C_t = sum_l d_out,l k_l that flat 0.99 (gpm_e99) reached after the same task on the same seed,
+# and the rule decides only where it goes (flowcl/analysis/allocation.py):
+#   room: the novelty rule with f_l = min(0.99999, kappa (1 - rho_l)), rho_l = k_before / d_in, kappa set by the match
+# with a per-layer floor of tau >= 0.95. The counts are e99's, read from
+# results/seq_hetero__gpm_projected_adam_e99__seed<S>/method/memory_task3.pt (its history's
+# k_after per layer times d_out), keyed by the run's seed namespace; the rule pins those files
+# by SHA-256. Display name gpm_projected_adam_alloc_room; registry name gpm.
+name: gpm
+
+eps: 0.95
+projection: gradient_and_update
+residual_rtol: 1.0e-3
+residual_weight_atol: 1.0e-6
+log_interval: 100
+update_memory: true
+capture_config: subspace
+
+allocation_rule: room
+# Protected counts after tasks 2, 3, 4 (task index 1, 2, 3) of 41 954 304 registry weights.
+capacity_schedule:
+  seq_hetero__seq_ft__seed0: [23431110, 25740952, 27042210]
+  seq_hetero__seq_ft__seed1: [23937576, 26346739, 27695571]
+  seq_hetero__seq_ft__seed2: [23624106, 25957465, 27364188]
