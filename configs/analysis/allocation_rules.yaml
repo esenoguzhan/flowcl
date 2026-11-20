@@ -1,0 +1,136 @@
+# The allocation-rules pilot: does WHERE GPM protects matter at a fixed AMOUNT? Pre-registered rule,
+# committed before the smoke and before any training (written Fri 20 Nov 2026).
+#
+# QUESTION. C1 (configs/analysis/high_protection.yaml) could not separate the amount of protection from
+# its allocation: flat 0.99 (gpm_e99) reproduced adaptive GPM's Object gain at T2, and after that the two
+# protected different amounts (seed 0 after T4: 64.5 % of the registry weights against 79.9 %). Here
+# every arm protects exactly e99's amount after T2, T3 and T4 (same seed) and only the allocation rule
+# differs. The comparator is the existing e99 run, the flat rule on the same schedule.
+#
+# ARMS (seed 0; 4-task seq_hetero; configs/method/gpm_alloc_<arm>.yaml; flowcl/analysis/allocation.py):
+#   novelty  tau = max(0.95, min(1, p + f (1 - p)))                           (ne90's rule, f matched)
+#   size     k = max(k(0.95), #{residual eigenvalues >= delta * tr K})        (delta matched; reversed)
+#   room     novelty with f_l = min(0.99999, kappa (1 - rho_l)), rho_l = k_before / d_in   (kappa matched)
+# Every k counts added directions; the 0.95 per-layer floor holds for the arm's own memory and inputs.
+# T1 stays at eps = 0.95 in every arm, so stages 0-1 and the T1 memory are bitwise plain GPM's (and
+# e99's). Targets are e99's integer protected counts sum_l d_out,l k_l (memory_task3.pt histories).
+# Matching: the knob is bisected to the two attainable counts around the target; the nearest end is
+# taken, an exact tie goes to the upper end; floor_bound / ceiling_bound take the endpoint and record
+# the error. The allocation is the bracket end itself.
+#
+# PREDICTIONS (offline, below): the T2 Grams are identical in all arms, so ne90's T2 artifact gives every
+# rule's post-T2 allocation exactly. The predictor first reproduces e99 (flat 0.99) and ne90 (novelty 0.9)
+# on 91/91 layers for seeds 0, 1, 2. Capacity reallocated vs e99 after T2 (seed 0): novelty 1.19 pp,
+# size 3.48 pp, room 14.79 pp (room moves protection from the trunk, 78.7 -> 57.2 %, to the decoder,
+# 21.6 -> 53.8 %). Novelty is a narrow comparison: it clears the 1 pp gate by 0.19 pp.
+# A prediction_borderline layer is a jump layer: its k differs between the two ends of the predicted
+# bracket (equivalently, k changes under a +-1e-9 relative change of the reconstructed tr K). One per
+# rule and seed (two in seed 1's room arm: k_proj and v_proj share their input).
+#
+# GATES (per arm; only the extensions that shape later training: post-T2 acts on T3, post-T3 on T4):
+#   invalid_comparison      stages 0-1 or the T1 memory differ from plain GPM, T1 pairing failed, or the
+#                           run config differs from e99's beyond the method block and neutral new keys
+#   invalid_matching        post-T2 or post-T3 realised count off the target by more than 0.05 pp
+#                           (a floor_bound or ceiling_bound endpoint included)
+#   invalid_implementation  post-T2 per-layer k differs from the prediction on a layer other than the
+#                           predicted jump layers (a +-1 difference there is the flag prediction_borderline)
+#   not_distinct            capacity reallocated vs e99, R = 1/2 sum d_out |k_a - k_b| / sum d_out d_in,
+#                           below 1 pp after both post-T2 and post-T3
+#   invalid_evaluation      a rep-0 re-run differs from the stored cell (e99: all 4 tasks; arms: T4), the
+#                           rollout seeds differ across arms in any task x repetition, a repetition
+#                           repeats another's noise, or a checkpoint / eval provenance check fails
+#   invalid_run             the strict sequence report's required checks fail, or artifacts are missing
+# Post-T4 matching is not a pilot gate: it is required to continue an arm into E3 (T5 trains under it).
+#
+# PRIMARY (per valid, distinct arm): dACC = ACC(arm) - ACC(e99) after T4 (stage 3), over 4 tasks x 50
+# initial states x 3 repetitions. Repetitions reuse LIBERO's 50 fixed states with fresh noise (rep 0 the
+# runs' namespace, rep r the namespace + __rep<r>); a state with its 3 repetitions is one observation;
+# the 95 % CI resamples states independently per task column, paired across arms (10 000 resamples,
+# pointwise: an exploratory promotion screen, not simultaneous). It is evaluation uncertainty of these
+# seed-0 checkpoints, not training-seed variation.
+# LABELS: allocation_helps (CI low > 0), allocation_hurts (CI high < 0), unresolved.
+# DESCRIPTIVE: dNBT, dAUC, per-task forgetting (rep 0, A5 rollout bootstrap), the T3-T4 diagonal, the
+# per-step / probe loss, capacity per stage and half, R and the subspace overlap per extension.
+#
+# CONSEQUENCES. The pilot decides only which arms go to seeds 1-2, not the E3 selection.
+#   * allocation_helps -> seeds 1-2 of that arm as the confirmatory test (seed 0 left out of the claim;
+#     ~9.6 GPU-h training per arm plus evaluations). Each follow-up seed passes every gate above first
+#     (an invalid seed: inconclusive_invalid); then CI low > 0 on both seeds = replicated_on_both_held_out_seeds,
+#     on one = mixed, on none = not_replicated. E3 takes at most one new arm, the replicated arm with the
+#     largest mean dACC over seeds 1-2; its T5-T8 schedule comes from E3's e99 arm, so it resumes after it.
+#   * E3 resume rule (declared now, built only if an arm replicates): a resume must match the rule and
+#     every target already used; future targets may be appended; a changed historical target is refused
+#     (GPM.restore_memory and continual.py's method-kwargs equality both need the change).
+#   * The sentence "the tested allocations showed no resolvable ACC difference from flat at matched
+#     capacity (seed 0, exploratory)" is used only if all three arms are valid and distinct and all three
+#     CIs include 0. Any other pattern is reported arm by arm. allocation_hurts is reported, no follow-up.
+#
+# Code: flowcl/experiments/allocation_rules.py (predict, check_arm, summary), flowcl/experiments/alloc_queue.py
+# (preflight), scripts/queue_alloc.sh. Outputs: results/allocation_rules/seed<S>/.
+
+seeds: [0, 1, 2]
+pilot_seeds: [0]
+arms: [novelty, size, room]
+comparator: e99
+
+gates:
+  matching_tasks: [1, 2]
+  e3_matching_task: 3
+  matching_tol_pp: 0.05
+  distinct_tasks: [1, 2]
+  distinct_min_pp: 1.0
+  borderline_max_abs: 1
+
+evaluation:
+  stage: 3
+  n_episodes: 50
+  repetitions: [0, 1, 2]
+  # rep 0 re-run (the reproduction gate): task positions, or all.
+  rep0_rerun: {e99: all, novelty: [3], size: [3], room: [3]}
+
+bootstrap: {n_resamples: 10000, confidence: 0.95, seed: 0}
+
+smoke: {n_episodes: 1}
+
+# SHA-256 of the archived files the pilot builds on (per seed; checked by the preflight).
+pins:
+  "0":
+    e99_memory3: 061c96ce378123f2afe6e21d2f20cfb11dc51cb085a7d4430ff592f16f9e966f
+    e99_stage3: 77638662dc7ee2856e5b321f15829c125d4172c7fbb77f5635b7f29a84bede1a
+    e99_eval3: f96fd0f8f61c1e0c6eea1746f241b78a08efbba41db20e0159f7cee4e46ca6d9
+    e99_result: 1212b78d2c92ad9df0248c70a7a24b09d5cceb9ca2c530195418a6f63bd2f210
+    ne90_memory1: d95795bb43077cc33a886ed095823beaa9e308573700a2f6f091ee10cfbd59de
+  "1":
+    e99_memory3: 5d63c4f0daed35288d803007f5e08c7ccc745d6351827e88f878a818af87f229
+    e99_stage3: 039084591b73330447a42e50b7b38789573b713a9c4dd656e396d6ee1068df30
+    e99_eval3: 250e290568900423dc0c804612c4e56856167060cca31a6357ffc1299cdbc544
+    e99_result: 6b3c909743425549c1dbffd3274a7e46227d502e799ce4b7b54c64b1a760c5c1
+    ne90_memory1: 5ba5c3570b9caccc1691baa53606f5058a037be7afe31bd72dc33bcece2f89f7
+  "2":
+    e99_memory3: 18d196f730c798ce2bcd3ee62051415455512e68b6659b9a90cddb593d84fc82
+    e99_stage3: d8300dd475be60af783ede37eca8cbb82e5a0223b0c7dc70774c3e9e5cf53cc9
+    e99_eval3: a9e667434e31ed8b5828a731773f0bea966dc4373d2a91c99f187144fa95e540
+    e99_result: f6b7d84067abf23c4e00f4d8c8caf846f7b9ebaab28530845e5f34a8b7bc0a09
+    ne90_memory1: 5b869e14eb7f8910eb73a8fa395e9b8cd4f7180bd84ac7e89ba983d1f69c0e8b
+
+# The registered post-T2 predictions (scripts/allocation_rules.py predict --seed S). k_hash is the
+# SHA-256 of the sorted per-layer k_after list; the implementation gate compares the run against it.
+predictions:
+  "0":
+    target_t2: 23431110
+    e99_t2_halves: {trunk: 0.7869, decoder: 0.2160}
+    novelty: {knob: 0.898984468, status: matched, count: 23430878, error_pp: -0.00055, trunk: 0.7803, decoder: 0.2258, reallocated_vs_e99_pp: 1.19, jump_layers: [flow_head.blocks.1.cross_attn.k_proj], k_hash: bfbce96ccef8ebd12c23c358aaa6344b7ad6b2481481b051e71e273bc40be69e}
+    size: {knob: 0.000109042634, status: matched, count: 23431159, error_pp: 0.00012, trunk: 0.7729, decoder: 0.2370, reallocated_vs_e99_pp: 3.48, jump_layers: [trunk.blocks.1.mlp.fc2], k_hash: 1e0f067d3772d66f0ed86289854e2763a159276a41b203f188520eda1c25bcfc}
+    room: {knob: 1.02398567, status: matched, count: 23431263, error_pp: 0.00036, trunk: 0.5720, decoder: 0.5382, reallocated_vs_e99_pp: 14.79, jump_layers: [flow_head.blocks.3.mlp.fc1], k_hash: 42ab3f1397cb8bf0fe427a115adb628fba624505338041d15d4d7fe5a2c1e920}
+  "1":
+    target_t2: 23937576
+    e99_t2_halves: {trunk: 0.7895, decoder: 0.2422}
+    novelty: {knob: 0.898717662, status: matched, count: 23937807, error_pp: 0.00055, trunk: 0.7811, decoder: 0.2549, reallocated_vs_e99_pp: 1.37, jump_layers: [trunk.blocks.6.attn.q_proj], k_hash: 25602bf5245c29812336fc5ed02485437ee47602ee2f24aee42cff9bea516eca}
+    size: {knob: 0.000105585092, status: matched, count: 23938151, error_pp: 0.00137, trunk: 0.7803, decoder: 0.2560, reallocated_vs_e99_pp: 3.80, jump_layers: [trunk.blocks.5.mlp.fc1], k_hash: b09c3f1daa69d6ee74c373b3fb27ade9a33b8f09cfde71c2265f97e5458dba69}
+    room: {knob: 1.02994027, status: matched, count: 23937673, error_pp: 0.00023, trunk: 0.5731, decoder: 0.5668, reallocated_vs_e99_pp: 14.85, jump_layers: [flow_head.blocks.1.self_attn.k_proj, flow_head.blocks.1.self_attn.v_proj], k_hash: d49de44d2bc3f1be30dcc84faf93096f78da741342cb92467e76d9ca1b3a582d}
+  "2":
+    target_t2: 23624106
+    e99_t2_halves: {trunk: 0.7879, decoder: 0.2259}
+    novelty: {knob: 0.901005822, status: matched, count: 23624351, error_pp: 0.00058, trunk: 0.7816, decoder: 0.2354, reallocated_vs_e99_pp: 1.20, jump_layers: [trunk.blocks.0.attn.q_proj], k_hash: 2f9c181c92f221040f005a2c1d4973f1fd26db338c551602cef39fca9b9be93f}
+    size: {knob: 0.000106255057, status: matched, count: 23624183, error_pp: 0.00018, trunk: 0.7773, decoder: 0.2419, reallocated_vs_e99_pp: 3.68, jump_layers: [flow_head.blocks.2.cross_attn.k_proj], k_hash: 3a36646b79be2d88584d904eabcf50a7e38f3fbd55b4855c5d987d1e88ccab37}
+    room: {knob: 1.02817581, status: matched, count: 23624329, error_pp: 0.00053, trunk: 0.5706, decoder: 0.5518, reallocated_vs_e99_pp: 14.74, jump_layers: [flow_head.blocks.1.mlp.fc1], k_hash: 8323dfbaa85dcbd31ffb0e471f9a5875216b90e8c76e95a99b3ae87908017037}

@@ -346,3 +346,77 @@ def test_method_yamls_are_gpm_plus_the_rule_and_schedule(rule):
     assert all(len(c) == 3 for c in schedule.values())
     assert kwargs == plain
     assert GPM(**load_method_config(f"gpm_alloc_{rule}")[1]).display_name == f"gpm_projected_adam_alloc_{rule}"
+
+
+# ---- the pilot's analysis and queue checks ---------------------------------------------------------
+
+
+def test_acc_ci_pairs_states_with_their_repetitions():
+    from flowcl.experiments.allocation_rules import acc_state_paired_ci
+
+    boot = {"n_resamples": 2000, "confidence": 0.95, "seed": 0}
+    rng = np.random.default_rng(0)
+    a = {k: rng.integers(0, 2, size=(3, 50)).astype(float) for k in "wxyz"}
+    same = acc_state_paired_ci(a, {k: v.copy() for k, v in a.items()}, boot)
+    assert same["diff"] == 0.0 and same["low"] == same["high"] == 0.0
+    ones = {k: np.ones((3, 50)) for k in "wxyz"}
+    zeros = {k: np.zeros((3, 50)) for k in "wxyz"}
+    assert acc_state_paired_ci(ones, zeros, boot)["diff"] == 1.0
+    # One task better by 0.4 on every state, the others equal: dACC = 0.1 exactly, zero width.
+    better = {**a, "w": np.full((3, 50), 1.0)}
+    b = {**a, "w": np.full((3, 50), 0.6)}
+    ci = acc_state_paired_ci(better, b, boot)
+    assert ci["diff"] == pytest.approx(0.1) and ci["low"] == pytest.approx(0.1)
+    assert (ci["n_states"], ci["repetitions"], ci["n_tasks"]) == (50, 3, 4)
+    with pytest.raises(ValueError):
+        acc_state_paired_ci({"w": np.ones((3, 50))}, {"w": np.ones((2, 50))}, boot)
+
+
+def test_labels_and_the_across_arm_sentence():
+    from flowcl.experiments.allocation_rules import label, overall
+
+    assert label({"low": 0.01, "high": 0.2}) == "allocation_helps"
+    assert label({"low": -0.2, "high": -0.01}) == "allocation_hurts"
+    assert label({"low": -0.1, "high": 0.1}) == "unresolved"
+    null = {a: {"label": "unresolved"} for a in ("novelty", "size", "room")}
+    assert overall(null)["outcome"] == "no_resolvable_difference"
+    assert overall({**null, "room": {"label": "allocation_hurts"}})["outcome"] == "per_arm"
+    assert overall({"novelty": {"label": "unresolved"}})["outcome"] == "per_arm"
+
+
+def test_config_diff_allows_only_neutral_new_keys(tmp_path):
+    from omegaconf import OmegaConf
+
+    from flowcl.experiments.allocation_rules import config_diff
+
+    base = {"run_id": "old", "method": {"eps_later": 0.99}, "train": {"steps": 30000},
+            "provenance": {"identity_stages": [0, 1]}}
+    newer = {"run_id": "new", "method": {"allocation_rule": "room"}, "train": {"steps": 30000,
+             "augment_color": 0.0, "checkpoint_every": 0}, "provenance": {"identity_stages": [0, 1],
+             "identity_reference_checkpoints": {}}}
+    for name, cfg in (("old", base), ("new", newer)):
+        (tmp_path / name).mkdir()
+        OmegaConf.save(OmegaConf.create(cfg), tmp_path / name / "config.yaml")
+    assert config_diff(tmp_path / "new", tmp_path / "old")["passed"]
+    newer["train"]["augment_color"] = 0.3
+    OmegaConf.save(OmegaConf.create(newer), tmp_path / "new" / "config.yaml")
+    assert not config_diff(tmp_path / "new", tmp_path / "old")["passed"]
+    newer["train"]["augment_color"], newer["train"]["steps"] = 0.0, 200
+    OmegaConf.save(OmegaConf.create(newer), tmp_path / "new" / "config.yaml")
+    assert not config_diff(tmp_path / "new", tmp_path / "old")["passed"]
+
+
+def test_rule_file_registers_every_seed_and_arm_and_the_configs_agree():
+    from flowcl.experiments.alloc_queue import PIN_FILES, config_check
+    from flowcl.experiments.allocation_rules import ARMS, load_rule
+
+    rule = load_rule()
+    assert rule["arms"] == list(ARMS) and rule["comparator"] == "e99"
+    for s in ("0", "1", "2"):
+        assert sorted(rule["pins"][s]) == sorted(PIN_FILES)
+        for arm in ARMS:
+            p = rule["predictions"][s][arm]
+            assert len(p["k_hash"]) == 64 and p["jump_layers"] and p["status"] == "matched"
+            assert abs(p["error_pp"]) <= rule["gates"]["matching_tol_pp"]
+            assert p["reallocated_vs_e99_pp"] >= rule["gates"]["distinct_min_pp"]
+    assert config_check([0, 1, 2])["passed"]
