@@ -9,8 +9,8 @@ requires-python = "==3.10.*"
 # pins are not our constraints, and dropping them removes the main conflict with
 # PyTorch 2.4.
 dependencies = [
-    "torch==2.4.1",
-    "torchvision==0.19.1",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
     "numpy<2",                  # robosuite 1.4 breaks on numpy 2
     "robosuite==1.4.1",
     # robosuite 1.4.1 only declares mujoco>=2.3.0, so an unpinned resolve pulls
@@ -49,15 +49,17 @@ dev = [
     "pytest-timeout>=2.3",
 ]
 
-# torch cu121 wheels: target is Ubuntu 24.04 + RTX 4090, CUDA 12.x (spec §2).
+# torch cu128 wheels: Ubuntu 24.04 + RTX PRO 4000 Blackwell (sm_120), ThinkStation-2, from
+# 21 Nov 2026. Every run before that used torch 2.4.1+cu121 on an RTX 4090 (gamma), whose
+# wheels have no sm_120 kernels. Fixed until submission.
 [[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu121" }
-torchvision = { index = "pytorch-cu121" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 # LIBERO is a git submodule and is never edited in place (spec §2). Installing it
 # as a path dependency is what lets us obey "no sys.path hacks" (§1).
 libero = { path = "benchmark/LIBERO", editable = true }

@@ -125,12 +125,13 @@ flowchart LR
 
 ## Quick start
 
-Needs Linux, an NVIDIA GPU (developed on one RTX 4090) and [uv](https://docs.astral.sh/uv/). One
-task trains in about 40 min; a 4-task continual run takes about 5.5 h including evaluation.
+Needs Linux, an NVIDIA GPU (developed on one RTX 4090 until 20 Nov 2026, then on one RTX PRO 4000
+Blackwell) and [uv](https://docs.astral.sh/uv/). One task trains in about 40 min on the 4090; a
+4-task continual run takes about 5.5 h there, including evaluation.
 
 ```bash
 git clone --recursive https://github.com/esenoguzhan/flowcl.git && cd flowcl
-uv sync      # Python 3.10, torch 2.4.1 (cu121), MuJoCo 2.3.7; see docs/environment_notes.md
+uv sync      # Python 3.10, torch 2.9.1 (cu128), MuJoCo 2.3.7; see docs/environment_notes.md
 uv run python scripts/prepare_libero.py --suites libero_spatial libero_object libero_goal libero_10
 
 # single-task policies + 50-rollout evaluation (Gate 0)

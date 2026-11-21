@@ -64,6 +64,21 @@ def task_bddl_path(suite: str, task_idx: int) -> Path:
     return path
 
 
+def load_init_states(task) -> np.ndarray:
+    """LIBERO's fixed initial states for ``task`` (a benchmark task), from its ``.pruned_init`` file.
+
+    The same file and the same array as LIBERO's ``Benchmark.get_task_init_states``, which calls
+    ``torch.load`` without ``weights_only``. Since torch 2.6 that defaults to ``True`` and refuses
+    the pickled numpy array these files hold. They ship with the LIBERO submodule (never edited
+    in place), so they are loaded with ``weights_only=False``.
+    """
+    ensure_libero_config()
+    from libero.libero import get_libero_path
+
+    path = Path(get_libero_path("init_states")) / task.problem_folder / task.init_states_file
+    return torch.load(path, weights_only=False)
+
+
 def goal_state(task_key: str) -> list[list[str]]:
     """A task's parsed ``(:goal ...)`` predicates, by LIBERO's own BDDL parser.
 
@@ -326,7 +341,7 @@ class LiberoTaskEnv:
         self.bddl_file = bddl
 
         # §8.1: the fixed initial-state set, from the .pruned_init files.
-        self.init_states = self.benchmark.get_task_init_states(task_idx)
+        self.init_states = load_init_states(self.task)
         if len(self.init_states) == 0:
             raise RuntimeError(
                 f"{suite}/{self.task.name} has no initial states; the LIBERO "

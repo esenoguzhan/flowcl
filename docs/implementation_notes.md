@@ -96,7 +96,7 @@ flowcl/
 
 ## 2. Environment
 
-- Python 3.10, PyTorch 2.4+, CUDA 12.x. Target: Ubuntu 24.04 + RTX 4090 (`gamma`), plus DGX for parallel seeds.
+- Python 3.10, PyTorch 2.4+, CUDA 12.x. Target: Ubuntu 24.04 + RTX 4090 (`gamma`), plus DGX for parallel seeds. From 21 Nov 2026: ThinkStation-2, RTX PRO 4000 Blackwell (sm_120), torch 2.9.1+cu128; every earlier run used torch 2.4.1+cu121 on gamma.
 - LIBERO requires `robosuite` + MuJoCo. Pin exact versions in `pyproject.toml`; LIBERO's own repo is a **submodule or vendored dependency**, never edited in place.
 - `uv` for dependency management. One lockfile, committed.
 - Every run writes `results/<run_id>/config.yaml`, `git_sha`, `pip freeze`, and the resolved seed. A run without these is invalid.

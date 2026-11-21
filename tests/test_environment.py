@@ -74,21 +74,38 @@ def test_no_robomimic_dependency():
 
     assert importlib.util.find_spec("robomimic") is None, (
         "robomimic is installed; the pyproject deliberately excludes it because its "
-        "pins conflict with PyTorch 2.4"
+        "pins conflict with our PyTorch pin"
     )
 
 
 @pytest.mark.gpu
 def test_torch_sees_cuda_device():
+    """CUDA kernels actually run on this GPU, not only that a device is visible.
+
+    ``torch.cuda.is_available()`` is True even when the wheel has no kernels for the GPU
+    (torch 2.4.1+cu121 on the RTX PRO 4000 Blackwell, sm_120: every op fails with "no kernel
+    image is available"). So the test launches the kernels training uses (an fp16 matmul and
+    scaled-dot-product attention, forward and backward under autocast) and synchronizes, so
+    that an asynchronous launch error fails here. It asserts no exact architecture: a GPU can
+    also run PTX compiled at load time.
+    """
     import torch
+    import torch.nn.functional as F
 
     assert torch.cuda.is_available(), "no CUDA device visible to torch"
     name = torch.cuda.get_device_name(0)
     capability = torch.cuda.get_device_capability(0)
-    print(f"CUDA device: {name}, capability {capability}, torch {torch.__version__}")
-    # RTX 4090 is Ada Lovelace, sm_89. Assert the major arch rather than the exact
-    # marketing name so an equivalent Ada card also passes.
-    assert capability[0] >= 8, f"expected sm_80+ (Ada/Ampere), got {capability}"
+    print(f"CUDA device: {name}, capability {capability}, torch {torch.__version__}, "
+          f"arch list {torch.cuda.get_arch_list()}")
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    x = torch.randn(256, 256, device="cuda", generator=generator, requires_grad=True)
+    q = torch.randn(4, 8, 64, 32, device="cuda", generator=generator, requires_grad=True)
+    with torch.autocast(device_type="cuda", dtype=torch.float16):
+        y = x @ x.T
+        attended = F.scaled_dot_product_attention(q, q, q)
+    (y.float().sum() + attended.float().sum()).backward()
+    torch.cuda.synchronize()
+    assert torch.isfinite(x.grad).all() and torch.isfinite(q.grad).all()
 
 
 @pytest.mark.sim
@@ -109,6 +126,8 @@ def test_offscreen_render_one_frame(dataset_dir):
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
+    from flowcl.envs.libero_env import load_init_states
+
     suite = benchmark.get_benchmark_dict()["libero_object"]()
     task = suite.get_task(0)
     bddl = os.path.join(
@@ -124,7 +143,7 @@ def test_offscreen_render_one_frame(dataset_dir):
     try:
         env.seed(0)
         env.reset()
-        init_states = suite.get_task_init_states(0)
+        init_states = load_init_states(task)  # LIBERO's own loader fails under torch >= 2.6
         obs = env.set_init_state(init_states[0])
         for key in ("agentview_image", "robot0_eye_in_hand_image"):
             assert key in obs, f"{key} missing from observation; got {sorted(obs)}"
