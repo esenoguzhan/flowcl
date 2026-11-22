@@ -3,9 +3,10 @@
 #
 # Same criteria as configs/analysis/sequence_report.yaml (margin 15 pp; fallback tasks T3, T4). Only the
 # thresholds' source differs: that file keys thresholds by the reference run's directory name, and its
-# registered values for seq_hetero__seq_ft__seed0/1 are gamma's runs' diagonals (env A). The env-B
+# registered values for seq_hetero__seq_ft__seed0/1 come from gamma's runs' diagonals (env A). The env-B
 # reference runs in results/envB/ have the same directory names but their own diagonals (seed 0:
-# 0.85 / 0.65 / 0.81 / 0.77 against gamma's 0.90 / 0.78 / 1.00 / 0.98), so here every env-B seq_ft
+# 1.00 / 0.80 / 0.96 / 0.92 against gamma's 0.90 / 0.78 / 1.00 / 0.98, so thresholds 0.85 / 0.65 /
+# 0.81 / 0.77 against the registered 0.75 / 0.63 / 0.85 / 0.83), so here every env-B seq_ft
 # reference is `derived`: theta_j = R_ref[j][j] - 0.15 from the reference's own diagonal, recorded with
 # its result.json SHA-256. Pass it with `scripts/sequence_report.py --config` for env-B runs only.
 criteria:

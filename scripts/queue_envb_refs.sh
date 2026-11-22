@@ -21,8 +21,9 @@
 #   1  seq_ft run      (~5 h on gamma)
 #   2  GPM run         (~5 h; T1 pairing against step 1)
 #   3  e99 run         (~5 h; T1 pairing against step 1, identity against step 2 at stages 0-1)
-#   4  sequence report, GPM vs seq_ft  -> results/envB/gpm_seq_seed<S>/report.json
-#   5  sequence report, e99 vs seq_ft  -> results/envB/gpm_seq_e99_seed<S>/report.json
+#   4  sequence report, GPM vs seq_ft  -> results/envB/gpm_seq[_seed<S>]/report.json (strict; env-B
+#                      thresholds, configs/analysis/sequence_report_envb.yaml)
+#   5  sequence report, e99 vs seq_ft  -> results/envB/gpm_seq_e99_seed<S>/report.json (same)
 #   6  stage-0 identity of GPM against seq_ft (bitwise on gamma; descriptive here)
 #                      -> results/envB/identity_gpm_vs_seqft_seed<S>_stage0.json
 #
@@ -59,6 +60,12 @@ REP_GPM=$RES/gpm_seq$SUF/report.json
 REP_E99=$RES/gpm_seq_e99_seed$SEED/report.json
 ID_GPM=$RES/identity_gpm_vs_seqft_seed${SEED}_stage0.json
 RUN_ARGS=(--curriculum "$CUR" --amp --seed "$SEED" --results-root "$RES")
+# Reports as the allocation pilot's (scripts/queue_alloc.sh): the env-B thresholds config, since
+# configs/analysis/sequence_report.yaml registers gamma's thresholds under the same run names and
+# refuses these references; and a pilot file under results/envB, which does not exist, so the Gate-2
+# pilot comparison is skipped (the default results/gpm_pilot/pilot.json is gamma's).
+REPORT_ARGS=(--strict-provenance --config configs/analysis/sequence_report_envb.yaml
+             --pilot-json "$RES/gpm_pilot/pilot.json")
 
 LOGDIR="${QUEUE_LOG_ROOT:-results/logs}/queue_$(date +%Y%m%d_%H%M%S)_envb_refs_seed$SEED"
 mkdir -p "$LOGDIR"
@@ -145,7 +152,8 @@ if [ $gpm_ok = 1 ]; then
         $PY scripts/run_continual.py "${RUN_ARGS[@]}" --method gpm_e99 --t1-reference-run "$REF" \
         --identity-reference-run "$GPM" --identity-stages 0 1 && e99_ok=1
     run_or_prior 4 seqrep_gpm "$REP_GPM" \
-        $PY scripts/sequence_report.py --method-run "$GPM" --reference-run "$REF" --out "$REP_GPM"
+        $PY scripts/sequence_report.py --method-run "$GPM" --reference-run "$REF" --out "$REP_GPM" \
+        "${REPORT_ARGS[@]}"
     run_or_prior 6 identity_gpm "$ID_GPM" \
         $PY -c "import json, sys; from pathlib import Path; from flowcl.train.continual import stage_identity_check as c; r = c(Path(sys.argv[1]) / 'checkpoints' / 'stage0.pt', Path(sys.argv[2]), 0); Path(sys.argv[3]).write_text(json.dumps(r, indent=2) + '\n'); print(r['n_different'], 'of', r['n_tensors'], 'tensors differ')" "$GPM" "$REF" "$ID_GPM"
 else
@@ -153,7 +161,8 @@ else
 fi
 if [ $e99_ok = 1 ]; then
     run_or_prior 5 seqrep_e99 "$REP_E99" \
-        $PY scripts/sequence_report.py --method-run "$E99" --reference-run "$REF" --out "$REP_E99"
+        $PY scripts/sequence_report.py --method-run "$E99" --reference-run "$REF" --out "$REP_E99" \
+        "${REPORT_ARGS[@]}"
 elif [ $gpm_ok = 1 ]; then
     note "SKIP 5: 3_e99 failed or is missing"; FAILED="$FAILED 5(skipped)"
 fi
