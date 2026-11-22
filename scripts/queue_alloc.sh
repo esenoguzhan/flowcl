@@ -69,7 +69,9 @@ TASKS=(libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_t
 T4="${TASKS[3]}"
 RUN_ARGS=(--curriculum "$CUR" --amp)
 REPORT_ARGS=(--strict-provenance --config configs/analysis/sequence_report_envb.yaml)
-EVAL_ARGS=()
+# Every evaluation rebuilds the run's instruction cache (T1's instruction under AMP as in training):
+# without it a standalone T1 rollout differs from the run's own (rule amendment, 22 Nov).
+EVAL_ARGS=(--runner-text-cache "$CUR" --amp)
 PRE_ARGS=()
 CHK_ARGS=()
 if [ -n "$SMOKE" ]; then

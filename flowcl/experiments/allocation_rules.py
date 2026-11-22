@@ -596,8 +596,29 @@ def summary(seed: int, *, results: Path | None = None, rule_file: Path | None = 
     return out
 
 
-def _provenance(check, checkpoint: Path, run_name: str, report, ns: str, n_episodes: int, keys: list[str]) -> dict:
+def text_cache_problems(report, keys: list[str]) -> list[str]:
+    """The evaluation rebuilt the runner's text cache (``evaluate.py --runner-text-cache seq_hetero
+    --amp``): T1's instruction under AMP as the runs trained, every other task's in fp32."""
+    from flowcl.data.curriculum import load_curriculum
+
+    tc = getattr(report, "text_cache", None)
+    if not tc:
+        return ["no runner text cache recorded (evaluate.py --runner-text-cache)"]
     problems = []
+    if tc.get("curriculum") != CURRICULUM or tc.get("amp") is not True:
+        problems.append(f"text cache for {tc.get('curriculum')!r} amp={tc.get('amp')}, expected {CURRICULUM!r} amp=True")
+    first = {r.task_key for r in load_curriculum(CURRICULUM).stages[0].train_refs}
+    tasks = tc.get("tasks") or {}
+    for key in keys:
+        want = "amp" if key in first else "fp32"
+        got = (tasks.get(key) or {}).get("precision")
+        if got != want:
+            problems.append(f"{key}: instruction cached in {got}, expected {want}")
+    return problems
+
+
+def _provenance(check, checkpoint: Path, run_name: str, report, ns: str, n_episodes: int, keys: list[str]) -> dict:
+    problems = [f"text cache: {p}" for p in text_cache_problems(report, keys)]
     for key in keys:
         r = check(checkpoint, run_name, report, ns, STAGE, n_episodes, key)
         problems += [f"{key}: {p}" for p in r["problems"]]

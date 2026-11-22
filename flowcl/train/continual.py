@@ -467,6 +467,22 @@ def warm_runner_text_cache(policy, curriculum: Curriculum, dataset_dir, device, 
     return state
 
 
+def rebuild_runner_text_cache(policy, curriculum_name: str, device, amp: bool, dataset_dir=None) -> dict:
+    """The runner's text cache on a freshly loaded policy, for evaluating a checkpoint as the run did.
+
+    A loaded checkpoint starts with an empty cache, so a standalone evaluation encodes every
+    instruction in fp32, while the run's own evaluations used T1's instruction as first encoded
+    inside T1's AMP training step. :func:`warm_runner_text_cache` recreates the run's cache (the
+    stage-0 train instructions under AMP when ``amp`` on CUDA, every other evaluated task in
+    fp32); returns ``{task_key: {"text", "precision"}}``. Refuses a cache that is not fresh.
+    """
+    from flowcl.data.curriculum import load_curriculum
+
+    if policy.text_encoder._cache:
+        raise RuntimeError("the text cache is not fresh; rebuild it before any instruction is encoded")
+    return warm_runner_text_cache(policy, load_curriculum(curriculum_name), dataset_dir, device, amp=amp)
+
+
 def seen_eval_refs(curriculum: Curriculum, stage: int) -> tuple:
     """A3: the tasks trained through ``stage`` (every completed stage's own and co-trained tasks),
     in ``eval_refs`` order."""

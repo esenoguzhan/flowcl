@@ -69,6 +69,9 @@ class EvaluationReport:
     # record which run the evaluated policy belongs to and which namespace seeded it.
     method_run_id: str | None = None
     seed_namespace_run_id: str | None = None
+    # A standalone evaluation that rebuilt the runner's text cache (scripts/evaluate.py
+    # --runner-text-cache): {"curriculum", "amp", "tasks": {task_key: {"text", "precision"}}}.
+    text_cache: dict | None = None
 
     def by_task(self) -> dict[str, TaskEvaluation]:
         return {t.task_key: t for t in self.tasks}
@@ -83,6 +86,8 @@ class EvaluationReport:
             out["method_run_id"] = self.method_run_id
         if self.seed_namespace_run_id is not None:
             out["seed_namespace_run_id"] = self.seed_namespace_run_id
+        if self.text_cache is not None:
+            out["text_cache"] = self.text_cache
         return out
 
     def save(self, path: str | Path) -> Path:
@@ -99,6 +104,7 @@ class EvaluationReport:
             stage=payload.get("stage"),
             method_run_id=payload.get("method_run_id"),
             seed_namespace_run_id=payload.get("seed_namespace_run_id"),
+            text_cache=payload.get("text_cache"),
             tasks=[
                 TaskEvaluation(
                     task_key=t["task_key"],

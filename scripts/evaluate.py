@@ -51,6 +51,18 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
+        "--runner-text-cache",
+        metavar="CURRICULUM",
+        default=None,
+        help=(
+            "Rebuild the training run's instruction cache for CURRICULUM before rolling out "
+            "(its stage-0 train instructions under AMP with --amp, the rest fp32), so the "
+            "checkpoint is evaluated as the run's own evaluations were; recorded in the report."
+        ),
+    )
+    parser.add_argument("--amp", action="store_true",
+                        help="With --runner-text-cache: the run trained under AMP.")
+    parser.add_argument(
         "--n-episodes",
         type=int,
         default=None,
@@ -66,7 +78,17 @@ def main() -> None:
         eval_payload["n_episodes"] = args.n_episodes
     cfg = eval_config_from_dict(eval_payload)
 
+    if args.amp and not args.runner_text_cache:
+        parser.error("--amp goes with --runner-text-cache")
     loaded = load_checkpoint(args.checkpoint, device=args.device)
+    text_cache = None
+    if args.runner_text_cache:
+        from flowcl.train.continual import rebuild_runner_text_cache
+
+        tasks = rebuild_runner_text_cache(loaded.policy, args.runner_text_cache, args.device, args.amp)
+        text_cache = {"curriculum": args.runner_text_cache, "amp": bool(args.amp), "tasks": tasks}
+        print(f"[flowcl] runner text cache ({args.runner_text_cache}): "
+              + ", ".join(f"{k.split('/')[0]} {v['precision']}" for k, v in tasks.items()), flush=True)
     run_id = args.run_id or loaded.run_id
     if not run_id:
         raise ValueError(
@@ -86,6 +108,7 @@ def main() -> None:
         stage=loaded.stage,
     )
 
+    report.text_cache = text_cache
     out = args.out or args.checkpoint.with_suffix(".eval.json")
     print(f"[flowcl] wrote {report.save(out)}")
 

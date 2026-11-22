@@ -25,6 +25,14 @@
 #     gamma's Gate-2 pilot.
 #   * an environment check refuses the launch unless the interpreter's torch and every reference run's
 #     recorded torch are 2.9.1+cu128 (smoke references included).
+#   * every evaluation rebuilds the runner's instruction cache (scripts/evaluate.py --runner-text-cache
+#     seq_hetero --amp; recorded in each eval file and required by the provenance gate). Found by the
+#     env-B smoke: the runner first encodes T1's instruction inside T1's AMP training step and keeps
+#     that encoding, while a standalone evaluation encoded it in fp32, so a rep-0 rerun of T1 differed
+#     from the run's own cell (on gamma too: e99 seed 0's rerun of 20 Nov differs on 40 of 50 T1
+#     rollouts in steps and 1 in success; T2-T4 equal). With the cache rebuilt, env-B e99's T1 rerun
+#     equals its stored cell (10 of 10 rollouts, steps included), and reps 1-2 evaluate the same
+#     policy-plus-cache as rep 0.
 # Unchanged: the question, arms, rules, matching, gates, primary measure, CI, labels and consequences.
 # Seeds 1-2 (a follow-up) first need env-B references and their own amendment (pins, schedule,
 # predictions) before training. No env-A run is paired with an env-B one.
@@ -124,6 +132,8 @@ evaluation:
   repetitions: [0, 1, 2]
   # rep 0 re-run (the reproduction gate): task positions, or all.
   rep0_rerun: {e99: all, novelty: [3], size: [3], room: [3]}
+  # every evaluation rebuilds the runner's text cache (amendment of 22 Nov; enforced by the summary)
+  runner_text_cache: {curriculum: seq_hetero, amp: true}
 
 bootstrap: {n_resamples: 10000, confidence: 0.95, seed: 0}
 

@@ -492,6 +492,34 @@ def test_smoke_preflight_needs_no_production_schedule_for_its_seed(tmp_path):
                          gpu_pids=lambda: [123], disk=lambda p: 100.0)["passed"]
 
 
+def test_evaluation_report_keeps_the_runner_text_cache_and_the_pilot_requires_it(tmp_path):
+    from flowcl.envs.evaluation import EvaluationReport
+    from flowcl.experiments.allocation_rules import text_cache_problems
+
+    keys = ["libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate",
+            "libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it"]
+    tc = {"curriculum": "seq_hetero", "amp": True,
+          "tasks": {keys[0]: {"text": "a", "precision": "amp"}, keys[1]: {"text": "b", "precision": "fp32"}}}
+    report = EvaluationReport(run_id="ns", stage=3, text_cache=tc)
+    again = EvaluationReport.load(report.save(tmp_path / "e.json"))
+    assert again.text_cache == tc and text_cache_problems(again, keys) == []
+    assert "text_cache" not in EvaluationReport(run_id="ns", stage=3).as_dict()
+    assert text_cache_problems(EvaluationReport(run_id="ns", stage=3), keys)
+    wrong = {**tc, "tasks": {**tc["tasks"], keys[0]: {"text": "a", "precision": "fp32"}}}
+    assert len(text_cache_problems(EvaluationReport(run_id="ns", stage=3, text_cache=wrong), keys)) == 1
+    assert text_cache_problems(EvaluationReport(run_id="ns", stage=3, text_cache={**tc, "amp": False}), keys)
+
+
+def test_rebuild_runner_text_cache_refuses_a_used_cache():
+    from types import SimpleNamespace
+
+    from flowcl.train.continual import rebuild_runner_text_cache
+
+    policy = SimpleNamespace(text_encoder=SimpleNamespace(_cache={"already": None}))
+    with pytest.raises(RuntimeError, match="not fresh"):
+        rebuild_runner_text_cache(policy, "seq_hetero", "cpu", amp=True)
+
+
 ENVB = __import__("pathlib").Path(__file__).resolve().parents[1] / "results" / "envB"
 
 
