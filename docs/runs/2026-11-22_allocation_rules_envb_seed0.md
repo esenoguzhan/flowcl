@@ -1,33 +1,58 @@
-# Allocation rules at matched capacity, seed 0, env B: every training-side gate passes on all three arms; the rep-0 rerun of T4 does not reproduce, so all three are `invalid_evaluation` until the gate is decided
+# Allocation rules at matched capacity, seed 0, env B: room-aware allocation hurts (ΔACC −4.0 pp, CI [−7.5, −0.7]); novelty and size are unresolved; no arm goes to seeds 1–2
 
-**Status: run on ThinkStation-2 (env B) Sun 22 Nov 03:07 → 18:16, queue `QUEUE DONE FAILED:
-22_summary`, clean tree at `b7013ba`, rule `configs/analysis/allocation_rules.yaml` (SHA-256
-`40cc4f17eaa0…`, env-B amendment of 22 Nov).** Every step before the summary ended rc=0. The
-summary exits 1 because no arm has a valid label.
-- **What the pilot asks:** at e99's own protected capacity after each extension, does *where*
-  GPM protects (three allocation rules) change ACC against flat 0.99? Plan:
-  `~/.claude/plans/jazzy-meandering-star.md`; the rule holds the question, gates and labels.
+**Status: run on ThinkStation-2 (env B) Sun 22 Nov 03:07 → 18:16.**
+- **The queue:** `QUEUE DONE FAILED: 22_summary`, clean tree at `b7013ba`, rule
+  `configs/analysis/allocation_rules.yaml` (env-B amendment of 22 Nov). Every step before the
+  summary ended rc=0. The summary exited 1 because the registered bitwise T4 check failed for
+  every run (§3).
+- **The T4 diagnosis** (§4), the same evening: render noise.
+- **Amendment 2** (§5, `132d153`): the T4 check becomes a tolerance, committed before any outcome
+  was read.
+- **The amended summary** (§7, rule SHA-256 `c58f8d30a72a…`): every gate passes; rc 0.
+
+**What the pilot asks:** at e99's own protected capacity after each extension, does *where* GPM
+protects (three allocation rules) change ACC against flat 0.99? Plan:
+`~/.claude/plans/jazzy-meandering-star.md`; the rule holds the question, gates and labels.
+
+**Outcome** (§7; 4 tasks × 50 states × 3 repetitions; e99's ACC 90.2):
+
+| Arm | Capacity moved vs e99 after T2 | ΔACC vs e99 [95 % CI] | Label |
+|---|---:|---|---|
+| novelty | 1.19 pp | −1.0 pp [−4.0, +2.0] | `unresolved` |
+| size | 3.49 pp | +0.8 pp [−2.3, +4.0] | `unresolved` |
+| room | 14.86 pp | **−4.0 pp [−7.5, −0.7]** | **`allocation_hurts`** |
+
+- **Room moves protection from the trunk to the decoder** (trunk 67 % against e99's 89 % after
+  T4), at the same total. It loses on every task (−2 to −6 pp).
+- **The two near-flat allocations are within ±1 pp of flat,** with intervals of about ±3 pp.
+- **Consequences, as registered:**
+  - No arm is `allocation_helps`, so none goes to seeds 1–2.
+  - E3 takes no new arm from this pilot and keeps its flat-0.99 arm.
+  - `allocation_hurts` is reported, with no follow-up.
+  - The across-arm "no resolvable difference" sentence does not apply.
+- **Scope:** one training seed. The interval covers evaluation uncertainty of these checkpoints,
+  not training-seed variation. It is a pointwise, exploratory screen.
+
+**Gates:**
 - **Training side, all three arms: every gate passes.**
   - Stages 0–1 equal plain GPM's bit for bit (656/656 tensors at both).
   - The T1 memory equals plain GPM's, and T1 pairs with seq_ft at relative difference 0.0.
   - Each extension reaches e99's count within 0.001 pp (gate 0.05 pp).
   - Every post-T2 rank equals the registered prediction, except one ±1 on the room arm's
     predicted jump layer, which is the declared `prediction_borderline` flag.
-  - All three are distinct from e99: 1.19 / 3.49 / 14.86 pp of capacity moved after T2.
+  - All three are distinct from e99.
   - The three strict reports pass.
-- **Evaluation side: one gate fails, the same way for every run.**
+- **Evaluation side:**
   - Provenance, pairing (48 cells) and fresh noise pass.
   - e99's rep-0 rerun equals its stored T1, T2 and T3 cells (150/150 rollouts, steps included).
-  - **T4 does not reproduce, for e99 and every arm:** 11–17 of 50 rollouts end at another step, and
-    1–4 change outcome (§3).
-  - **Two identical fresh processes disagree with each other on 16/50 T4 rollouts as well** (§4).
-    The cause is found: the wrist camera's multisampled rendering of the stove burner varies by
+  - **T4's rep-0 rerun does not reproduce bitwise, for e99 and every arm** (11–17 of 50 rollouts
+    end at another step; 1–4 change outcome; §3). Two identical fresh processes disagree as
+    well.
+  - **The cause (§4):** the wrist camera's multisampled rendering of the stove burner varies by
     1–2 levels on a few pixels between renders of the same state on this GPU. Physics and the
-    policy are deterministic. So the registered check cannot pass for any run.
-  - The rule requires exact equality, so all three arms are labelled `invalid_evaluation` and
-    none is promoted.
-- **The T4 check was amended before any outcome was read** (§5, amendment 2): seeds equal, plus
-  an exact McNemar test on the paired outcomes. The summary is rerun under it (§7).
+    policy are deterministic.
+  - **Under amendment 2** (seeds equal, plus an exact McNemar test on the paired outcomes), all
+    four T4 reruns pass: p = 1.0 / 0.125 / 1.0 / 0.5 for e99 / novelty / size / room.
 
 ## 1. What was run
 
@@ -224,3 +249,66 @@ was committed before the summary was rerun.
   `diag_render.py`, `compare.py`, `t4cmp.py`; the two fresh reruns; per-step hash logs; render
   reports with and without multisampling; `render1/examples.png`).
 - The gamma launch, cut off by the move: `results/interrupted/seq_hetero__gpm_projected_adam_alloc_novelty__seed0__machine_move_20261120`.
+
+## 7. Outcome (amended summary)
+
+`uv run python scripts/allocation_rules.py summary --seed 0 --results-root results/envB` at
+`132d153` (clean tree).
+- **Outputs:** `results/envB/allocation_rules/seed0/summary.json`, with its log in
+  `summary_amendment2.log`.
+- **The first summary,** with the bitwise T4 check, is kept as `summary.before_amendment2.json`.
+- **Gates:** every evaluation gate passes (`evaluation_valid` true). Every arm is valid and
+  distinct.
+
+**Primary: ΔACC after T4 against e99.** The data are 4 tasks × 50 initial states × 3 repetitions:
+rep 0 is the run's own cell, reps 1–2 are fresh noise. The CI is state-clustered and paired, with
+10 000 resamples.
+
+| Arm | ACC | ΔACC [95 % CI] | Label | Δ per task: Spatial / Object / Goal / Long (pp) |
+|---|---:|---|---|---|
+| e99 (flat 0.99) | 90.2 | — | comparator | — |
+| novelty | 89.2 | −1.0 [−4.0, +2.0] | `unresolved` | −3.3 / −0.7 / −0.7 / +0.7 |
+| size | 91.0 | +0.8 [−2.3, +4.0] | `unresolved` | 0.0 / +7.3 / −1.3 / −2.7 |
+| room | 86.2 | −4.0 [−7.5, −0.7] | `allocation_hurts` | −4.7 / −6.0 / −3.3 / −2.0 |
+
+**Descriptive, from rep 0 (the runs' own evaluation, A5 bootstrap), arm − e99:**
+
+| Arm | ΔACC [CI] | ΔNBT [CI] | ΔAUC [CI] |
+|---|---|---|---|
+| novelty | −4.5 [−9.5, +0.5] | +2.7 [−2.7, +8.7] | −1.0 [−2.7, +0.7] |
+| size | −2.5 [−7.0, +2.0] | +1.3 [−4.0, +6.7] | +0.2 [−1.4, +1.9] |
+| room | −6.0 [−10.5, −1.5] | +5.3 [−0.7, +11.3] | −1.3 [−2.8, +0.1] |
+
+**Final rows and diagonals (rep 0, stage 3, %):**
+
+| Run | Final row: Spatial / Object / Goal / Long | Diagonal R[j][j] |
+|---|---|---|
+| e99 | 88 / 92 / 98 / 96 | 100 / 94 / 96 / 96 |
+| novelty | 80 / 92 / 96 / 88 | 100 / 94 / 94 / 88 |
+| size | 82 / 98 / 98 / 86 | 100 / 94 / 100 / 86 |
+| room | 80 / 86 / 98 / 86 | 100 / 94 / 98 / 86 |
+
+**The rep-0 cells read lower for every arm than the three-repetition estimate does,** mostly
+through T4.
+- e99's stored T4 cell (48/50) is its highest of the four processes in §4 (45–48). So rep-0 T4
+  gaps of 8–10 pp are within render noise.
+- Over three repetitions, T4's Δ is +0.7 / −2.7 / −2.0.
+- This is why the primary measure pools repetitions.
+
+**Reading.**
+- **Where protection sits matters, in one direction.** At e99's exact capacity, the room rule puts
+  much more of it in the decoder: 60 % against 27 % after T4, with the trunk at 67 % against 89 %.
+  It is 4.0 pp worse.
+  - The loss is spread over all four tasks.
+  - Rep 0 points to more forgetting (ΔNBT +5.3), though that interval includes 0.
+  - So, at this capacity, protecting the trunk is worth more than protecting the decoder.
+- **The new-energy rule does not beat flat at matched capacity** (novelty −1.0 [−4.0, +2.0]).
+  - It reallocates only 1.2–1.6 pp of capacity, so the comparison is narrow, as the rule warned.
+  - With C1 and the f = 0.7 run (`runs/2026-11-18_ne70_4task.md`), this is the third look in
+    which adaptive allocation shows no advantage over a flat threshold at comparable capacity.
+- **Size** moves 3.5 pp and gains Object (+7.3) while losing Long (−2.7). Overall it is not
+  resolvable (+0.8 [−2.3, +4.0]).
+- **For the thesis:** the allocation claim can only be worded as "a flat 0.99 threshold is not
+  beaten by the tested allocation rules at matched capacity (seed 0, exploratory), and moving
+  protection from the trunk to the decoder hurts". A rule-level advantage is not supported.
+

@@ -191,6 +191,7 @@ changes.
 | **A7** close SGP | done | `runs/2026-10-01_t5_sweep.md` |
 | **B** baselines: replay, EWC, LoRA, ConSFT | **replay and EWC implemented** (`2c2b827`, `aaedf24`, `5f1d124`); smoke passed (stage-0 identity, resume equality). **EWC v1 bracket** (empirical Fisher, r ≤ 100): Spatial 0.00 at every λ. **EWC v2 bracket** (sampled Fisher, normalized, r ≤ 10000): Spatial 0.00 at every eligible λ (r ≤ 100); 2/50 only at r ≥ 1000, where Object falls to 0.44 / 0.36. At equal r, v1 and v2 trace the same trade-off. **Selected: r = 100, λ = 0.001227** (probe-loss tie-break, `all_eligible_spatial_zero`); Object 0.72, Spatial probe loss 0.165 (GPM 0.042). **LoRA** (`75fb0e1`) **v1 bracket:** rank {4,16,64} × lr {1e-4,3e-4,1e-3} plus (1, 1e-4) and (4, 3e-5); Spatial falls with lr at every rank; rank 4, lr 3e-5 at the boundary. **v2** (`620727b`, post hoc): lr 1e-5 and 3e-5 at ranks 4–64; at 1e-5 Object < floor at every rank. **Selected rank 16, lr 3e-5:** Spatial 0.52, Object 0.70; the top eligible arms are within noise (0.52 / 0.48 / 0.46 / 0.44). **ConSFT** (`a8250ce`; Table 5 constants) **bracket:** z ∈ {10, 30, 100, 300} × T ∈ {2000, 30000} plus Table 5's point (amended before any arm, `288c343`), calibrated at q50 0.653 (`9a90b6f`): Spatial 0.00 at every arm, Spatial probe loss never below seq_ft's (best 0.730). **Selected z = 1000, T = 30000** (τ_start 0.0163; upper edge extension, `all_eligible_spatial_zero`, `optimum_at_boundary`); Object 0.92; in `configs/method/consft.yaml` (`5b4ae22`). **4-task baselines, seed 0, done** (`27c7e88`, Thu 12 Nov): every identity check passed bitwise (stage 0 against seq_ft, stage 1 against each selected arm), and all six strict reports passed. Final rows: replay 96 / 42 / 90 / 96 (ACC 0.81, not exemplar-free); projected_lora 90 / 4 / 88 / 96; inflora 92 / 28 / 78 / 70; EWC, LoRA and ConSFT 0 on every earlier task. **Seeds 1–2 done** (`39ce581`, Sun 15 Nov): all 12 strict reports and stage-0 identities passed. Mean final rows over seeds 0–2: replay 95 / 69 / 95 / 95 (seed 0's Object 42 was its low seed; 82 on seeds 1–2); inflora 96 / 21 / 72 / 73; projected_lora 87 / 7 / 71 / 87; EWC, LoRA and ConSFT keep no earlier task on any seed. The Track 2 test set is complete | `runs/2026-10-10_ewc_bracket.md`, `runs/2026-10-11_ewc_bracket_v2.md`, `runs/2026-10-11_lora_bracket.md`, `runs/2026-10-12_lora_bracket_v2.md`, `runs/2026-10-18_consft_bracket.md`, `runs/2026-11-12_baselines_seed0.md`, `runs/2026-11-15_baselines_seeds1-2.md` |
 | **C1** high-protection control (e99 × 3 seeds) | done: **`unresolved`** ×3 (replication label `mixed`, a rule gap). At matched T2 protection (as predicted, 91/91 ranks) a flat 0.99 reproduces the Object gain over plain on every seed (G +0.70 / +0.62 / +0.48), indistinguishable from adaptive (D +0.04 / −0.02 / −0.08), non-inferiority at 10 pp not shown at 50 rollouts. Descriptive: adaptive keeps more final Object (−0.14 / −0.16 / −0.22 for e99) at ~15 pp more capacity. **Follow-up** (3 repetitions of the 50 initial states, second-stage, decided after C1): `protection_suffices` / `unresolved` / `unresolved` + significant `adaptive_advantage` (D +0.03 / −0.05 / −0.10), replication `mixed`: the allocation's effect at this cell is small and seed-dependent | `runs/2026-10-08_high_protection_seed0.md`, `runs/2026-10-08_high_protection_three_seeds.md`, `runs/2026-10-09_high_protection_followup.md` |
+| **C1-b** allocation rules at matched capacity (seed 0, env B, pre-E3) | done: room **`allocation_hurts`** (ΔACC −4.0 pp [−7.5, −0.7]); novelty −1.0 [−4.0, +2.0] and size +0.8 [−2.3, +4.0] `unresolved`. No arm goes to seeds 1–2; E3 keeps its flat-0.99 arm and takes no new one. T4 rerun check amended to a McNemar tolerance (env-B render noise) before the outcome was read | `runs/2026-11-22_allocation_rules_envb_seed0.md` |
 | **C2** reverse order × 3 seeds | done: `inconclusive` / `task` / `both` (no three-seed recurrence; Object lost across Spatial every seed; adaptive trade replicates) | `runs/2026-10-0{3,4}_reverse_order_seed*.md` |
 | **D** Track 2 (offline predictors) | **step 2 done: the measures M0–M3** (`d213ddb`/`99e8083`): 449 cells, bundle `5be958cc…`, instrument checks 281/281 within 2.1e-5; descriptive only (`runs/2026-10-13_track2_measures.md`). **Step 1 done: the development manifest** (`2ec4c03`, merged): 449 cells (checkpoint × trained task, 50 rollouts) under 24 roots; seed 0's shared stage 0 holds 214; 63 bitwise duplicates collapsed (one disagrees by 2/50 rollouts); 114 depth-1 / 147 first-divergence branches (branch definition changed in `thesis_plan.md` §D, the literal one kept as sensitivity); held-out key set published. **Next: step 3's rule**, then validation and the freeze | freeze target Wed 28 Oct, **hard deadline Fri 30 Oct**; `runs/2026-10-12_track2_manifest.md` |
 | **E1** two-sided go/no-go | done: **`fail`** (`near_full_rank`; trunk 0.861 vs GPM 0.933) | `runs/2026-10-02_twosided_gonogo.md` |
@@ -350,6 +351,14 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
      beating a flat threshold, which C1 did not show.
    - The arm resumes C1's e99 runs to T8, about 6 h per seed. It goes into `main_eval.yaml`, which
      is not written yet.
+   - **The matched-capacity test (allocation pilot, 22 Nov, seed 0, env B) did not show it
+     either.**
+     - The new-energy rule at e99's exact capacity: −1.0 pp [−4.0, +2.0].
+     - The room-aware rule, which moves protection from the trunk to the decoder: −4.0 pp
+       [−7.5, −0.7].
+     - The wording that holds is "a flat 0.99 threshold is not beaten by the tested allocation
+       rules at matched capacity, and moving protection off the trunk hurts" (exploratory, one
+       seed).
 3. **Track 2 (D):** frozen on Thu 15 Oct. Angle B no longer depends on it (E1-B closed angle B), so
    the held-out test is reported for its own sake. The 4-task baseline runs (item 0) come first.
 4. **A3, A5, A6:** done (Sun 15 – Mon 16 Nov, §5), with the per-step loss, peak GPU memory and the
@@ -384,26 +393,32 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
        environment, not across them.
      - The 4-task seed-0 references (seq_ft, plain GPM, e99) were retrained in `results/envB/`
        (`7fe311d`).
-   - **Allocation-rules pilot, seed 0, env B** (Sun 22 Nov 03:07 → 18:16;
+   - **Allocation-rules pilot, seed 0, env B: done** (Sun 22 Nov 03:07 → 18:16;
      `runs/2026-11-22_allocation_rules_envb_seed0.md`). It tests three GPM allocation rules against
      flat 0.99 at e99's own capacity; the rule was amended for env B before training.
-     - **Training side:** every gate passes on all three arms (identity, matching within 0.001 pp,
-       predicted ranks, distinctness, strict reports).
-     - **Evaluation side:** the rep-0 rerun of T4 does not reproduce, for e99 too. Two identical
-       fresh processes also disagree on 16/50 T4 rollouts. **Cause found:** the wrist camera's
-       multisampled rendering of the stove burner varies by 1–2 levels on a few pixels between
-       renders of the same state on this GPU (multisampling off: none in 2,665 states). Physics and
-       the policy are deterministic. The user chose to amend the T4 check (amendment 2: seeds
-       equal plus an exact McNemar test on the paired outcomes), committed before any outcome was
-       read.
+     - **Outcome** (4 tasks × 50 states × 3 repetitions; e99 ACC 90.2):
+       - novelty −1.0 pp [−4.0, +2.0], `unresolved`;
+       - size +0.8 [−2.3, +4.0], `unresolved`;
+       - **room −4.0 [−7.5, −0.7], `allocation_hurts`.** It moves protection from the trunk to the
+         decoder (trunk 67 % against 89 %) and loses on every task.
+     - **Consequences, as registered:** no arm goes to seeds 1–2, and E3 takes no new arm (it keeps
+       its flat-0.99 arm). The tested rules do not beat a flat 0.99 at matched capacity (seed 0,
+       exploratory).
+     - **Gates:** every training-side gate passes on all three arms. The bitwise rep-0 rerun of T4
+       failed for every run, e99 included.
+       - **Cause:** the wrist camera's multisampled rendering of the stove burner varies by 1–2
+         levels on a few pixels between renders of the same state on this GPU (multisampling off:
+         none in 2,665 states). Physics and the policy are deterministic.
+       - **The fix to the gate:** the user chose to amend the T4 check (amendment 2, `132d153`: seeds
+         equal plus an exact McNemar test). It was committed before any outcome was read, and all
+         four reruns pass it.
      - **For E3 and later env-B work:** a bitwise rerun check fails on any task whose wrist camera
        sees such geometry. Deterministic rendering (multisampling off) changes the images, and so
        the protocol.
      - **A side finding, fixed** (`b7013ba`): a standalone evaluation encoded T1's instruction in
        fp32, while the run had encoded it under AMP, so T1 never reproduced a run's own cell, on
        gamma either. `evaluate.py --runner-text-cache` fixes it.
-   - **Next:** the T4 gate decision for the pilot, then Track 2 step 4 (item 1), then
-     `main_eval.yaml` and E3.
+   - **Next:** Track 2 step 4 (item 1), then `main_eval.yaml` and E3.
 
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
 
