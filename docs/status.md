@@ -377,9 +377,33 @@ The plan's gate (`thesis_plan.md`, Workstream F, F1):
    - **The instruction-negatives follow-up (§2, item 4)** used the GPU Wed 18 Nov 01:52–06:03.
    - **Instruction negatives at seeds 1–2 (§2, item 4)** used the GPU Thu 19 Nov 01:38–14:52 and,
      after a reboot, 16:12–18:50.
-   - **The wine pair (§2, item 4)** used the GPU Thu 19 Nov 18:59 (smoke) → Fri 20 Nov 10:35. The
-     GPU has been free since.
-   - **Next:** Track 2 step 4 (item 1), then `main_eval.yaml` and E3.
+   - **The wine pair (§2, item 4)** used the GPU Thu 19 Nov 18:59 (smoke) → Fri 20 Nov 10:35.
+   - **Machine move, Fri 20 – Sat 21 Nov:** the SSD moved from gamma to ThinkStation-2 (env B, RTX
+     PRO 4000 Blackwell, torch 2.9.1+cu128; `e40060e`).
+     - Env-A runs are never paired with env-B runs: training is bitwise deterministic within each
+       environment, not across them.
+     - The 4-task seed-0 references (seq_ft, plain GPM, e99) were retrained in `results/envB/`
+       (`7fe311d`).
+   - **Allocation-rules pilot, seed 0, env B** (Sun 22 Nov 03:07 → 18:16;
+     `runs/2026-11-22_allocation_rules_envb_seed0.md`). It tests three GPM allocation rules against
+     flat 0.99 at e99's own capacity; the rule was amended for env B before training.
+     - **Training side:** every gate passes on all three arms (identity, matching within 0.001 pp,
+       predicted ranks, distinctness, strict reports).
+     - **Evaluation side:** the rep-0 rerun of T4 does not reproduce, for e99 too. Two identical
+       fresh processes also disagree on 16/50 T4 rollouts. **Cause found:** the wrist camera's
+       multisampled rendering of the stove burner varies by 1–2 levels on a few pixels between
+       renders of the same state on this GPU (multisampling off: none in 2,665 states). Physics and
+       the policy are deterministic. The user chose to amend the T4 check (amendment 2: seeds
+       equal plus an exact McNemar test on the paired outcomes), committed before any outcome was
+       read.
+     - **For E3 and later env-B work:** a bitwise rerun check fails on any task whose wrist camera
+       sees such geometry. Deterministic rendering (multisampling off) changes the images, and so
+       the protocol.
+     - **A side finding, fixed** (`b7013ba`): a standalone evaluation encoded T1's instruction in
+       fp32, while the run had encoded it under AMP, so T1 never reproduced a run's own cell, on
+       gamma either. `evaluate.py --runner-text-cache` fixes it.
+   - **Next:** the T4 gate decision for the pilot, then Track 2 step 4 (item 1), then
+     `main_eval.yaml` and E3.
 
 ## 5. To do: thesis figures and what they need measured (noted Thu 12 Nov)
 

@@ -482,6 +482,50 @@ def _first_failed(gates: dict) -> str:
     return "invalid_run"
 
 
+def mcnemar_exact_p(b: int, c: int) -> float:
+    """Two-sided exact McNemar p-value for ``b`` and ``c`` discordant pairs (binomial, p = 1/2):
+    ``min(1, 2 P(X <= min(b, c)))`` with ``X ~ Bin(b + c, 1/2)``; 1.0 with no discordant pair."""
+    from math import comb
+
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(comb(n, i) for i in range(min(b, c) + 1)) / 2 ** n
+    return min(1.0, 2 * tail)
+
+
+def tolerant_reproduction_check(new, stored, n: int, tolerance: dict) -> dict:
+    """Amendment 2 (22 Nov 2026): a rep-0 rerun of a task whose rendering is not deterministic in env B
+    (T4's wrist camera) passes when its rollout seeds equal the stored cell's and a two-sided exact
+    McNemar test on the ``n`` paired outcomes does not reject (p >= alpha). The bitwise comparison
+    (:func:`reproduction_check`) is kept, descriptively."""
+    from flowcl.experiments.high_protection_followup import reproduction_check
+
+    if tolerance.get("test") != "mcnemar_exact_two_sided":
+        raise ValueError(f"unknown rep-0 tolerance test {tolerance.get('test')!r}")
+    alpha = float(tolerance["alpha"])
+    problems = []
+    out: dict = {"mode": "tolerance", "test": tolerance["test"], "alpha": alpha, "n_compared": n,
+                 "bitwise": reproduction_check(new, stored, n)}
+    if len(new.successes) < n or len(stored.successes) < n:
+        problems.append(f"too few episodes: new {len(new.successes)}, stored {len(stored.successes)}, need {n}")
+    else:
+        seeds = [i for i, (x, y) in enumerate(zip(list(new.seeds)[:n], list(stored.seeds)[:n])) if x != y]
+        if seeds:
+            problems.append(f"seeds differ at episodes {seeds[:10]}")
+        pairs = list(zip(list(stored.successes)[:n], list(new.successes)[:n]))
+        b = sum(1 for s, r in pairs if s and not r)
+        c = sum(1 for s, r in pairs if r and not s)
+        p = mcnemar_exact_p(b, c)
+        out.update({"stored_only_success": b, "rerun_only_success": c, "p_value": p,
+                    "n_steps_differ": sum(1 for x, y in zip(list(new.n_steps)[:n], list(stored.n_steps)[:n])
+                                          if x != y)})
+        if p < alpha:
+            problems.append(f"McNemar exact p = {p:.4g} < {alpha} ({b} stored-only, {c} rerun-only successes)")
+    out.update({"passed": not problems, "problems": problems})
+    return out
+
+
 def summary(seed: int, *, results: Path | None = None, rule_file: Path | None = None, smoke: bool = False,
             comparator: Path | None = None, plain: Path | None = None) -> dict:
     """Gates, the primary measure and the labels of one seed (module docstring); written to
@@ -527,8 +571,13 @@ def summary(seed: int, *, results: Path | None = None, rule_file: Path | None = 
             new0 = EvaluationReport.load(eval_path(results, seed, arm, 0))
             eg[f"provenance_{arm}_rep0"] = _provenance(provenance_check, checkpoint, run.name, new0,
                                                        rep_namespace(seed, 0), n_episodes, rerun_keys)
+            tolerant = {task_keys[j] for j in (ev.get("rep0_tolerance") or {}).get("tasks", [])}
             for key in rerun_keys:
-                eg[f"reproduction_{arm}_{key}"] = reproduction_check(new0.by_task()[key], stored[key], n_episodes)
+                if key in tolerant:
+                    eg[f"reproduction_{arm}_{key}"] = tolerant_reproduction_check(
+                        new0.by_task()[key], stored[key], n_episodes, ev["rep0_tolerance"])
+                else:
+                    eg[f"reproduction_{arm}_{key}"] = reproduction_check(new0.by_task()[key], stored[key], n_episodes)
             for r in [r for r in reps if r > 0]:
                 report = EvaluationReport.load(eval_path(results, seed, arm, r))
                 eg[f"provenance_{arm}_rep{r}"] = _provenance(provenance_check, checkpoint, run.name, report,

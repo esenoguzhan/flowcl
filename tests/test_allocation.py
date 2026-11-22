@@ -427,6 +427,46 @@ def test_rule_file_registers_env_b_seed_0_and_keeps_gamma_superseded():
     assert all("ne90_memory1" in old["pins"][s] for s in old["pins"])
     assert config_check([0])["passed"]
     assert not config_check([1])["passed"]  # no env-B schedule for seed 1 yet
+    # amendment 2: T4's rep-0 rerun is checked by tolerance
+    assert rule["evaluation"]["rep0_tolerance"] == {"tasks": [3], "test": "mcnemar_exact_two_sided", "alpha": 0.05}
+
+
+def test_mcnemar_exact_p_values():
+    from flowcl.experiments.allocation_rules import mcnemar_exact_p
+
+    assert mcnemar_exact_p(0, 0) == 1.0
+    assert mcnemar_exact_p(4, 0) == mcnemar_exact_p(0, 4) == 0.125
+    assert mcnemar_exact_p(5, 0) == 0.0625
+    assert mcnemar_exact_p(6, 0) == 0.03125
+    assert mcnemar_exact_p(2, 1) == 1.0
+    assert mcnemar_exact_p(10, 2) == pytest.approx(2 * (1 + 12 + 66) / 4096)
+
+
+def test_tolerant_reproduction_check_takes_seeds_exactly_and_outcomes_by_mcnemar():
+    from types import SimpleNamespace as NS
+
+    from flowcl.experiments.allocation_rules import tolerant_reproduction_check
+
+    tol = {"tasks": [3], "test": "mcnemar_exact_two_sided", "alpha": 0.05}
+    n = 50
+    stored = NS(successes=[True] * 45 + [False] * 5, n_steps=[200] * 45 + [600] * 5, seeds=list(range(n)))
+    # 4 rerun-only successes and other step counts: passes the tolerance, not the bitwise check
+    rerun = NS(successes=[True] * 49 + [False], n_steps=[201] * 45 + [300] * 4 + [600], seeds=list(range(n)))
+    out = tolerant_reproduction_check(rerun, stored, n, tol)
+    assert out["passed"] and out["mode"] == "tolerance"
+    assert (out["stored_only_success"], out["rerun_only_success"], out["p_value"]) == (0, 4, 0.125)
+    assert not out["bitwise"]["passed"] and out["n_steps_differ"] == 49
+    # 6 stored-only successes: rejected
+    worse = NS(successes=[False] * 6 + [True] * 39 + [False] * 5, n_steps=[600] * 6 + [200] * 39 + [600] * 5,
+               seeds=list(range(n)))
+    rejected = tolerant_reproduction_check(worse, stored, n, tol)
+    assert not rejected["passed"] and "McNemar" in rejected["problems"][0]
+    # identical outcomes, one seed differs: fails
+    reseeded = NS(successes=stored.successes, n_steps=stored.n_steps, seeds=[99] + list(range(1, n)))
+    bad = tolerant_reproduction_check(reseeded, stored, n, tol)
+    assert not bad["passed"] and "seeds differ" in bad["problems"][0]
+    with pytest.raises(ValueError):
+        tolerant_reproduction_check(rerun, stored, n, {"test": "chi2", "alpha": 0.05})
 
 
 def test_pin_files_follow_the_prediction_source():
