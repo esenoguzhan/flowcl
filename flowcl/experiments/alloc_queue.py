@@ -202,7 +202,8 @@ def preflight(seeds: list[int], *, results: Path | None = None, smoke: bool = Fa
                                                    for r in (0, 1, 2)), out_dir(results, s) / "summary.json"]
                 if p.exists()]
     checks["targets_absent"] = {"passed": not existing, "existing": existing}
-    checks["config"] = config_check(seeds)
+    # A smoke's schedule comes from its own smoke e99 (smoke-configs), not from the production configs.
+    checks["config"] = config_check(None if smoke else seeds)
     files, reference_runs = {}, []
     for s in seeds:
         pins = (rule.get("pins") or {}).get(str(s)) or {}

@@ -470,6 +470,28 @@ def test_env_b_report_config_derives_every_seq_ft_reference():
     assert all(e == {"mode": "derived", "margin": base["margin_pp"] / 100} for e in entries.values())
 
 
+def test_smoke_preflight_needs_no_production_schedule_for_its_seed(tmp_path):
+    import torch as _torch
+
+    from flowcl.experiments.alloc_queue import preflight
+
+    refs = tmp_path / "refs"
+    for run, files in (("seq_hetero__seq_ft__seed2", ["checkpoints/stage0.pt"]),
+                       ("seq_hetero__gpm_projected_adam__seed2",
+                        ["checkpoints/stage0.pt", "checkpoints/stage1.pt", "method/memory_task0.pt"])):
+        for f in files:
+            (refs / run / f).parent.mkdir(parents=True, exist_ok=True)
+            (refs / run / f).write_bytes(b"x")
+        (refs / run / "requirements.txt").write_text(f"torch=={_torch.__version__}\n")
+    rule = tmp_path / "rule.yaml"
+    rule.write_text(f"environment: {{name: envB, torch: '{_torch.__version__}'}}\n")
+    out = preflight([2], results=tmp_path / "smoke", smoke=True, refs=refs, rule_file=rule,
+                    gpu_pids=lambda: [], disk=lambda p: 100.0)
+    assert out["passed"], out["checks"]
+    assert not preflight([2], results=tmp_path / "smoke", smoke=True, refs=refs, rule_file=rule,
+                         gpu_pids=lambda: [123], disk=lambda p: 100.0)["passed"]
+
+
 ENVB = __import__("pathlib").Path(__file__).resolve().parents[1] / "results" / "envB"
 
 
