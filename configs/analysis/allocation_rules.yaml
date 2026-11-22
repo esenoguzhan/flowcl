@@ -1,3 +1,34 @@
+# AMENDMENT, Sun 22 Nov 2026 (env B), committed before the env-B smoke and before any env-B training.
+# The pilot was launched on gamma on Fri 20 Nov 13:07 (f407982). It finished e99's three evaluation
+# repetitions (results/allocation_rules/seed0/, env A) and stage 0 of the novelty arm; then the home SSD
+# moved to ThinkStation-2 (~15:30) and the queue died. No arm finished; nothing below was evaluated.
+# ThinkStation-2 (env B: RTX PRO 4000 Blackwell, torch 2.9.1+cu128) cannot reproduce gamma's runs bit for
+# bit, so the arms' stage-0/1 identity against gamma's plain GPM cannot pass. The pilot therefore runs
+# entirely in env B, against the seed-0 references retrained there on 21 Nov (scripts/queue_envb_refs.sh
+# at 7fe311d: seq_ft, plain GPM and e99 in results/envB/, same namespace and streams; GPM stage 0 equals
+# seq_ft's and e99 stages 0-1 equal GPM's bitwise). What changes:
+#   * results_root results/envB: references, arms and outputs (results/envB/allocation_rules/seed0/).
+#   * the schedule: env-B e99's counts after T2 / T3 / T4, 23 449 002 / 25 727 605 / 27 041 144 of
+#     41 954 304 (55.89 / 61.32 / 64.45 %; gamma's were 23 431 110 / 25 740 952 / 27 042 210), seed 0 only.
+#   * pins: env-B files, now including the references' (seq_ft stage 0, GPM stages 0-1, GPM T1 memory).
+#   * prediction_source e99: env B has no ne90 run. e99's T2 artifact stores the residual spectrum of 90
+#     of 91 layers; the 91st has no energy outside its memory, so no rule extends it. The predictor
+#     reproduces e99 (flat 0.99) and, as the independent second run, plain GPM's T2 ranks (flat 0.95 on
+#     the same spectrum), and the T1 ranks of both.
+#   * predictions: recomputed in env B (below). Gamma's, registered 20 Nov, are kept under
+#     superseded_envA and not used.
+#   * the comparator check: e99 was trained in env B by the current code, so its run config is compared
+#     with env-B plain GPM's (only e99's identity provenance may differ, naming that plain run at stages
+#     0-1), instead of with gamma's f = 0.7 run; e99's git sha must be clean.
+#   * the strict sequence report uses configs/analysis/sequence_report_envb.yaml (env-B seq_ft thresholds
+#     derived from its own diagonal; the registered values are gamma's run's) and is not compared with
+#     gamma's Gate-2 pilot.
+#   * an environment check refuses the launch unless the interpreter's torch and every reference run's
+#     recorded torch are 2.9.1+cu128 (smoke references included).
+# Unchanged: the question, arms, rules, matching, gates, primary measure, CI, labels and consequences.
+# Seeds 1-2 (a follow-up) first need env-B references and their own amendment (pins, schedule,
+# predictions) before training. No env-A run is paired with an env-B one.
+#
 # The allocation-rules pilot: does WHERE GPM protects matter at a fixed AMOUNT? Pre-registered rule,
 # committed before the smoke and before any training (written Fri 20 Nov 2026).
 #
@@ -66,12 +97,18 @@
 #     CIs include 0. Any other pattern is reported arm by arm. allocation_hurts is reported, no follow-up.
 #
 # Code: flowcl/experiments/allocation_rules.py (predict, check_arm, summary), flowcl/experiments/alloc_queue.py
-# (preflight), scripts/queue_alloc.sh. Outputs: results/allocation_rules/seed<S>/.
+# (preflight), scripts/queue_alloc.sh. Outputs: <results_root>/allocation_rules/seed<S>/ (env B: results/envB).
 
 seeds: [0, 1, 2]
 pilot_seeds: [0]
 arms: [novelty, size, room]
 comparator: e99
+
+# Env B (amendment of 22 Nov): where every reference, run and output lives, and the T2 artifact the
+# offline prediction reads (e99's own; ne90 on gamma).
+environment: {name: envB, machine: "ThinkStation-2 (RTX PRO 4000 Blackwell, sm_120)", torch: 2.9.1+cu128}
+results_root: results/envB
+prediction_source: e99
 
 gates:
   matching_tasks: [1, 2]
@@ -92,45 +129,73 @@ bootstrap: {n_resamples: 10000, confidence: 0.95, seed: 0}
 
 smoke: {n_episodes: 1}
 
-# SHA-256 of the archived files the pilot builds on (per seed; checked by the preflight).
+# SHA-256 of the env-B files the pilot builds on (seed 0; checked by the preflight): the comparator's
+# and the prediction source's (e99), and the references' (seq_ft stage 0, plain GPM stages 0-1, T1 memory).
 pins:
   "0":
-    e99_memory3: 061c96ce378123f2afe6e21d2f20cfb11dc51cb085a7d4430ff592f16f9e966f
-    e99_stage3: 77638662dc7ee2856e5b321f15829c125d4172c7fbb77f5635b7f29a84bede1a
-    e99_eval3: f96fd0f8f61c1e0c6eea1746f241b78a08efbba41db20e0159f7cee4e46ca6d9
-    e99_result: 1212b78d2c92ad9df0248c70a7a24b09d5cceb9ca2c530195418a6f63bd2f210
-    ne90_memory1: d95795bb43077cc33a886ed095823beaa9e308573700a2f6f091ee10cfbd59de
-  "1":
-    e99_memory3: 5d63c4f0daed35288d803007f5e08c7ccc745d6351827e88f878a818af87f229
-    e99_stage3: 039084591b73330447a42e50b7b38789573b713a9c4dd656e396d6ee1068df30
-    e99_eval3: 250e290568900423dc0c804612c4e56856167060cca31a6357ffc1299cdbc544
-    e99_result: 6b3c909743425549c1dbffd3274a7e46227d502e799ce4b7b54c64b1a760c5c1
-    ne90_memory1: 5ba5c3570b9caccc1691baa53606f5058a037be7afe31bd72dc33bcece2f89f7
-  "2":
-    e99_memory3: 18d196f730c798ce2bcd3ee62051415455512e68b6659b9a90cddb593d84fc82
-    e99_stage3: d8300dd475be60af783ede37eca8cbb82e5a0223b0c7dc70774c3e9e5cf53cc9
-    e99_eval3: a9e667434e31ed8b5828a731773f0bea966dc4373d2a91c99f187144fa95e540
-    e99_result: f6b7d84067abf23c4e00f4d8c8caf846f7b9ebaab28530845e5f34a8b7bc0a09
-    ne90_memory1: 5b869e14eb7f8910eb73a8fa395e9b8cd4f7180bd84ac7e89ba983d1f69c0e8b
+    e99_memory3: ab6bbed39202aec42703a37a46bea1d275253ce6c5e3f89adeffcd216160606c
+    e99_stage3: 23f9d8c76667f3eb758bde7b7aac7c2a4d98ea16ee48e4a9ebd7253ea63f8520
+    e99_eval3: d64c45715f8b87a2a17855044098d15d1ccf318f9b2b1f4f928aae335cc91a2b
+    e99_result: a73564d1a177f99a829ea133e67ec925b68d219ec06ed4ed3136a4fe1b827965
+    e99_memory1: 80cff1ef6bd046fea01ab527a6e9afe18b2483c0f64a3b1de810c17b3688af06
+    seq_ft_stage0: 0e806922f55ad1813924b1d036867928ee93f357711c9d23af9458ec1b49d283
+    gpm_stage0: 21d0546eccdef8c90c3cbb261127b58dc8213d4ef8546e55d11c8cd3a4c9bf6f
+    gpm_stage1: 739d1989f5ae44bc7d110149551fff45648002fcf99faf348bbdb7ebde8aa673
+    gpm_memory0: 39a37f5f6aee6df1de2950442e76a42d55be62a0a576b306fb16e6e4c634ec6d
 
-# The registered post-T2 predictions (scripts/allocation_rules.py predict --seed S). k_hash is the
-# SHA-256 of the sorted per-layer k_after list; the implementation gate compares the run against it.
+# The registered post-T2 predictions in env B (scripts/allocation_rules.py predict --seed 0, from
+# e99's T2 artifact). k_hash is the SHA-256 of the sorted per-layer k_after list; the implementation
+# gate compares the run against it.
 predictions:
   "0":
-    target_t2: 23431110
-    e99_t2_halves: {trunk: 0.7869, decoder: 0.2160}
-    novelty: {knob: 0.898984468, status: matched, count: 23430878, error_pp: -0.00055, trunk: 0.7803, decoder: 0.2258, reallocated_vs_e99_pp: 1.19, jump_layers: [flow_head.blocks.1.cross_attn.k_proj], k_hash: bfbce96ccef8ebd12c23c358aaa6344b7ad6b2481481b051e71e273bc40be69e}
-    size: {knob: 0.000109042634, status: matched, count: 23431159, error_pp: 0.00012, trunk: 0.7729, decoder: 0.2370, reallocated_vs_e99_pp: 3.48, jump_layers: [trunk.blocks.1.mlp.fc2], k_hash: 1e0f067d3772d66f0ed86289854e2763a159276a41b203f188520eda1c25bcfc}
-    room: {knob: 1.02398567, status: matched, count: 23431263, error_pp: 0.00036, trunk: 0.5720, decoder: 0.5382, reallocated_vs_e99_pp: 14.79, jump_layers: [flow_head.blocks.3.mlp.fc1], k_hash: 42ab3f1397cb8bf0fe427a115adb628fba624505338041d15d4d7fe5a2c1e920}
-  "1":
-    target_t2: 23937576
-    e99_t2_halves: {trunk: 0.7895, decoder: 0.2422}
-    novelty: {knob: 0.898717662, status: matched, count: 23937807, error_pp: 0.00055, trunk: 0.7811, decoder: 0.2549, reallocated_vs_e99_pp: 1.37, jump_layers: [trunk.blocks.6.attn.q_proj], k_hash: 25602bf5245c29812336fc5ed02485437ee47602ee2f24aee42cff9bea516eca}
-    size: {knob: 0.000105585092, status: matched, count: 23938151, error_pp: 0.00137, trunk: 0.7803, decoder: 0.2560, reallocated_vs_e99_pp: 3.80, jump_layers: [trunk.blocks.5.mlp.fc1], k_hash: b09c3f1daa69d6ee74c373b3fb27ade9a33b8f09cfde71c2265f97e5458dba69}
-    room: {knob: 1.02994027, status: matched, count: 23937673, error_pp: 0.00023, trunk: 0.5731, decoder: 0.5668, reallocated_vs_e99_pp: 14.85, jump_layers: [flow_head.blocks.1.self_attn.k_proj, flow_head.blocks.1.self_attn.v_proj], k_hash: d49de44d2bc3f1be30dcc84faf93096f78da741342cb92467e76d9ca1b3a582d}
-  "2":
-    target_t2: 23624106
-    e99_t2_halves: {trunk: 0.7879, decoder: 0.2259}
-    novelty: {knob: 0.901005822, status: matched, count: 23624351, error_pp: 0.00058, trunk: 0.7816, decoder: 0.2354, reallocated_vs_e99_pp: 1.20, jump_layers: [trunk.blocks.0.attn.q_proj], k_hash: 2f9c181c92f221040f005a2c1d4973f1fd26db338c551602cef39fca9b9be93f}
-    size: {knob: 0.000106255057, status: matched, count: 23624183, error_pp: 0.00018, trunk: 0.7773, decoder: 0.2419, reallocated_vs_e99_pp: 3.68, jump_layers: [flow_head.blocks.2.cross_attn.k_proj], k_hash: 3a36646b79be2d88584d904eabcf50a7e38f3fbd55b4855c5d987d1e88ccab37}
-    room: {knob: 1.02817581, status: matched, count: 23624329, error_pp: 0.00053, trunk: 0.5706, decoder: 0.5518, reallocated_vs_e99_pp: 14.74, jump_layers: [flow_head.blocks.1.mlp.fc1], k_hash: 8323dfbaa85dcbd31ffb0e471f9a5875216b90e8c76e95a99b3ae87908017037}
+    target_t2: 23449002
+    e99_t2_halves: {trunk: 0.7890, decoder: 0.2138}
+    novelty: {knob: 0.901103737, status: matched, count: 23448735, error_pp: -0.00064, trunk: 0.7832, decoder: 0.2226, reallocated_vs_e99_pp: 1.19, jump_layers: [trunk.blocks.2.mlp.fc1], k_hash: e8f373f50936394364bd4185be2083c98386d0ba993ccf6cf0379ce883bfa5aa}
+    size: {knob: 0.000110066378, status: matched, count: 23449051, error_pp: 0.00012, trunk: 0.7747, decoder: 0.2353, reallocated_vs_e99_pp: 3.49, jump_layers: [trunk.blocks.1.attn.q_proj], k_hash: e06f772f3d5b79c3cccb07330e66ddd82f27e018207e6b4e2e7f0d0163ecc804}
+    room: {knob: 1.02538789, status: matched, count: 23449162, error_pp: 0.00038, trunk: 0.5733, decoder: 0.5374, reallocated_vs_e99_pp: 14.86, jump_layers: [flow_head.blocks.2.self_attn.q_proj], k_hash: 934e2fd8bb86ffddca6f4043c0ec0325ec99c73ed2f935a7e3d17e895e4e06cf}
+
+# Gamma (env A), registered 20 Nov 2026 (60b2ab8) and superseded by the amendment above: the archived
+# files' pins and the post-T2 predictions from ne90's artifact. Not read by the code.
+superseded_envA:
+  # SHA-256 of the archived files the pilot builds on (per seed; checked by the preflight).
+  pins:
+    "0":
+      e99_memory3: 061c96ce378123f2afe6e21d2f20cfb11dc51cb085a7d4430ff592f16f9e966f
+      e99_stage3: 77638662dc7ee2856e5b321f15829c125d4172c7fbb77f5635b7f29a84bede1a
+      e99_eval3: f96fd0f8f61c1e0c6eea1746f241b78a08efbba41db20e0159f7cee4e46ca6d9
+      e99_result: 1212b78d2c92ad9df0248c70a7a24b09d5cceb9ca2c530195418a6f63bd2f210
+      ne90_memory1: d95795bb43077cc33a886ed095823beaa9e308573700a2f6f091ee10cfbd59de
+    "1":
+      e99_memory3: 5d63c4f0daed35288d803007f5e08c7ccc745d6351827e88f878a818af87f229
+      e99_stage3: 039084591b73330447a42e50b7b38789573b713a9c4dd656e396d6ee1068df30
+      e99_eval3: 250e290568900423dc0c804612c4e56856167060cca31a6357ffc1299cdbc544
+      e99_result: 6b3c909743425549c1dbffd3274a7e46227d502e799ce4b7b54c64b1a760c5c1
+      ne90_memory1: 5ba5c3570b9caccc1691baa53606f5058a037be7afe31bd72dc33bcece2f89f7
+    "2":
+      e99_memory3: 18d196f730c798ce2bcd3ee62051415455512e68b6659b9a90cddb593d84fc82
+      e99_stage3: d8300dd475be60af783ede37eca8cbb82e5a0223b0c7dc70774c3e9e5cf53cc9
+      e99_eval3: a9e667434e31ed8b5828a731773f0bea966dc4373d2a91c99f187144fa95e540
+      e99_result: f6b7d84067abf23c4e00f4d8c8caf846f7b9ebaab28530845e5f34a8b7bc0a09
+      ne90_memory1: 5b869e14eb7f8910eb73a8fa395e9b8cd4f7180bd84ac7e89ba983d1f69c0e8b
+
+  # The registered post-T2 predictions (scripts/allocation_rules.py predict --seed S). k_hash is the
+  # SHA-256 of the sorted per-layer k_after list; the implementation gate compares the run against it.
+  predictions:
+    "0":
+      target_t2: 23431110
+      e99_t2_halves: {trunk: 0.7869, decoder: 0.2160}
+      novelty: {knob: 0.898984468, status: matched, count: 23430878, error_pp: -0.00055, trunk: 0.7803, decoder: 0.2258, reallocated_vs_e99_pp: 1.19, jump_layers: [flow_head.blocks.1.cross_attn.k_proj], k_hash: bfbce96ccef8ebd12c23c358aaa6344b7ad6b2481481b051e71e273bc40be69e}
+      size: {knob: 0.000109042634, status: matched, count: 23431159, error_pp: 0.00012, trunk: 0.7729, decoder: 0.2370, reallocated_vs_e99_pp: 3.48, jump_layers: [trunk.blocks.1.mlp.fc2], k_hash: 1e0f067d3772d66f0ed86289854e2763a159276a41b203f188520eda1c25bcfc}
+      room: {knob: 1.02398567, status: matched, count: 23431263, error_pp: 0.00036, trunk: 0.5720, decoder: 0.5382, reallocated_vs_e99_pp: 14.79, jump_layers: [flow_head.blocks.3.mlp.fc1], k_hash: 42ab3f1397cb8bf0fe427a115adb628fba624505338041d15d4d7fe5a2c1e920}
+    "1":
+      target_t2: 23937576
+      e99_t2_halves: {trunk: 0.7895, decoder: 0.2422}
+      novelty: {knob: 0.898717662, status: matched, count: 23937807, error_pp: 0.00055, trunk: 0.7811, decoder: 0.2549, reallocated_vs_e99_pp: 1.37, jump_layers: [trunk.blocks.6.attn.q_proj], k_hash: 25602bf5245c29812336fc5ed02485437ee47602ee2f24aee42cff9bea516eca}
+      size: {knob: 0.000105585092, status: matched, count: 23938151, error_pp: 0.00137, trunk: 0.7803, decoder: 0.2560, reallocated_vs_e99_pp: 3.80, jump_layers: [trunk.blocks.5.mlp.fc1], k_hash: b09c3f1daa69d6ee74c373b3fb27ade9a33b8f09cfde71c2265f97e5458dba69}
+      room: {knob: 1.02994027, status: matched, count: 23937673, error_pp: 0.00023, trunk: 0.5731, decoder: 0.5668, reallocated_vs_e99_pp: 14.85, jump_layers: [flow_head.blocks.1.self_attn.k_proj, flow_head.blocks.1.self_attn.v_proj], k_hash: d49de44d2bc3f1be30dcc84faf93096f78da741342cb92467e76d9ca1b3a582d}
+    "2":
+      target_t2: 23624106
+      e99_t2_halves: {trunk: 0.7879, decoder: 0.2259}
+      novelty: {knob: 0.901005822, status: matched, count: 23624351, error_pp: 0.00058, trunk: 0.7816, decoder: 0.2354, reallocated_vs_e99_pp: 1.20, jump_layers: [trunk.blocks.0.attn.q_proj], k_hash: 2f9c181c92f221040f005a2c1d4973f1fd26db338c551602cef39fca9b9be93f}
+      size: {knob: 0.000106255057, status: matched, count: 23624183, error_pp: 0.00018, trunk: 0.7773, decoder: 0.2419, reallocated_vs_e99_pp: 3.68, jump_layers: [flow_head.blocks.2.cross_attn.k_proj], k_hash: 3a36646b79be2d88584d904eabcf50a7e38f3fbd55b4855c5d987d1e88ccab37}
+      room: {knob: 1.02817581, status: matched, count: 23624329, error_pp: 0.00053, trunk: 0.5706, decoder: 0.5518, reallocated_vs_e99_pp: 14.74, jump_layers: [flow_head.blocks.1.mlp.fc1], k_hash: 8323dfbaa85dcbd31ffb0e471f9a5875216b90e8c76e95a99b3ae87908017037}

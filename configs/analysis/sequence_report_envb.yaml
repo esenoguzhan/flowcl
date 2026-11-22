@@ -1,0 +1,26 @@
+# Four-task sequence report for env-B references (ThinkStation-2, torch 2.9.1+cu128; written Sun 22 Nov
+# 2026 for the allocation-rules pilot's env-B amendment, configs/analysis/allocation_rules.yaml).
+#
+# Same criteria as configs/analysis/sequence_report.yaml (margin 15 pp; fallback tasks T3, T4). Only the
+# thresholds' source differs: that file keys thresholds by the reference run's directory name, and its
+# registered values for seq_hetero__seq_ft__seed0/1 are gamma's runs' diagonals (env A). The env-B
+# reference runs in results/envB/ have the same directory names but their own diagonals (seed 0:
+# 0.85 / 0.65 / 0.81 / 0.77 against gamma's 0.90 / 0.78 / 1.00 / 0.98), so here every env-B seq_ft
+# reference is `derived`: theta_j = R_ref[j][j] - 0.15 from the reference's own diagonal, recorded with
+# its result.json SHA-256. Pass it with `scripts/sequence_report.py --config` for env-B runs only.
+criteria:
+  margin_pp: 15
+  expected_thresholds_by_reference:
+    seq_hetero__seq_ft__seed0:
+      mode: derived
+      margin: 0.15
+    seq_hetero__seq_ft__seed1:
+      mode: derived
+      margin: 0.15
+    seq_hetero__seq_ft__seed2:
+      mode: derived
+      margin: 0.15
+  # Plasticity OK for task j:        R[j][j] >= threshold_j
+  # Final retention OK for task j<3: R[3][j] >= threshold_j
+  # SGP fallback triggered if plasticity fails on any of these task indices (T3, T4).
+  fallback_tasks: [2, 3]

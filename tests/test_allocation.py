@@ -342,7 +342,7 @@ def test_method_yamls_are_gpm_plus_the_rule_and_schedule(rule):
     assert name == plain_name == "gpm"
     assert kwargs.pop("allocation_rule") == rule
     schedule = kwargs.pop("capacity_schedule")
-    assert sorted(schedule) == [f"seq_hetero__seq_ft__seed{s}" for s in range(3)]
+    assert sorted(schedule) == ["seq_hetero__seq_ft__seed0"]  # env B: seed 0 only (rule amendment, 22 Nov)
     assert all(len(c) == 3 for c in schedule.values())
     assert kwargs == plain
     assert GPM(**load_method_config(f"gpm_alloc_{rule}")[1]).display_name == f"gpm_projected_adam_alloc_{rule}"
@@ -406,17 +406,80 @@ def test_config_diff_allows_only_neutral_new_keys(tmp_path):
     assert not config_diff(tmp_path / "new", tmp_path / "old")["passed"]
 
 
-def test_rule_file_registers_every_seed_and_arm_and_the_configs_agree():
-    from flowcl.experiments.alloc_queue import PIN_FILES, config_check
-    from flowcl.experiments.allocation_rules import ARMS, load_rule
+def test_rule_file_registers_env_b_seed_0_and_keeps_gamma_superseded():
+    from flowcl.experiments.alloc_queue import REFERENCE_PINS, config_check, pin_files
+    from flowcl.experiments.allocation_rules import ARMS, load_rule, results_root
+    from flowcl.utils.libero_paths import repo_root
 
     rule = load_rule()
     assert rule["arms"] == list(ARMS) and rule["comparator"] == "e99"
-    for s in ("0", "1", "2"):
-        assert sorted(rule["pins"][s]) == sorted(PIN_FILES)
-        for arm in ARMS:
-            p = rule["predictions"][s][arm]
-            assert len(p["k_hash"]) == 64 and p["jump_layers"] and p["status"] == "matched"
-            assert abs(p["error_pp"]) <= rule["gates"]["matching_tol_pp"]
-            assert p["reallocated_vs_e99_pp"] >= rule["gates"]["distinct_min_pp"]
-    assert config_check([0, 1, 2])["passed"]
+    assert rule["environment"]["torch"] == "2.9.1+cu128" and rule["prediction_source"] == "e99"
+    assert results_root(rule) == repo_root() / "results" / "envB"
+    assert sorted(rule["pins"]) == sorted(rule["predictions"]) == ["0"]
+    assert sorted(rule["pins"]["0"]) == sorted([*pin_files(rule), *REFERENCE_PINS])
+    for arm in ARMS:
+        p = rule["predictions"]["0"][arm]
+        assert len(p["k_hash"]) == 64 and p["jump_layers"] and p["status"] == "matched"
+        assert abs(p["error_pp"]) <= rule["gates"]["matching_tol_pp"]
+        assert p["reallocated_vs_e99_pp"] >= rule["gates"]["distinct_min_pp"]
+    old = rule["superseded_envA"]
+    assert sorted(old["pins"]) == sorted(old["predictions"]) == ["0", "1", "2"]
+    assert all("ne90_memory1" in old["pins"][s] for s in old["pins"])
+    assert config_check([0])["passed"]
+    assert not config_check([1])["passed"]  # no env-B schedule for seed 1 yet
+
+
+def test_pin_files_follow_the_prediction_source():
+    from flowcl.experiments.alloc_queue import pin_files
+
+    assert pin_files({"prediction_source": "e99"})["e99_memory1"] == ("e99", "method/memory_task1.pt")
+    assert "ne90_memory1" not in pin_files({"prediction_source": "e99"})
+    assert pin_files({})["ne90_memory1"] == ("ne90", "method/memory_task1.pt")
+
+
+def test_environment_check_refuses_a_run_from_another_torch(tmp_path):
+    import torch as _torch
+
+    from flowcl.experiments.alloc_queue import environment_check
+
+    here = _torch.__version__
+    good, old, bare = tmp_path / "good", tmp_path / "old", tmp_path / "bare"
+    for d in (good, old, bare):
+        d.mkdir()
+    (good / "requirements.txt").write_text(f"numpy==1.26.4\ntorch=={here}\ntorchvision==0.0\n")
+    (old / "requirements.txt").write_text("torch==2.4.1+cu121\n")
+    rule = {"environment": {"name": "envB", "torch": here}}
+    assert environment_check(rule, [good])["passed"]
+    bad = environment_check(rule, [good, old, bare])
+    assert not bad["passed"] and len(bad["problems"]) == 2
+    assert not environment_check({"environment": {"name": "x", "torch": "0.0"}}, [])["passed"]
+    assert environment_check({}, [old])["passed"]  # env A rule: no environment block
+
+
+def test_env_b_report_config_derives_every_seq_ft_reference():
+    from omegaconf import OmegaConf
+
+    from flowcl.utils.libero_paths import repo_root
+
+    cfg = repo_root() / "configs" / "analysis"
+    envb = OmegaConf.to_container(OmegaConf.load(cfg / "sequence_report_envb.yaml"))["criteria"]
+    base = OmegaConf.to_container(OmegaConf.load(cfg / "sequence_report.yaml"))["criteria"]
+    assert envb["margin_pp"] == base["margin_pp"] and envb["fallback_tasks"] == base["fallback_tasks"]
+    entries = envb["expected_thresholds_by_reference"]
+    assert sorted(entries) == [f"seq_hetero__seq_ft__seed{s}" for s in range(3)]
+    assert all(e == {"mode": "derived", "margin": base["margin_pp"] / 100} for e in entries.values())
+
+
+ENVB = __import__("pathlib").Path(__file__).resolve().parents[1] / "results" / "envB"
+
+
+@pytest.mark.skipif(not (ENVB / "seq_hetero__gpm_projected_adam_e99__seed0" / "result.json").is_file(),
+                    reason="env-B reference runs not on this machine")
+def test_env_b_comparator_checks_on_the_retrained_runs():
+    from flowcl.experiments.alloc_queue import archived_e99_check
+    from flowcl.experiments.allocation_rules import load_rule
+
+    rule = load_rule()
+    assert archived_e99_check(0, ENVB, rule)["passed"]
+    wrong = {**rule, "pins": {"0": {**rule["pins"]["0"], "gpm_stage0": "0" * 64}}}
+    assert not archived_e99_check(0, ENVB, wrong)["passed"]

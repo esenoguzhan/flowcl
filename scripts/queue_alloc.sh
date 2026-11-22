@@ -3,6 +3,12 @@
 # (gpm_alloc_novelty, gpm_alloc_size, gpm_alloc_room) at e99's capacity after every task, on seq_hetero,
 # against the existing flat-0.99 run (gpm_projected_adam_e99). Orchestration only; the checks are
 # flowcl/experiments/alloc_queue.py (preflight) and flowcl/experiments/allocation_rules.py (check, summary).
+#
+# Env B (the rule's amendment of 22 Nov 2026): everything lives in results/envB/, the references
+# retrained on ThinkStation-2 by scripts/queue_envb_refs.sh (seq_ft, plain GPM, e99, seed 0). Every
+# reference is passed explicitly (run_continual's default T1 reference is the archived env-A run), the
+# runs go to --results-root results/envB, and the strict report uses configs/analysis/sequence_report_envb.yaml
+# with no Gate-2 pilot file (gamma's pilot is env A; the path given does not exist).
 # Run it only when no other GPU job is running (a second process could perturb cuDNN and break the bitwise
 # identity the checks rely on).
 #
@@ -11,8 +17,9 @@
 #                   blocks its dependents). A run directory left by an interrupted training step must be
 #                   moved aside first.
 #   --smoke DIR     seed 2 only, 200 steps and 1 episode per cell, into DIR (outside results/), on a dirty
-#                   tree, against the smoke references in REFS (seq_ft and plain GPM, seed 2). A smoke first
-#                   trains its own e99 (the comparator) and writes method configs with that run's counts.
+#                   tree, against the smoke references in REFS (seq_ft and plain GPM, seed 2; env B:
+#                   /home/oguzhan/flowcl_envB_smoke/all). A smoke first trains its own e99 (the comparator)
+#                   and writes method configs with that run's counts.
 #
 #    0      preflight       (clean tree, rule committed, idle GPU, disk, targets absent, configs, pins,
 #                            archived e99 checks, the offline prediction against the registered ranks)
@@ -23,7 +30,7 @@
 #      K+2  strict report    -> gpm_seq_alloc_<a>_seed<S>/report.json
 #      K+3  rep 0 on T4      (the reproduction gate)
 #      K+4  rep 1, K+5 rep 2 (all 4 tasks)
-#    22     summary          (ALWAYS runs) -> results/allocation_rules/seed<S>/summary.json
+#    22     summary          (ALWAYS runs) -> results/envB/allocation_rules/seed<S>/summary.json
 #
 # IDENTITY STOP: when a run fails and its identity_stage0/1.json reads "passed": false, every later arm is
 # skipped (logged STOP); the same failure would recur. Any other failure skips only that arm's dependents.
@@ -61,7 +68,7 @@ TASKS=(libero_spatial/pick_up_the_black_bowl_from_table_center_and_place_it_on_t
        libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it)
 T4="${TASKS[3]}"
 RUN_ARGS=(--curriculum "$CUR" --amp)
-REPORT_ARGS=(--strict-provenance)
+REPORT_ARGS=(--strict-provenance --config configs/analysis/sequence_report_envb.yaml)
 EVAL_ARGS=()
 PRE_ARGS=()
 CHK_ARGS=()
@@ -80,11 +87,14 @@ if [ -n "$SMOKE" ]; then
     TAG="_smoke"
 else
     if [ -n "$REFS" ]; then echo "--smoke-refs goes with --smoke" >&2; exit 2; fi
-    RES="${QUEUE_RESULTS_ROOT:-results}"
+    RES="${QUEUE_RESULTS_ROOT:-results/envB}"
     REFS="$RES"
     S=0
-    TAG=""
+    TAG="_envb"
+    RUN_ARGS+=(--results-root "$RES")
+    PRE_ARGS+=(--results-root "$RES")
 fi
+REPORT_ARGS+=(--pilot-json "$RES/gpm_pilot/pilot.json")
 NS=${CUR}__seq_ft__seed$S
 SEQFT=$REFS/${CUR}__seq_ft__seed$S
 GPM=$REFS/${CUR}__gpm_projected_adam__seed$S
@@ -92,6 +102,8 @@ E99=$RES/${CUR}__gpm_projected_adam_e99__seed$S
 OUTD=$RES/allocation_rules/seed$S
 if [ -n "$SMOKE" ]; then
     CHK_ARGS+=(--smoke --results-root "$RES" --comparator "$E99" --plain "$GPM")
+else
+    CHK_ARGS+=(--results-root "$RES")
 fi
 
 LOGDIR="${QUEUE_LOG_ROOT:-results/logs}/queue_$(date +%Y%m%d_%H%M%S)_alloc${TAG}"
@@ -230,8 +242,8 @@ for A in $ARMS; do
 done
 
 # The summary always runs: it reports whatever is complete and labels the rest invalid.
-SUM_ARGS=()
-if [ -n "$SMOKE" ]; then SUM_ARGS+=(--smoke --results-root "$RES" --comparator "$E99" --plain "$GPM"); fi
+SUM_ARGS=(--results-root "$RES")
+if [ -n "$SMOKE" ]; then SUM_ARGS+=(--smoke --comparator "$E99" --plain "$GPM"); fi
 step 22_summary $PY scripts/allocation_rules.py summary --seed "$S" "${SUM_ARGS[@]}"
 
 if [ -z "$FAILED" ]; then

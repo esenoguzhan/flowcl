@@ -6,10 +6,13 @@ after T2, T3 and T4, the integer protected count ``Σ d_out k`` that ``gpm_e99``
 seed, and differs from it only in where the capacity goes (:mod:`flowcl.analysis.allocation`).
 
 * :func:`predict` — the post-T2 extension of every rule, offline. The T2 Grams are identical in all
-  arms (shared stage-1 weights and capture seeds), so ne90's T2 artifact (its residual spectrum and
-  history; tr K reconstructed as in :func:`flowcl.experiments.high_protection.predicted_t2_ranks`)
-  determines every rule's T2 allocation. It first reproduces e99's (flat 0.99) and ne90's
-  (novelty 0.9) T2 ranks per layer, and e99's counts against the method configs' schedules.
+  arms (shared stage-1 weights and capture seeds), so one GPM-family run's T2 artifact (its residual
+  spectrum and history; tr K reconstructed as in
+  :func:`flowcl.experiments.high_protection.predicted_t2_ranks`) determines every rule's T2
+  allocation. The source is the rule's ``prediction_source``: ne90 on gamma (env A), e99 on
+  ThinkStation-2 (env B, where no ne90 run exists). It first reproduces e99's (flat 0.99) T2 ranks
+  per layer and a second run's from the same spectrum (env A: ne90 at novelty 0.9; env B: plain GPM
+  at flat 0.95), the T1 ranks, and e99's counts against the method configs' schedules.
 * :func:`check_arm` — one finished arm: identity and T1 memory against plain GPM, matching after
   the post-T2 and post-T3 extensions (post-T4 reported for E3), the post-T2 ranks against the
   prediction (jump layers may differ by one: ``prediction_borderline``), distinctness from e99
@@ -43,6 +46,13 @@ LABELS = {"plain": "gpm_projected_adam", "e99": "gpm_projected_adam_e99", "ne90"
           "seq_ft": "seq_ft", **{a: f"gpm_projected_adam_alloc_{a}" for a in ARMS}}
 CURRICULUM = "seq_hetero"
 STAGE = 3  # the checkpoint after T4
+
+
+def results_root(rule: dict | None = None) -> Path:
+    """Where the pilot's references, runs and outputs live: the rule's ``results_root`` (env B:
+    ``results/envB``), relative to the repo root; ``results`` when the rule names none."""
+    root = Path((rule or {}).get("results_root") or "results")
+    return root if root.is_absolute() else repo_root() / root
 
 
 def rule_path(path: str | Path | None = None) -> Path:
@@ -147,14 +157,18 @@ def predict(seed: int, *, results: Path | None = None, rule: dict | None = None)
     from flowcl.data.config import load_method_config
     from flowcl.experiments.gate2 import load_subspace_config
 
-    results = Path(results) if results else repo_root() / "results"
-    ne90, e99 = run_dir(results, "ne90", seed), run_dir(results, "e99", seed)
-    bases, meta = _memory(ne90, 1)
+    rule = rule if rule is not None else load_rule()
+    results = Path(results) if results else results_root(rule)
+    source_role = rule.get("prediction_source") or "ne90"
+    if source_role not in ("ne90", "e99"):
+        raise ValueError(f"prediction_source must be ne90 or e99, got {source_role!r}")
+    source, e99 = run_dir(results, source_role, seed), run_dir(results, "e99", seed)
+    bases, meta = _memory(source, 1)
     info = meta["memory_history"]["1"]
     _, e99_meta = _memory(e99, 3)
     he = e99_meta["memory_history"]
     names = list(info)
-    dims = _dims(ne90, names)
+    dims = _dims(source, names)
     d_out = {n: dims[n][0] for n in names}
     cap_cfg = load_subspace_config(repo_root() / "configs" / "analysis" / "subspace.yaml")
     stats = artifact_stats(bases, info, d_out, cap_cfg.rank_tol)
@@ -165,17 +179,27 @@ def predict(seed: int, *, results: Path | None = None, rule: dict | None = None)
 
     checks = {}
     t1_e99 = {n: he["0"][n]["k_after"] for n in names}
-    t1_ne90 = {n: meta["memory_history"]["0"][n]["k_after"] for n in names}
-    checks["t1_ranks_equal"] = {"passed": t1_e99 == t1_ne90 and t1_e99 == k_before}
+    t1_source = {n: meta["memory_history"]["0"][n]["k_after"] for n in names}
     flat = {n: k_before[n] + k for n, k in allocate("flat", stats, 0.99).items()}
-    nov = {n: k_before[n] + k for n, k in allocate("novelty", stats, 0.9).items()}
-    k_ne90 = {n: info[n]["k_after"] for n in names}
     checks["flat_0.99_reproduces_e99"] = {"passed": flat == k_e99,
                                           "layers_equal": sum(flat[n] == k_e99[n] for n in names),
                                           "n_layers": len(names)}
-    checks["novelty_0.9_reproduces_ne90"] = {"passed": nov == k_ne90,
-                                             "layers_equal": sum(nov[n] == k_ne90[n] for n in names),
-                                             "n_layers": len(names)}
+    if source_role == "ne90":
+        checks["t1_ranks_equal"] = {"passed": t1_e99 == t1_source and t1_e99 == k_before}
+        second, second_name = {n: k_before[n] + k for n, k in allocate("novelty", stats, 0.9).items()}, \
+            "novelty_0.9_reproduces_ne90"
+        k_second = {n: info[n]["k_after"] for n in names}
+    else:  # env B: the spectrum is e99's own; plain GPM's T2 extension is the independent second run
+        plain = run_dir(results, "plain", seed)
+        _, plain_meta = _memory(plain, 1)
+        t1_plain = {n: plain_meta["memory_history"]["0"][n]["k_after"] for n in names}
+        checks["t1_ranks_equal"] = {"passed": t1_e99 == t1_plain and t1_e99 == k_before}
+        second, second_name = {n: k_before[n] + k for n, k in allocate("flat", stats, 0.95).items()}, \
+            "flat_0.95_reproduces_plain"
+        k_second = {n: plain_meta["memory_history"]["1"][n]["k_after"] for n in names}
+    checks[second_name] = {"passed": second == k_second,
+                           "layers_equal": sum(second[n] == k_second[n] for n in names),
+                           "n_layers": len(names)}
     wanted = [counts[1], counts[2], counts[3]]
     config_problems = []
     for arm in ARMS:
@@ -196,8 +220,9 @@ def predict(seed: int, *, results: Path | None = None, rule: dict | None = None)
     return {"seed": seed, "namespace": namespace(seed), "target_t2": counts[1], "e99_counts": counts,
             "full": sum(do * di for do, di in dims.values()), "e99_halves_t2": halves(k_e99, dims),
             "checks": checks, "passed": all(c["passed"] for c in checks.values()), "arms": arms,
-            "inputs": {"ne90_memory1": {"path": str(ne90 / "method" / "memory_task1.pt"),
-                                        "sha256": file_sha256(ne90 / "method" / "memory_task1.pt")},
+            "prediction_source": source_role,
+            "inputs": {f"{source_role}_memory1": {"path": str(source / "method" / "memory_task1.pt"),
+                                                  "sha256": file_sha256(source / "method" / "memory_task1.pt")},
                        "e99_memory3": {"path": str(e99 / "method" / "memory_task3.pt"),
                                        "sha256": file_sha256(e99 / "method" / "memory_task3.pt")}}}
 
@@ -314,7 +339,7 @@ def check_arm(arm: str, seed: int, *, results: Path | None = None, rule: dict | 
 
     rule = rule or load_rule()
     g = rule["gates"]
-    results = Path(results) if results else repo_root() / "results"
+    results = Path(results) if results else results_root(rule)
     run = run_dir(results, arm, seed)
     e99 = Path(comparator) if comparator else run_dir(results, "e99", seed)
     plain = Path(plain) if plain else run_dir(results, "plain", seed)
@@ -466,7 +491,7 @@ def summary(seed: int, *, results: Path | None = None, rule_file: Path | None = 
     from flowcl.experiments.high_protection_followup import provenance_check, reproduction_check
 
     rule = load_rule(rule_file)
-    results = Path(results) if results else repo_root() / "results"
+    results = Path(results) if results else results_root(rule)
     ev = rule["evaluation"]
     n_episodes = rule["smoke"]["n_episodes"] if smoke else ev["n_episodes"]
     reps = list(ev["repetitions"])

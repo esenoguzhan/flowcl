@@ -9,9 +9,11 @@
 # and the rule decides only where it goes (flowcl/analysis/allocation.py):
 #   novelty: tau = max(0.95, min(1, p + f (1 - p))), the new-energy rule of gpm_ne90 with f set by the match
 # with a per-layer floor of tau >= 0.95. The counts are e99's, read from
-# results/seq_hetero__gpm_projected_adam_e99__seed<S>/method/memory_task3.pt (its history's
-# k_after per layer times d_out), keyed by the run's seed namespace; the rule pins those files
-# by SHA-256. Display name gpm_projected_adam_alloc_novelty; registry name gpm.
+# results/envB/seq_hetero__gpm_projected_adam_e99__seed<S>/method/memory_task3.pt (its history's
+# k_after per layer times d_out; env B, ThinkStation-2, retrained 21 Nov), keyed by the run's seed
+# namespace; the rule pins those files by SHA-256. Gamma's counts for seeds 0-2 (60b2ab8) were
+# superseded on 22 Nov (rule amendment): env-B runs are never paired with env-A runs.
+# Display name gpm_projected_adam_alloc_novelty; registry name gpm.
 name: gpm
 
 eps: 0.95
@@ -25,6 +27,4 @@ capture_config: subspace
 allocation_rule: novelty
 # Protected counts after tasks 2, 3, 4 (task index 1, 2, 3) of 41 954 304 registry weights.
 capacity_schedule:
-  seq_hetero__seq_ft__seed0: [23431110, 25740952, 27042210]
-  seq_hetero__seq_ft__seed1: [23937576, 26346739, 27695571]
-  seq_hetero__seq_ft__seed2: [23624106, 25957465, 27364188]
+  seq_hetero__seq_ft__seed0: [23449002, 25727605, 27041144]
