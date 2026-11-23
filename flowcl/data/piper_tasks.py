@@ -107,6 +107,18 @@ PICK_GRAPE_V2 = PiperSource(
     exclude=(16,),
     held_out=(24, 27, 31, 38, 41),
 )
+# The 23 Nov 2026 sessions (15:43-18:21) on the second, white table, labelled 'pick up the purple grape and
+# put it on blue plate'. The front camera sits in a new pose (agilex_piper_table2_336), so these demos do not
+# share an image frame with the grape sessions above. 90 episodes, each one pick-and-place: the grape held at
+# about 50 mm, back home, 1.4-1.8 s at home at the end; the camera held within about 1 px. Episodes 50-89 were
+# placed by a map to fill the image's right side, the area near the base and the band right of the mask.
+# Episode 0 starts with the gripper 40 mm open; 55 places on, and 56 picks from, the far +y edge (y +435 mm,
+# image x ~150), visible below the mask.
+NEW_GRAPE = PiperSource(
+    folder="new_grape",
+    sha256="531cac7103e23c3946f44726fdb481ea0b81b6aff4acc9991b67d45babb844b8",
+)
+PURPLE_GRAPE_PLATE = "pick up the purple grape and put it on the blue plate"
 
 
 def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_episodes: int, size: int,
@@ -246,6 +258,26 @@ TASKS: dict[str, PiperTask] = {
         # grape_all with the wait at home before the reach dropped from every demo.
         _sized_crop("grape_all_trim", GRAPE_PLATE, (PICK_GRAPE, PICK_GRAPE_V2), 90, 336, holdout=5,
                     trim_start_rad=TRIM_START_RAD, notes="Each demo starts as the reach begins."),
+        # The second table at 336 px, the whole masked frame (no crop), every demo trained on: the user's
+        # choice of 23 Nov, so the offline check measures fit only. As recorded, and with the wait at home
+        # trimmed as grape_all_trim.
+        *(
+            PiperTask(
+                name=name,
+                language=PURPLE_GRAPE_PLATE,
+                sources=(NEW_GRAPE,),
+                n_episodes=90,
+                holdout=0,
+                notes="The second table's view at 336 x 336, masked where the operator and the leader arm are."
+                      + notes,
+                embodiment="agilex_piper_table2_336",
+                trim_start_rad=trim,
+            )
+            for name, trim, notes in (
+                ("new_grape_336", None, ""),
+                ("new_grape_trim_336", TRIM_START_RAD, " Each demo starts as the reach begins."),
+            )
+        ),
     )
 }
 

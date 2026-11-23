@@ -1,0 +1,64 @@
+# The second table (white, recorded from 23 Nov 2026 as ~/piper_datasets/new_grape) at 336 x 336. The front
+# camera ("Second arm · top") sits in a new pose that cannot be tilted, so agilex_piper_crop336's operator mask
+# and table outline do not apply. The mask is redrawn for this view, and there is no crop (see image_masks).
+# Everything else is agilex_piper_crop336's.
+#
+# AgileX Piper, one 6-DoF arm with a parallel gripper, teleoperated from a leader arm
+# (Stage B robot, thesis plan F1). Demos are LeRobot v3.0 recordings at 15 fps in
+# ~/piper_datasets, read by flowcl/data/piper_adapter.py.
+name: agilex_piper_table2_336
+
+observation:
+  # Order is load-bearing (token order into the trunk). front = the recordings'
+  # observation.images.image (third person), wrist = observation.images.wrist_image.
+  cameras:
+    - front
+    - wrist
+  # Recorded at 640x480 and reduced by flowcl.data.images.policy_frame for both the
+  # training cache and serving.
+  image_size: [336, 336]
+  # Measured joint positions (rad) and the measured gripper opening (m, 0 = closed).
+  # Both are what the robot reports live; the gripper reads the object's width while
+  # holding it.
+  d_state: 7
+  state_keys:
+    - [joints, 6]
+    - [gripper, 1]
+  # The front camera sees the operator and the leader arm at the top left of this view. Over 2,868 sampled
+  # frames of new_grape episodes 0-49 the operator's hand reaches x <= 185, and y <= 191 at x ~80; no
+  # grape or plate starts under the polygon (nearest grape x 267 px, plate x 253 px at the start). In
+  # far +y carries it hides part of the follower's elbow and forearm; the gripper stays right of x ~230.
+  # Episodes 50-89 checked on prepare_piper --review sheets (two ticks per episode): the hand stays inside.
+  # Far +y moves pass the follower's upper link, once (ep 61) its wrist, under the polygon's lower edge; the
+  # user ruled the +y side out of view and not a test target (23 Nov).
+  mask_source_hw: [480, 640]
+  image_masks:
+    front:
+      - [[0, 0], [210, 0], [210, 150], [140, 190], [100, 210], [0, 210]]
+  # No crop: over new_grape's 90 episodes the follower reaches the frame's top edge (x 200-440) and, raised,
+  # past the table's right edge, and the plates span x 127-531, y 180-480 px. A table outline cut the gripper
+  # out of the highest ticks, and its bounding box was nearly the whole frame anyway. Only the wall at the
+  # top right stays empty. The masked frame is resized whole: 0.53 x 0.70 of the recorded pixels, against
+  # agilex_piper_crop336's 0.75 x 1.18.
+
+action:
+  # Absolute joint targets (rad) + gripper target (m) from the leader arm. The
+  # measured state follows them 1-2 ticks later.
+  d_action: 7
+  control_mode: joint_position
+  # The recording rate; no subsampling.
+  control_rate_hz: 15.0
+  # 1.07 s of future actions.
+  chunk_horizon: 16
+  # 0.53 s open-loop, then replan.
+  execute_k: 8
+  already_normalized: false
+  component_keys:
+    - [joints, 6]
+    - [gripper, 1]
+
+notes: >
+  AgileX Piper single arm, leader-follower teleop recorded with LeRobot (robot_type
+  piper) at 15 fps. The recordings also carry observation.eef / action.eef (end-effector
+  pose and deltas); they are not used. No std floor yet: a floor matters only for later
+  tasks under frozen Task-1 stats, and it would have to spare the gripper (std 0.018 m).
