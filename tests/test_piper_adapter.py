@@ -274,6 +274,20 @@ def test_a_larger_crop_changes_only_the_input_size(size):
         assert (task.embodiment, task.n_episodes, task.holdout) == (sized.name, 40, 0)
 
 
+def test_the_second_table_changes_only_the_front_camera_treatment():
+    old, new = load_embodiment_spec("agilex_piper_crop336"), load_embodiment_spec("agilex_piper_table2_336")
+    assert new.action == old.action
+    assert new.observation.image_size == (336, 336)
+    assert not new.observation.crop_for("front")
+    assert new.observation.masks_for("front") and new.observation.masks_for("front") != old.observation.masks_for("front")
+    assert dataclasses.replace(new.observation, image_masks=old.observation.image_masks,
+                               image_crops=old.observation.image_crops) == old.observation
+    plain, trim = get_task("new_grape_336"), get_task("new_grape_trim_336")
+    assert (plain.embodiment, plain.n_episodes, plain.holdout, plain.trim_start_rad) == (new.name, 90, 0, None)
+    assert dataclasses.replace(trim, name=plain.name, notes=plain.notes, trim_start_rad=None) == plain
+    assert trim.trim_start_rad == 0.01
+
+
 def test_an_unmasked_cache_keeps_the_corner_and_loads_only_unmasked(tmp_path, spec):
     unmasked = load_embodiment_spec("agilex_piper_unmasked")
     write_dataset(tmp_path / "toy")
