@@ -96,6 +96,22 @@ changes.
   - **Next:** runs in the weak zones, to decide whether new demos are needed at all; milk with the
     step, which may also explain 3 Nov; the paused queue (milk 336 daylight,
     `pkill -CONT -f 'scripts/[g]ate0.py'`).
+- **Piper second table, Mon 23 – Tue 24 Nov** (`runs/2026-11-24_piper_new_grape_rollouts.md`; registry,
+  embodiment and queue `7d7884a`, branch `piper-table2`).
+  - **The data:** `new_grape`, 90 demos on a white table with the front camera in a new pose, recorded
+    15:43–18:21.
+  - **The policies:** embodiment `agilex_piper_table2_336` (mask, no crop, 336 px), every demo
+    trained on, daylight 0.3. Plain seeds 0 and 1 trained; the trim run died at 11.7k (GPU timeout).
+  - **First session on the arm, Tue 24 Nov afternoon: 3 of 18 placed** (all seed 1, 3 of its 15). The
+    replay passes and every scene is near a demo's.
+    - **Hover (9):** the arm stops part-way down with the gripper shut, at the demos' carry height,
+      mostly over the plate.
+    - **Miss (5):** the fingers close from higher up (106.7–120.4 mm against 99.5–105.4).
+  - **Every rollout ran in afternoon sun with hard window stripes; no demo has them,** and the daylight
+    augmentation only makes ramps. Over the whole table, the stripe measures do not overlap the
+    demos'. Whether the light causes the failures is not shown.
+  - **Next:** the same scenes in the recording's light, seed 0 against seed 1, annotated; one scene
+    from a recorded episode for the in-process images test.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
