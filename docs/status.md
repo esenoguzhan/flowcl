@@ -110,8 +110,17 @@ changes.
   - **Every rollout ran in afternoon sun with hard window stripes; no demo has them,** and the daylight
     augmentation only makes ramps. Over the whole table, the stripe measures do not overlap the
     demos'. Whether the light causes the failures is not shown.
-  - **Next:** the same scenes in the recording's light, seed 0 against seed 1, annotated; one scene
-    from a recorded episode for the in-process images test.
+  - **Second session, Tue 24 Nov evening (31 runs; not yet in a record):** in light like the demos', seed 1
+    stayed at the start pose in 13 of 14 runs. Offline, the plan at home moves only when the input changes (sun
+    stripes, a person in view, the arm creeping). The demos' 1.5 s hold at home before saving (2,088 frames, none
+    with motion ahead) is the likely source.
+  - **Queue `scripts/queue_piper_shadow.sh`, tmux `piper_shadow`, from Tue 24 Nov evening (~53 h):**
+    - block A: 10 demos held out (`new_grape_*_ho10_336`); v0, trimmed at both ends, end only, start only, and
+      both ends + shadow augmentation (`--augment-shadow`, real sun maps from `scripts/hw/piper_shadow_maps.py`);
+    - checks: `piper_start_check.py` (departure on the logged at-home inputs, with PiperStudio's entry check)
+      and `piper_relight_check.py` (opening, approach, MAE under the sun maps);
+    - block B: `piper_choose_recipe.py` picks by the rule fixed beforehand, trained on all 90, seeds 0-1;
+    - block C: ablations. Logs `results/piper_queue/shadow/`. Stop it before Friday's arm session.
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,

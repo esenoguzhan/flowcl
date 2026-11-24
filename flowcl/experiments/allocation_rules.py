@@ -257,6 +257,8 @@ def smoke_configs(e99_run: Path, out: Path) -> dict:
 
 # Run-config keys added after the archived e99 runs (7 Oct), with the neutral value a newer run records.
 NEUTRAL_NEW_KEYS = {"train.augment_shift_px": 0, "train.augment_color": 0.0, "train.augment_daylight": 0.0,
+                    "train.augment_shadow": 0.0, "train.augment_shadow_maps": None,
+                    "train.augment_shadow_map_share": 0.0, "train.augment_shadow_cameras": "all",
                     "train.checkpoint_every": 0, "provenance.identity_reference_checkpoints": {}}
 
 
