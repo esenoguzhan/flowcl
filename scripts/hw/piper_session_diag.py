@@ -42,7 +42,8 @@ from flowcl.data.piper_adapter import _read_parquets, read_episode_table  # noqa
 
 OPEN_MM = 20.0        # the gripper counts as opened above this
 CLOSE_FROM_MM = 60.0  # a close starts once the gripper was wider than this (session 1's demos open to 66-77 mm)
-PHASE_OPEN_MM = 58.0   # phases: open above this (the held grape measures 34-51 mm, the demos open to 66-100)
+PHASE_OPEN_CMD_MM = 30.0  # phases: open while the command is wider than this (a held grape measures 34-65 mm, so
+                          # the measured width alone cannot tell a hold from an opening)
 PHASE_EMPTY_MM = 20.0  # phases: shut on nothing below this
 CLOSE_DROP_MM = 10.0  # ... at the first tick this far below its widest opening so far
 HELD_MM = 30.0        # still this wide 1-2 s after the close: something is held
@@ -359,17 +360,19 @@ def cmd_hovers(args) -> dict:
 
 
 def cmd_phases(args) -> dict:
-    """The gripper's phases through each rollout, sampled every 0.1 s: O open (wider than PHASE_OPEN_MM),
-    H holding something (PHASE_EMPTY_MM to PHASE_OPEN_MM), E shut on nothing; phases under 0.3 s are
-    dropped as transitions. outcomes reads only the first close; this shows retries, stalls with the
-    gripper shut, and holds that never release."""
+    """The gripper's phases through each rollout, sampled every 0.1 s: O open (commanded wider than
+    PHASE_OPEN_CMD_MM), H commanded shut and holding something (measured PHASE_EMPTY_MM or wider), E shut
+    on nothing; phases under 0.3 s are dropped as transitions. outcomes reads only the first close; this
+    shows retries, stalls with the gripper shut, and holds that never release."""
     out = {}
     for run in rollouts(args.day):
         meta, _, k = load(run)
         t, ep = k["t"], k["end_pose"]
         g = k["gripper"] * (1000.0 if k["gripper"].max() < 1 else 1.0)
+        cmd = np.nan_to_num(k["sent_target"][:, 6])  # NaN until the first chunk arrives
+        cmd = cmd * (1000.0 if np.abs(cmd).max() < 1 else 1.0)
         idx = np.searchsorted(t, np.arange(0.0, t[-1], 0.1))
-        lab = np.where(g[idx] > PHASE_OPEN_MM, "O", np.where(g[idx] >= PHASE_EMPTY_MM, "H", "E"))
+        lab = np.where(cmd[idx] > PHASE_OPEN_CMD_MM, "O", np.where(g[idx] >= PHASE_EMPTY_MM, "H", "E"))
         cuts = [0] + [i for i in range(1, len(idx)) if lab[i] != lab[i - 1]] + [len(idx)]
         segs = [(lab[a], idx[a], idx[b - 1]) for a, b in zip(cuts, cuts[1:])]
         segs = [s for n, s in enumerate(segs) if n == 0 or t[s[2]] - t[s[1]] >= 0.3]

@@ -129,6 +129,8 @@ changes.
     - **Start trim works on the arm:** S (start trim + shadows) and B (both trims + shadows) left home in 12 of 12
       runs; D (neither) stayed home in 4 of 6. The offline start check predicted it (1.00 against 0.06).
     - **Placed: S 4 of 6, B 4 of 6 (all first try), D 1 of 6.** S and B are not separated by one run per scene.
+    - **b0 (B's recipe without shadows), added at 15:09 in the same light: placed 3 of 6, left home 6 of 6.** It differs
+      from B on ep 64 only (five closes, never released); one run, so the shadows' effect without sun is not shown.
     - **Left:** ep 28 (grape and plate nearly touching; offline approach error 2–4× the other scenes'), one aim miss,
       ep 70's plate by the base (B held the grape at the rim without releasing), long stalls with the gripper shut.
     - Three runs are logged under episode 3: PiperStudio resets the scene picker at every server switch. The scenes
