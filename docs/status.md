@@ -121,6 +121,18 @@ changes.
       and `piper_relight_check.py` (opening, approach, MAE under the sun maps);
     - block B: `piper_choose_recipe.py` picks by the rule fixed beforehand, trained on all 90, seeds 0-1;
     - block C: ablations. Logs `results/piper_queue/shadow/`. Stop it before Friday's arm session.
+    - Ended Thu 26 Nov 15:53, every run but v3_mix (Xid 8). Overnight `scripts/queue_piper_shadow_extra.sh` (b3_mix on
+      all 90, seed 1 of b3_mix and s3_mix) ended Fri 27 Nov 09:40, "QUEUE DONE ok".
+  - **Held-out arm session, Fri 27 Nov 13:51–14:50** (`runs/2026-11-27_piper_held_out_rollouts.md`). Three seed-0
+    80-demo policies on six held-out scenes set up from the recorded first frames, one run each, diffuse light
+    (no stripes, so the shadows were not tested):
+    - **Start trim works on the arm:** S (start trim + shadows) and B (both trims + shadows) left home in 12 of 12
+      runs; D (neither) stayed home in 4 of 6. The offline start check predicted it (1.00 against 0.06).
+    - **Placed: S 4 of 6, B 4 of 6 (all first try), D 1 of 6.** S and B are not separated by one run per scene.
+    - **Left:** ep 28 (grape and plate nearly touching; offline approach error 2–4× the other scenes'), one aim miss,
+      ep 70's plate by the base (B held the grape at the rim without releasing), long stalls with the gripper shut.
+    - Three runs are logged under episode 3: PiperStudio resets the scene picker at every server switch. The scenes
+      were checked by image (`piper_session_diag.py scenes`).
 - **The Dobot try-out is parked on branch `dobot-hw`** (not merged, never run on the robot).
   Its reusable pieces are listed in §3.
 - **C1 and its follow-up are finished** (records `runs/2026-10-08_high_protection_three_seeds.md`,
