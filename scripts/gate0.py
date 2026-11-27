@@ -93,6 +93,15 @@ def main() -> None:
     parser.add_argument("--augment-daylight", type=float, default=0.0,
                         help="Daylight relighting of this strength while training: colour temperature, "
                         "an illumination ramp and colour jitter (flowcl.data.augment; 0 = off).")
+    parser.add_argument("--augment-shadow", type=float, default=0.0,
+                        help="Probability per image of a shadow: a synthetic window pattern, or a real "
+                        "ratio map on the front camera (flowcl.data.augment.shadow; 0 = off).")
+    parser.add_argument("--augment-shadow-maps", default=None,
+                        help="Ratio-map bank (.npz, scripts/hw/piper_shadow_maps.py) for the front camera.")
+    parser.add_argument("--augment-shadow-map-share", type=float, default=0.0,
+                        help="Share of the front camera's shadows drawn from the map bank.")
+    parser.add_argument("--augment-shadow-cameras", default="all",
+                        help="'all' or comma-separated cameras that get shadows.")
     parser.add_argument("--checkpoint-every", type=int, default=0,
                         help="Also write checkpoints/step_N.pt every N steps (0 = final.pt only).")
     args = parser.parse_args()
@@ -127,6 +136,10 @@ def main() -> None:
         augment_shift_px=args.augment_shift_px,
         augment_color=args.augment_color,
         augment_daylight=args.augment_daylight,
+        augment_shadow=args.augment_shadow,
+        augment_shadow_maps=(str(Path(args.augment_shadow_maps).resolve()) if args.augment_shadow_maps else None),
+        augment_shadow_map_share=args.augment_shadow_map_share,
+        augment_shadow_cameras=args.augment_shadow_cameras,
         checkpoint_every=args.checkpoint_every,
     )
     if args.no_eval:

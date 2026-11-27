@@ -392,7 +392,9 @@ def test_config_diff_allows_only_neutral_new_keys(tmp_path):
     base = {"run_id": "old", "method": {"eps_later": 0.99}, "train": {"steps": 30000},
             "provenance": {"identity_stages": [0, 1]}}
     newer = {"run_id": "new", "method": {"allocation_rule": "room"}, "train": {"steps": 30000,
-             "augment_color": 0.0, "checkpoint_every": 0}, "provenance": {"identity_stages": [0, 1],
+             "augment_color": 0.0, "checkpoint_every": 0, "augment_shadow": 0.0, "augment_shadow_maps": None,
+             "augment_shadow_map_share": 0.0, "augment_shadow_cameras": "all"},
+             "provenance": {"identity_stages": [0, 1],
              "identity_reference_checkpoints": {}}}
     for name, cfg in (("old", base), ("new", newer)):
         (tmp_path / name).mkdir()

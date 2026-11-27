@@ -231,6 +231,47 @@ def test_a_trimmed_cache_records_its_threshold(tmp_path, spec):
     assert get_task("grape_all_crop336").trim_start_rad is None
 
 
+def test_the_hold_at_home_is_trimmed_to_one_frame_after_the_last_motion():
+    from flowcl.data.piper_adapter import end_of_motion
+
+    action = np.zeros((12, 7))
+    action[2:8, 0] = np.linspace(0.1, 0.6, 6)                 # moves on frames 2-7, back to 0 from 8 on
+    action[8:, 0] = 0.0
+    assert end_of_motion(action, 0.01) == 9                    # frame 7 is the last that moves; keep 8
+    assert end_of_motion(np.zeros((5, 7)), 0.01) == 5          # never moves: nothing dropped
+    held = np.zeros((6, 7))
+    held[:, 1] = np.linspace(0.5, 0.0, 6)                      # moves until the very end
+    assert end_of_motion(held, 0.01) == 6
+    ep = {"raw_episode_index": 0, "action": action, "state": action.copy(), "timestamp": np.arange(12.0),
+          "images": {"front": np.zeros((12, 2, 2, 3), np.uint8)}}
+    both = _trimmed(ep, 0.01, 0.01)
+    assert (both["trimmed_frames"], both["trimmed_end_frames"]) == (1, 3)
+    assert len(both["action"]) == len(both["images"]["front"]) == 8
+    end_only = _trimmed(ep, None, 0.01)
+    assert (end_only["trimmed_frames"], len(end_only["action"])) == (0, 9)
+
+
+def test_an_end_trimmed_cache_records_its_threshold(tmp_path, spec):
+    write_dataset(tmp_path / "raw" / "toy")
+    task = dataclasses.replace(toy_task(tmp_path / "raw"), trim_end_rad=0.01)
+    build_cache(task, tmp_path / "raw", tmp_path / "toy.h5", spec)
+    with h5py.File(tmp_path / "toy.h5", "r") as f:
+        assert f.attrs["trim_end_rad"] == 0.01 and "trim_start_rad" not in f.attrs
+    verify_cache(tmp_path / "toy.h5", task)
+    with pytest.raises(ValueError, match="trim_end_rad"):
+        verify_cache(tmp_path / "toy.h5", dataclasses.replace(task, trim_end_rad=None))
+
+
+def test_new_grape_trim_variants_and_the_held_out_ten():
+    held = (3, 7, 16, 23, 28, 34, 64, 69, 70, 73)
+    for name, start, end in (("new_grape", None, None), ("new_grape_trim", 0.01, None),
+                             ("new_grape_trimend", None, 0.01), ("new_grape_trim2", 0.01, 0.01)):
+        full, ho = get_task(f"{name}_336"), get_task(f"{name}_ho10_336")
+        assert (full.trim_start_rad, full.trim_end_rad, full.holdout) == (start, end, 0)
+        assert (ho.trim_start_rad, ho.trim_end_rad, ho.holdout, ho.n_train) == (start, end, 10, 80)
+        assert ho.sources[0].held_out == held and ho.sources[0].sha256 == full.sources[0].sha256
+
+
 def test_a_task_with_nothing_held_out_trains_on_every_episode(tmp_path, spec, monkeypatch):
     import flowcl.data.piper_tasks as piper_tasks
     from flowcl.deploy.piper_server import training_summary

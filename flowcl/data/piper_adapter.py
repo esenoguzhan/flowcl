@@ -277,10 +277,23 @@ def start_of_motion(action: np.ndarray, rad: float) -> int:
     return max(int(np.argmax(moved)) - 1, 0) if moved.any() else 0
 
 
-def _trimmed(ep: dict, rad: float) -> dict:
-    start = start_of_motion(ep["action"], rad)
-    return {**ep, "trimmed_frames": start, "action": ep["action"][start:], "state": ep["state"][start:],
-            "timestamp": ep["timestamp"][start:], "images": {c: v[start:] for c, v in ep["images"].items()}}
+def end_of_motion(action: np.ndarray, rad: float) -> int:
+    """Where an episode trimmed of its hold at home ends (exclusive): one frame after its last
+    action that moves a joint more than ``rad`` from the final action (the full length when none
+    does, or when the hold is shorter than that)."""
+    moved = np.abs(action[:, : D_JOINTS - 1] - action[-1, : D_JOINTS - 1]).max(axis=1) > rad
+    return min(int(np.nonzero(moved)[0][-1]) + 2, len(action)) if moved.any() else len(action)
+
+
+def _trimmed(ep: dict, rad: float | None, end_rad: float | None = None) -> dict:
+    """The wait at home before the reach (``rad``) and/or the hold at home after it (``end_rad``)
+    dropped; ``None`` keeps that end. Actions are kept as recorded."""
+    start = start_of_motion(ep["action"], rad) if rad is not None else 0
+    end = end_of_motion(ep["action"], end_rad) if end_rad is not None else len(ep["action"])
+    keep = slice(start, end)
+    return {**ep, "trimmed_frames": start, "trimmed_end_frames": len(ep["action"]) - end,
+            "action": ep["action"][keep], "state": ep["state"][keep], "timestamp": ep["timestamp"][keep],
+            "images": {c: v[keep] for c, v in ep["images"].items()}}
 
 
 def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> dict:
@@ -302,7 +315,9 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(".h5.partial")
     trim = getattr(task, "trim_start_rad", None)
-    lengths, trimmed, raw_labels = [], [], {}
+    trim_end = getattr(task, "trim_end_rad", None)
+    trimming = trim is not None or trim_end is not None
+    lengths, trimmed, trimmed_end, raw_labels = [], [], [], {}
     with h5py.File(tmp, "w") as f:
         f.attrs.update(
             {
@@ -316,17 +331,20 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
                 "image_fn": "flowcl.data.images.policy_frame",
                 "complete": False,
                 **({"trim_start_rad": trim} if trim is not None else {}),  # only when set: old caches verify
+                **({"trim_end_rad": trim_end} if trim_end is not None else {}),
             }
         )
         group = f.create_group("episodes")
 
         def write(source: str, ep: dict) -> None:
-            if trim is not None:
-                ep = _trimmed(ep, trim)
+            if trimming:
+                ep = _trimmed(ep, trim, trim_end)
                 trimmed.append(ep["trimmed_frames"])
+                trimmed_end.append(ep["trimmed_end_frames"])
             g = group.create_group(f"{len(lengths):06d}")
             g.attrs.update({"source": source, "raw_episode_index": ep["raw_episode_index"],
-                            **({"trimmed_frames": ep["trimmed_frames"]} if trim is not None else {})})
+                            **({"trimmed_frames": ep["trimmed_frames"]} if trim is not None else {}),
+                            **({"trimmed_end_frames": ep["trimmed_end_frames"]} if trim_end is not None else {})})
             g.create_dataset("action", data=ep["action"])
             g.create_dataset("state", data=ep["state"])
             g.create_dataset("timestamp", data=ep["timestamp"])
@@ -354,7 +372,9 @@ def build_cache(task, raw_root: Path, out_path: Path, spec: EmbodimentSpec) -> d
     tmp.replace(out_path)
     return {"task": task.name, "n_episodes": len(lengths), "frames": int(sum(lengths)),
             "length_min": min(lengths), "length_max": max(lengths), "raw_labels": raw_labels,
-            **({"trimmed_frames": int(sum(trimmed)), "trimmed_max": max(trimmed)} if trim is not None else {})}
+            **({"trimmed_frames": int(sum(trimmed)), "trimmed_max": max(trimmed)} if trim is not None else {}),
+            **({"trimmed_end_frames": int(sum(trimmed_end)), "trimmed_end_max": max(trimmed_end)}
+               if trim_end is not None else {})}
 
 
 def cache_attrs(path: Path) -> dict:
@@ -370,7 +390,8 @@ def verify_cache(path: Path, task, n_demos: int | None = None) -> None:
     if attrs.get("format") != CACHE_FORMAT:
         raise ValueError(f"{path}: cache format {attrs.get('format')} != {CACHE_FORMAT}")
     for key, want in (("task_name", task.name), ("language", task.language),
-                      ("sources", _sources_json(task)), ("trim_start_rad", getattr(task, "trim_start_rad", None))):
+                      ("sources", _sources_json(task)), ("trim_start_rad", getattr(task, "trim_start_rad", None)),
+                      ("trim_end_rad", getattr(task, "trim_end_rad", None))):
         if attrs.get(key) != want:
             raise ValueError(f"{path}: cache {key} {attrs.get(key)!r} != registry {want!r}")
     if int(attrs["n_episodes"]) != task.n_episodes:

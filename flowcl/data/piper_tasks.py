@@ -53,6 +53,10 @@ class PiperTask:
     # more than this (rad) from the episode's first action: the wait at home is dropped
     # (flowcl.data.piper_adapter.start_of_motion). Actions are kept as recorded.
     trim_start_rad: float | None = None
+    # When set, every episode ends one frame after its last action that moves a joint more
+    # than this (rad) from the episode's final action: the hold at home before the episode
+    # was saved is dropped (flowcl.data.piper_adapter.end_of_motion).
+    trim_end_rad: float | None = None
 
     @property
     def n_train(self) -> int:
@@ -118,6 +122,16 @@ NEW_GRAPE = PiperSource(
     folder="new_grape",
     sha256="531cac7103e23c3946f44726fdb481ea0b81b6aff4acc9991b67d45babb844b8",
 )
+# The same recordings with 10 episodes held out (24 Nov, to rank the shadow and trim variants on unseen
+# scenes): the k-means medoids (k = 10, seed 0, k-means++ start) of the demos' grape and plate start
+# pixels in the front view (scripts/hw/piper_session_diag.py scenes), with episode 0 (starts with the
+# gripper open) and 55-56 (the far +y edge, not a test target) left out of the candidates. Each held-out
+# grape is 3-29 px and each plate 2-25 px from the nearest training one.
+NEW_GRAPE_HO10 = PiperSource(
+    folder="new_grape",
+    sha256="531cac7103e23c3946f44726fdb481ea0b81b6aff4acc9991b67d45babb844b8",
+    held_out=(3, 7, 16, 23, 28, 34, 64, 69, 70, 73),
+)
 PURPLE_GRAPE_PLATE = "pick up the purple grape and put it on the blue plate"
 
 
@@ -142,6 +156,13 @@ def _sized_crop(name: str, language: str, sources: tuple[PiperSource, ...], n_ep
 # predicting the reach 10-14 ticks ahead, past the 8 executed, and never left home. The leader
 # at rest moves at most 0.024 rad, and the gripper never moves before the joints.
 TRIM_START_RAD = 0.01
+# Every new_grape demo also holds 1.4-1.8 s at home before it is saved (21-27 ticks): 2,088 frames
+# whose next 16 targets never move, against 686 frames of wait before the reach, of which 570
+# already carry the reach in their next 16 targets. On 24 Nov, in light like the demos', the
+# all-90 policies stayed at the start pose in 13 of 14 rollouts (seed 1), planning no motion for
+# the whole chunk (runs/2026-11-24 rollouts, second session). PiperStudio ends a rollout once the
+# arm is back at the start pose, so the hold is not needed to stop.
+TRIM_END_RAD = 0.01
 
 
 TASKS: dict[str, PiperTask] = {
@@ -261,22 +282,29 @@ TASKS: dict[str, PiperTask] = {
         # The second table at 336 px, the whole masked frame (no crop), every demo trained on: the user's
         # choice of 23 Nov, so the offline check measures fit only. As recorded, and with the wait at home
         # trimmed as grape_all_trim.
+        # Trimmed at the end too (the hold at home before saving), or only there; and each variant with
+        # 10 demos held out (NEW_GRAPE_HO10) to rank them on unseen scenes (24 Nov).
         *(
             PiperTask(
-                name=name,
+                name=f"{name}{suffix}",
                 language=PURPLE_GRAPE_PLATE,
-                sources=(NEW_GRAPE,),
+                sources=(source,),
                 n_episodes=90,
-                holdout=0,
+                holdout=holdout,
                 notes="The second table's view at 336 x 336, masked where the operator and the leader arm are."
-                      + notes,
+                      + notes + (" 10 demos held out to rank variants on unseen scenes." if holdout else ""),
                 embodiment="agilex_piper_table2_336",
                 trim_start_rad=trim,
+                trim_end_rad=trim_end,
             )
-            for name, trim, notes in (
-                ("new_grape_336", None, ""),
-                ("new_grape_trim_336", TRIM_START_RAD, " Each demo starts as the reach begins."),
+            for name, trim, trim_end, notes in (
+                ("new_grape", None, None, ""),
+                ("new_grape_trim", TRIM_START_RAD, None, " Each demo starts as the reach begins."),
+                ("new_grape_trimend", None, TRIM_END_RAD, " Each demo ends as the arm reaches home."),
+                ("new_grape_trim2", TRIM_START_RAD, TRIM_END_RAD,
+                 " Each demo starts as the reach begins and ends as the arm reaches home."),
             )
+            for suffix, source, holdout in (("_336", NEW_GRAPE, 0), ("_ho10_336", NEW_GRAPE_HO10, 10))
         ),
     )
 }

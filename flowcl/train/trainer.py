@@ -62,6 +62,15 @@ class TrainConfig:
     augment_shift_px: int = 0
     augment_color: float = 0.0
     augment_daylight: float = 0.0
+    # Shadows (flowcl.data.augment.shadow), after daylight: each image is shaded with probability
+    # ``augment_shadow``; on the front camera a share ``augment_shadow_map_share`` of those gets a
+    # real ratio map from the bank ``augment_shadow_maps`` (an .npz from
+    # scripts/hw/piper_shadow_maps.py), the rest a synthetic pattern. ``augment_shadow_cameras``:
+    # "all" or comma-separated camera names. 0 / None / 0 / "all" = off, every run before 24 Nov.
+    augment_shadow: float = 0.0
+    augment_shadow_maps: str | None = None
+    augment_shadow_map_share: float = 0.0
+    augment_shadow_cameras: str = "all"
     # Write ``checkpoints/step_{N}.pt`` every ``checkpoint_every`` steps besides final.pt
     # (honoured by flowcl.train.pipeline.train_on_tasks). 0 = off.
     checkpoint_every: int = 0
@@ -221,10 +230,28 @@ def augment_generator(
             f"augment_shift_px must be >= 0 and augment_color, augment_daylight in [0, 1); got "
             f"{cfg.augment_shift_px}, {cfg.augment_color}, {cfg.augment_daylight}"
         )
-    if not (cfg.augment_shift_px or cfg.augment_color or cfg.augment_daylight):
+    if not 0.0 <= cfg.augment_shadow <= 1.0 or not 0.0 <= cfg.augment_shadow_map_share <= 1.0:
+        raise ValueError(f"augment_shadow and augment_shadow_map_share must lie in [0, 1]; got "
+                         f"{cfg.augment_shadow}, {cfg.augment_shadow_map_share}")
+    if cfg.augment_shadow_map_share and not cfg.augment_shadow_maps:
+        raise ValueError("augment_shadow_map_share needs augment_shadow_maps")
+    if not (cfg.augment_shift_px or cfg.augment_color or cfg.augment_daylight or cfg.augment_shadow):
         return None
     base = generator.initial_seed() if generator is not None else 0
     return torch.Generator(device=device).manual_seed(derive_seed(str(base), "augment", 0))
+
+
+def load_shadow_bank(path: str | None, device: torch.device) -> torch.Tensor | None:
+    """A ratio-map bank ``(N, H, W, 3)`` (scripts/hw/piper_shadow_maps.py) on ``device``, or None."""
+    if not path:
+        return None
+    import numpy as np
+
+    with np.load(path) as bank:
+        maps = bank["maps"]
+    if maps.ndim != 4 or maps.shape[-1] != 3 or not np.isfinite(maps).all() or (maps <= 0).any():
+        raise ValueError(f"{path}: expected positive finite maps (N, H, W, 3), got {maps.shape}")
+    return torch.as_tensor(maps, dtype=torch.float16, device=device)
 
 
 def move_batch(batch: dict, device: torch.device) -> dict:
@@ -313,6 +340,9 @@ def train_one_task(
     scaler = torch.amp.GradScaler(device.type, enabled=cfg.amp and device.type == "cuda")
     log = TrainLog(trainable_params=trainable_params, config=dataclasses.asdict(cfg))
     augment = augment_generator(cfg, generator, device)
+    shadow_bank = load_shadow_bank(cfg.augment_shadow_maps, device) if augment is not None else None
+    shadow_cameras = (None if cfg.augment_shadow_cameras == "all"
+                      else tuple(c.strip() for c in cfg.augment_shadow_cameras.split(",") if c.strip()))
     started = time.perf_counter()
 
     for step in range(n_steps):
@@ -332,7 +362,9 @@ def train_one_task(
             if augment is not None:
                 batch["images"] = augment_images(
                     batch["images"], cfg.augment_shift_px, cfg.augment_color, augment,
-                    daylight_strength=cfg.augment_daylight,
+                    daylight_strength=cfg.augment_daylight, shadow_p=cfg.augment_shadow,
+                    shadow_maps=shadow_bank, shadow_map_share=cfg.augment_shadow_map_share,
+                    shadow_cameras=shadow_cameras,
                 )
 
             with torch.autocast(

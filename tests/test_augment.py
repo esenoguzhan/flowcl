@@ -101,3 +101,54 @@ def test_daylight_combines_with_shift_and_colour():
 def test_bad_settings_raise(shift_px, color, daylight):
     with pytest.raises(ValueError):
         augment_images({"cam": frames()}, shift_px, color, gen(), daylight_strength=daylight)
+
+
+# ---- shadows (24 Nov) ----------------------------------------------------------------------
+
+def _shadowed(images, seed=0, **kw):
+    return augment_images(images, 0, 0.0, gen(seed), **kw)
+
+
+def test_shadow_alone_keeps_black_black_and_stays_in_range():
+    x = frames(b=32, h=40, w=48, value=120)
+    x[:, :10] = 0                                            # a masked corner
+    out = _shadowed({"front": x}, shadow_p=1.0)["front"]
+    assert (out[:, :10] == 0).all()
+    lit = out[:, 10:].float()
+    assert lit.min() >= 120 * 0.4 and lit.max() <= 255
+    assert (lit.amax(dim=(1, 2, 3)) - lit.amin(dim=(1, 2, 3)) > 10).all()    # every image is shaded somewhere
+
+
+def test_shadow_probability_and_cameras():
+    x = {"front": frames(b=200, h=16, w=16, value=120), "wrist": frames(b=200, h=16, w=16, value=120)}
+    out = _shadowed(x, shadow_p=0.5)
+    changed = (out["front"] != 120).flatten(1).any(1).float().mean()
+    assert 0.35 < changed < 0.65
+    front_only = _shadowed(x, shadow_p=1.0, shadow_cameras=("front",))
+    assert torch.equal(front_only["wrist"], x["wrist"]) and not torch.equal(front_only["front"], x["front"])
+
+
+def test_maps_go_to_the_front_camera_only_and_an_identity_map_changes_nothing():
+    x = {"front": frames(b=16, h=24, w=32, value=100), "wrist": frames(b=16, h=24, w=32, value=100)}
+    ones = torch.ones((3, 24, 32, 3), dtype=torch.float16)
+    out = _shadowed(x, shadow_p=1.0, shadow_maps=ones, shadow_map_share=1.0)
+    assert torch.equal(out["front"], x["front"])                       # every front image got the identity map
+    assert not torch.equal(out["wrist"], x["wrist"])                   # the wrist got synthetic shadows
+    half = torch.full((3, 24, 32, 3), 0.5, dtype=torch.float16)
+    out = _shadowed(x, shadow_p=1.0, shadow_maps=half, shadow_map_share=1.0)["front"].float()
+    # 100 * 0.5 ** power, power in [0.6, 1.2], uniform within an image
+    assert out.min() >= 100 * 0.5 ** 1.2 - 1 and out.max() <= 100 * 0.5 ** 0.6 + 1
+    assert (out.amax(dim=(1, 2, 3)) - out.amin(dim=(1, 2, 3)) <= 1).all()
+
+
+def test_shadows_are_deterministic_and_validated():
+    x = {"front": frames(b=4, h=20, w=20, seed=3)}
+    a = _shadowed(x, seed=7, shadow_p=0.7, daylight_strength=0.3)["front"]
+    b = _shadowed(x, seed=7, shadow_p=0.7, daylight_strength=0.3)["front"]
+    assert torch.equal(a, b)
+    with pytest.raises(ValueError, match="shadow"):
+        _shadowed(x, shadow_p=1.5)
+    with pytest.raises(ValueError, match="shadow_maps"):
+        _shadowed(x, shadow_p=0.5, shadow_map_share=0.5)
+    with pytest.raises(ValueError, match="shadow maps are"):
+        _shadowed(x, shadow_p=1.0, shadow_maps=torch.ones((2, 8, 8, 3)), shadow_map_share=1.0)

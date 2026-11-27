@@ -108,6 +108,10 @@ def test_augmentation_draws_from_its_own_generator(spec):
     for name in ("augmented", "daylight"):
         assert torch.equal(runs["plain"][1], runs[name][1])
         assert runs["plain"][0] != runs[name][0]
-    for bad in (dict(augment_color=1.5), dict(augment_daylight=1.0)):
+    g = torch.Generator().manual_seed(0)
+    log = train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, augment_shadow=1.0), generator=g)
+    assert torch.equal(runs["plain"][1], g.get_state()) and log.losses != runs["plain"][0]
+    for bad in (dict(augment_color=1.5), dict(augment_daylight=1.0), dict(augment_shadow=1.5),
+                dict(augment_shadow=0.5, augment_shadow_map_share=0.5)):
         with pytest.raises(ValueError, match="augment"):
             train_one_task(tiny_policy(spec), dataset, TrainConfig(**base, **bad))

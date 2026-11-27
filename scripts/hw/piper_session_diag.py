@@ -10,11 +10,15 @@ Complements piper_rollout_diag.py (logs, grip, sheet), which reads the same logs
               frame 0, by colour: how far from the nearest demo, which rollouts share a scene,
               and the table's light (mean grey, sharp edges, what a linear ramp leaves)
     hovers    for runs that never opened: what the wrist camera shows part-way through
+    phases    per rollout: the gripper open, holding or shut on nothing, phase by phase, with the
+              time and height of each (retries, stalls with the gripper shut, holds never released);
+              scenes also names the recorded episode each scene matches, against the one logged
 
     uv run python scripts/hw/piper_session_diag.py outcomes --day results/piper_rollouts/2026-11-24 \
         --source ~/piper_datasets/new_grape --out results/piper_rollouts/2026-11-24/diag/outcomes.json
     uv run python scripts/hw/piper_session_diag.py scenes --day ... --source ... --image light.jpg
     uv run python scripts/hw/piper_session_diag.py hovers --day ... --image hovers.jpg
+    uv run python scripts/hw/piper_session_diag.py phases --day ... --out phases.json
 
 Units: end pose in mm, gripper in mm, time in s from the run's start. Colour thresholds are
 for the purple grape and the blue plate of the new_grape task (OpenCV HSV).
@@ -38,6 +42,9 @@ from flowcl.data.piper_adapter import _read_parquets, read_episode_table  # noqa
 
 OPEN_MM = 20.0        # the gripper counts as opened above this
 CLOSE_FROM_MM = 60.0  # a close starts once the gripper was wider than this (session 1's demos open to 66-77 mm)
+PHASE_OPEN_CMD_MM = 30.0  # phases: open while the command is wider than this (a held grape measures 34-65 mm, so
+                          # the measured width alone cannot tell a hold from an opening)
+PHASE_EMPTY_MM = 20.0  # phases: shut on nothing below this
 CLOSE_DROP_MM = 10.0  # ... at the first tick this far below its widest opening so far
 HELD_MM = 30.0        # still this wide 1-2 s after the close: something is held
 LEFT_HOME_RAD = 0.05  # the arm has left the start pose once a joint is this far from it
@@ -266,10 +273,15 @@ def cmd_scenes(args) -> dict:
         px, py, _ = blob(frame, PLATE_HSV, mask)
         to_g = np.hypot(dg[:, 0] - gx, dg[:, 1] - gy)
         to_pair = np.hypot(to_g, np.hypot(dp[:, 0] - px, dp[:, 1] - py))
+        order = np.argsort(np.nan_to_num(to_pair, nan=np.inf))
         rows[run.name] = {"policy": policy_name(meta), "grape": [gx, gy], "grape_area_px": ga, "plate": [px, py],
                           "grape_to_plate_px": float(np.hypot(gx - px, gy - py)),
                           "nearest_demo_grape_px": float(np.nanmin(to_g)), "demo_grapes_within_40_px": int((to_g < 40).sum()),
-                          "nearest_demo_pair_px": float(np.nanmin(to_pair)), **light(frame)}
+                          "nearest_demo_pair_px": float(np.nanmin(to_pair)),
+                          # which recorded episode the scene was set up as, whatever the log says
+                          "nearest_demo_pair_episode": int(demos[order[0]]["episode"]),
+                          "second_demo_pair_px": float(to_pair[order[1]]),
+                          "logged_episode": (meta.get("initial_condition") or {}).get("episode_index"), **light(frame)}
         imgs[run.name] = frame
     # scenes: consecutive runs whose grape and plate both moved less than 15 px
     scene, last = 0, None
@@ -282,7 +294,9 @@ def cmd_scenes(args) -> dict:
     for name, r in rows.items():
         print(f"{name[:6]} scene {r['scene']:2d} {r['policy']:28s} grape {r['grape'][0]:4.0f},{r['grape'][1]:4.0f} "
               f"plate {r['plate'][0]:4.0f},{r['plate'][1]:4.0f} | nearest demo grape {r['nearest_demo_grape_px']:4.0f} px, "
-              f"{r['demo_grapes_within_40_px']:2d} within 40 | pair {r['nearest_demo_pair_px']:4.0f} | "
+              f"{r['demo_grapes_within_40_px']:2d} within 40 | pair {r['nearest_demo_pair_px']:4.0f} "
+              f"(ep {r['nearest_demo_pair_episode']}, next {r['second_demo_pair_px']:3.0f}; logged ep {r['logged_episode']}"
+              f"{'' if r['logged_episode'] in (None, r['nearest_demo_pair_episode']) else ' MISMATCH'}) | "
               f"whole table: grey {r['whole_grey']:5.1f} edges {r['whole_sharp_edge_share']:.3f} "
               f"ramp residual {r['whole_ramp_residual']:.3f}")
     gp = np.hypot(dg[:, 0] - dp[:, 0], dg[:, 1] - dp[:, 1])
@@ -345,22 +359,59 @@ def cmd_hovers(args) -> dict:
     return out
 
 
+def cmd_phases(args) -> dict:
+    """The gripper's phases through each rollout, sampled every 0.1 s: O open (commanded wider than
+    PHASE_OPEN_CMD_MM), H commanded shut and holding something (measured PHASE_EMPTY_MM or wider), E shut
+    on nothing; phases under 0.3 s are dropped as transitions. outcomes reads only the first close; this
+    shows retries, stalls with the gripper shut, and holds that never release."""
+    out = {}
+    for run in rollouts(args.day):
+        meta, _, k = load(run)
+        t, ep = k["t"], k["end_pose"]
+        g = k["gripper"] * (1000.0 if k["gripper"].max() < 1 else 1.0)
+        cmd = np.nan_to_num(k["sent_target"][:, 6])  # NaN until the first chunk arrives
+        cmd = cmd * (1000.0 if np.abs(cmd).max() < 1 else 1.0)
+        idx = np.searchsorted(t, np.arange(0.0, t[-1], 0.1))
+        lab = np.where(cmd[idx] > PHASE_OPEN_CMD_MM, "O", np.where(g[idx] >= PHASE_EMPTY_MM, "H", "E"))
+        cuts = [0] + [i for i in range(1, len(idx)) if lab[i] != lab[i - 1]] + [len(idx)]
+        segs = [(lab[a], idx[a], idx[b - 1]) for a, b in zip(cuts, cuts[1:])]
+        segs = [s for n, s in enumerate(segs) if n == 0 or t[s[2]] - t[s[1]] >= 0.3]
+        merged = []
+        for s in segs:
+            merged = merged[:-1] + [(s[0], merged[-1][1], s[2])] if merged and merged[-1][0] == s[0] else merged + [s]
+        phases = []
+        for kind, a, b in merged:
+            low = a + int(np.argmin(ep[a:b + 1, 2]))
+            phases.append({"kind": kind, "t0_s": float(t[a]), "t1_s": float(t[b]), "gripper_p50_mm": float(np.median(g[a:b + 1])),
+                           "start_xyz_mm": [float(v) for v in ep[a, :3]], "low_z_mm": float(ep[low, 2]), "low_z_t_s": float(t[low])})
+        lh = left_home(k["joints"], t)
+        out[run.name] = {"policy": policy_name(meta), "duration_s": meta.get("duration_s"), "reason": meta.get("reason"),
+                         "left_home_s": lh, "phases": phases}
+        print(f"{run.name[:6]} {out[run.name]['policy']:28s} {meta.get('duration_s', 0):4.0f} s, {meta.get('reason')} | "
+              f"left home {lh:4.1f} s")
+        for p in phases:
+            x, y, z = p["start_xyz_mm"]
+            print(f"      {p['kind']} {p['t0_s']:5.1f}-{p['t1_s']:5.1f} s gripper p50 {p['gripper_p50_mm']:5.1f} | "
+                  f"from {x:4.0f} {y:5.0f} {z:4.0f} | lowest z {p['low_z_mm']:4.0f} at {p['low_z_t_s']:4.1f} s")
+    return out
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("outcomes", "scenes", "hovers"):
+    for name in ("outcomes", "scenes", "hovers", "phases"):
         s = sub.add_parser(name)
         s.add_argument("--day", type=Path, required=True)
         s.add_argument("--source", type=Path, default=Path("~/piper_datasets/new_grape").expanduser())
         s.add_argument("--out", type=Path, default=None)
-        if name != "outcomes":
+        if name in ("scenes", "hovers"):
             s.add_argument("--image", type=Path, default=None)
     sub.choices["scenes"].add_argument("--demo-episodes", type=int, nargs="+", default=[0, 20, 45, 70, 89])
     sub.choices["hovers"].add_argument("--at", type=float, default=0.6, help="how far through the run's frames")
     sub.choices["hovers"].add_argument("--cols", type=int, default=5)
     args = p.parse_args()
     args.source = args.source.expanduser()
-    result = {"outcomes": cmd_outcomes, "scenes": cmd_scenes, "hovers": cmd_hovers}[args.cmd](args)
+    result = {"outcomes": cmd_outcomes, "scenes": cmd_scenes, "hovers": cmd_hovers, "phases": cmd_phases}[args.cmd](args)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=1, default=float))
